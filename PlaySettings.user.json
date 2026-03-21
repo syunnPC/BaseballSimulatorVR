@@ -1,0 +1,18 @@
+{
+  "_comment_duelPitchIntervalSeconds": "Wait interval between pitches in duel mode [s]",
+  "duelPitchIntervalSeconds": 0.8,
+  "_comment_playbackSpeedPercent": "Trajectory playback speed [%], 100 = realtime",
+  "playbackSpeedPercent": 100.0,
+  "_comment_duelPitchPreviewEnabled": "Show predicted zone-pass marker in batting duel mode",
+  "duelPitchPreviewEnabled": true,
+  "_comment_batUseRightHand": "Use right hand for bat control (false = left hand)",
+  "batUseRightHand": true,
+  "_comment_pitchTrajectoryVisible": "Show trajectory in PitchTrajectory mode",
+  "pitchTrajectoryVisible": true,
+  "_comment_battedTrajectoryVisible": "Show trajectory in BattingDuel/Tee mode",
+  "battedTrajectoryVisible": true,
+  "_comment_duelTargetZoneMask": "Target zone bit mask for duel mode (25-zone grid)",
+  "duelTargetZoneMask": 0,
+  "_comment_duelTargetZoneIndex": "Legacy single-zone index for compatibility (null if none)",
+  "duelTargetZoneIndex": null
+}

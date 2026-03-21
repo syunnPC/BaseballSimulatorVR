@@ -1,0 +1,2115 @@
+#include "Dx12RenderBackend.hpp"
+#include "../Common/D3d12DebugOverlay.hpp"
+#include "../Common/DebugWorldProjection.hpp"
+#include "../Common/FxaaPipelineUtilities.hpp"
+#include "../Common/MathUtilities.hpp"
+#include "../Common/TrajectoryTrail.hpp"
+
+#if defined(_WIN64)
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <numbers>
+#include <string>
+#include <vector>
+
+#pragma comment(lib, "d3dcompiler.lib")
+
+namespace BaseballSimulatorVR::Render
+{
+	namespace
+	{
+		constexpr UINT MaxDebugVertices = 65536;
+		constexpr DXGI_FORMAT DepthBufferFormat = DXGI_FORMAT_D32_FLOAT;
+		constexpr UINT RequestedMsaaSampleCount = 4U;
+#if defined(BASEBALLSIMVR_DISABLE_WORLD_DRAW)
+		constexpr bool EnableDebugDraw = false;
+#else
+		constexpr bool EnableDebugDraw = true;
+#endif
+		using Common::ScreenPoint;
+	} // namespace
+
+	Dx12RenderBackend::~Dx12RenderBackend()
+	{
+		Shutdown();
+	}
+
+	bool Dx12RenderBackend::Initialize(const HWND windowHandle)
+	{
+		if (m_isInitialized)
+		{
+			return true;
+		}
+
+		SetDebugDrawPathStatus(L"initializing");
+
+		if (windowHandle == nullptr)
+		{
+			return false;
+		}
+
+		m_windowHandle = windowHandle;
+
+		if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_factory))))
+		{
+			Shutdown();
+			return false;
+		}
+
+		for (UINT adapterIndex = 0;; ++adapterIndex)
+		{
+			Microsoft::WRL::ComPtr<IDXGIAdapter1> adapterCandidate{};
+			if (m_factory->EnumAdapterByGpuPreference(
+			        adapterIndex,
+			        DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+			        IID_PPV_ARGS(&adapterCandidate)) == DXGI_ERROR_NOT_FOUND)
+			{
+				break;
+			}
+
+			DXGI_ADAPTER_DESC1 adapterDescription{};
+			if (FAILED(adapterCandidate->GetDesc1(&adapterDescription)))
+			{
+				continue;
+			}
+
+			if ((adapterDescription.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0U)
+			{
+				continue;
+			}
+
+			if (SUCCEEDED(D3D12CreateDevice(
+			        adapterCandidate.Get(),
+			        D3D_FEATURE_LEVEL_11_0,
+			        __uuidof(ID3D12Device),
+			        nullptr)))
+			{
+				if (FAILED(adapterCandidate.As(&m_adapter)))
+				{
+					Shutdown();
+					return false;
+				}
+				break;
+			}
+		}
+
+		if (m_adapter == nullptr)
+		{
+			Microsoft::WRL::ComPtr<IDXGIAdapter> warpAdapter{};
+			if (FAILED(m_factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter))))
+			{
+				Shutdown();
+				return false;
+			}
+
+			if (FAILED(warpAdapter.As(&m_adapter)))
+			{
+				Shutdown();
+				return false;
+			}
+		}
+
+		if (FAILED(D3D12CreateDevice(
+		        m_adapter.Get(),
+		        D3D_FEATURE_LEVEL_11_0,
+		        IID_PPV_ARGS(&m_device))))
+		{
+			Shutdown();
+			return false;
+		}
+
+		D3D12_COMMAND_QUEUE_DESC commandQueueDescription{};
+		commandQueueDescription.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+		commandQueueDescription.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+
+		if (FAILED(m_device->CreateCommandQueue(
+		        &commandQueueDescription,
+		        IID_PPV_ARGS(&m_commandQueue))))
+		{
+			Shutdown();
+			return false;
+		}
+
+		DXGI_SWAP_CHAIN_DESC1 swapChainDescription{};
+		swapChainDescription.BufferCount = FrameCount;
+		swapChainDescription.Width = 0;
+		swapChainDescription.Height = 0;
+		swapChainDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		swapChainDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+		swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+		swapChainDescription.SampleDesc.Count = 1;
+		swapChainDescription.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+
+		Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain{};
+		if (FAILED(m_factory->CreateSwapChainForHwnd(
+		        m_commandQueue.Get(),
+		        m_windowHandle,
+		        &swapChainDescription,
+		        nullptr,
+		        nullptr,
+		        &swapChain)))
+		{
+			Shutdown();
+			return false;
+		}
+
+		(void)m_factory->MakeWindowAssociation(m_windowHandle, DXGI_MWA_NO_ALT_ENTER);
+
+		if (FAILED(swapChain.As(&m_swapChain)))
+		{
+			Shutdown();
+			return false;
+		}
+
+		m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+		D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDescription{};
+		rtvHeapDescription.NumDescriptors = FrameCount;
+		rtvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+		rtvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+		if (FAILED(m_device->CreateDescriptorHeap(
+		        &rtvHeapDescription,
+		        IID_PPV_ARGS(&m_rtvHeap))))
+		{
+			Shutdown();
+			return false;
+		}
+
+		m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+		m_msaaSampleCount = 1U;
+		D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels{};
+		msaaQualityLevels.Format = swapChainDescription.Format;
+		msaaQualityLevels.SampleCount = RequestedMsaaSampleCount;
+		msaaQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+		msaaQualityLevels.NumQualityLevels = 0;
+		if (SUCCEEDED(m_device->CheckFeatureSupport(
+		        D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+		        &msaaQualityLevels,
+		        sizeof(msaaQualityLevels))) &&
+		    (msaaQualityLevels.NumQualityLevels > 0U))
+		{
+			m_msaaSampleCount = RequestedMsaaSampleCount;
+		}
+		else
+		{
+			msaaQualityLevels.SampleCount = 2U;
+			msaaQualityLevels.NumQualityLevels = 0;
+			if (SUCCEEDED(m_device->CheckFeatureSupport(
+			        D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+			        &msaaQualityLevels,
+			        sizeof(msaaQualityLevels))) &&
+			    (msaaQualityLevels.NumQualityLevels > 0U))
+			{
+				m_msaaSampleCount = 2U;
+			}
+		}
+
+		if (m_msaaSampleCount > 1U)
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC msaaRtvHeapDescription{};
+			msaaRtvHeapDescription.NumDescriptors = FrameCount;
+			msaaRtvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+			msaaRtvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+			if (FAILED(m_device->CreateDescriptorHeap(
+			        &msaaRtvHeapDescription,
+			        IID_PPV_ARGS(&m_msaaRtvHeap))))
+			{
+				Shutdown();
+				return false;
+			}
+		}
+
+		D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDescription{};
+		dsvHeapDescription.NumDescriptors = FrameCount;
+		dsvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+		dsvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		if (FAILED(m_device->CreateDescriptorHeap(
+		        &dsvHeapDescription,
+		        IID_PPV_ARGS(&m_dsvHeap))))
+		{
+			Shutdown();
+			return false;
+		}
+
+		m_dsvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+		m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+		D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+		D3D12_CPU_DESCRIPTOR_HANDLE msaaRtvHandle{};
+		if (m_msaaRtvHeap != nullptr)
+		{
+			msaaRtvHandle = m_msaaRtvHeap->GetCPUDescriptorHandleForHeapStart();
+		}
+
+		for (UINT bufferIndex = 0; bufferIndex < FrameCount; ++bufferIndex)
+		{
+			if (FAILED(m_swapChain->GetBuffer(
+			        bufferIndex,
+			        IID_PPV_ARGS(&m_renderTargets[bufferIndex]))))
+			{
+				Shutdown();
+				return false;
+			}
+
+			m_device->CreateRenderTargetView(
+			    m_renderTargets[bufferIndex].Get(),
+			    nullptr,
+			    rtvHandle);
+			rtvHandle.ptr += static_cast<SIZE_T>(m_rtvDescriptorSize);
+
+			const D3D12_RESOURCE_DESC renderTargetDescription =
+			    m_renderTargets[bufferIndex]->GetDesc();
+			if ((m_msaaSampleCount > 1U) && (m_msaaRtvHeap != nullptr))
+			{
+				D3D12_HEAP_PROPERTIES msaaHeapProperties{};
+				msaaHeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+				msaaHeapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+				msaaHeapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+				msaaHeapProperties.CreationNodeMask = 1;
+				msaaHeapProperties.VisibleNodeMask = 1;
+
+				D3D12_RESOURCE_DESC msaaRenderTargetDescription =
+				    renderTargetDescription;
+				msaaRenderTargetDescription.SampleDesc.Count = m_msaaSampleCount;
+				msaaRenderTargetDescription.SampleDesc.Quality = 0;
+				msaaRenderTargetDescription.Flags =
+				    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+				D3D12_CLEAR_VALUE renderTargetClearValue{};
+				renderTargetClearValue.Format = swapChainDescription.Format;
+				renderTargetClearValue.Color[0] = m_clearColor[0];
+				renderTargetClearValue.Color[1] = m_clearColor[1];
+				renderTargetClearValue.Color[2] = m_clearColor[2];
+				renderTargetClearValue.Color[3] = m_clearColor[3];
+
+				if (FAILED(m_device->CreateCommittedResource(
+				        &msaaHeapProperties,
+				        D3D12_HEAP_FLAG_NONE,
+				        &msaaRenderTargetDescription,
+				        D3D12_RESOURCE_STATE_RENDER_TARGET,
+				        &renderTargetClearValue,
+				        IID_PPV_ARGS(&m_msaaRenderTargets[bufferIndex]))))
+				{
+					Shutdown();
+					return false;
+				}
+
+				D3D12_RENDER_TARGET_VIEW_DESC msaaRtvDescription{};
+				msaaRtvDescription.Format = swapChainDescription.Format;
+				msaaRtvDescription.ViewDimension =
+				    D3D12_RTV_DIMENSION_TEXTURE2DMS;
+				m_device->CreateRenderTargetView(
+				    m_msaaRenderTargets[bufferIndex].Get(),
+				    &msaaRtvDescription,
+				    msaaRtvHandle);
+				msaaRtvHandle.ptr += static_cast<SIZE_T>(m_rtvDescriptorSize);
+			}
+
+			const UINT depthSampleCount =
+			    (m_msaaSampleCount > 1U)
+			        ? m_msaaSampleCount
+			        : renderTargetDescription.SampleDesc.Count;
+			D3D12_HEAP_PROPERTIES depthHeapProperties{};
+			depthHeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+			depthHeapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+			depthHeapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+			depthHeapProperties.CreationNodeMask = 1;
+			depthHeapProperties.VisibleNodeMask = 1;
+
+			D3D12_RESOURCE_DESC depthDescription{};
+			depthDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+			depthDescription.Alignment = 0;
+			depthDescription.Width = renderTargetDescription.Width;
+			depthDescription.Height = static_cast<UINT>(renderTargetDescription.Height);
+			depthDescription.DepthOrArraySize = 1;
+			depthDescription.MipLevels = 1;
+			depthDescription.Format = DepthBufferFormat;
+			depthDescription.SampleDesc.Count = depthSampleCount;
+			depthDescription.SampleDesc.Quality = 0;
+			depthDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+			depthDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+			D3D12_CLEAR_VALUE depthClearValue{};
+			depthClearValue.Format = DepthBufferFormat;
+			depthClearValue.DepthStencil.Depth = 1.0F;
+			depthClearValue.DepthStencil.Stencil = 0;
+
+			if (FAILED(m_device->CreateCommittedResource(
+			        &depthHeapProperties,
+			        D3D12_HEAP_FLAG_NONE,
+			        &depthDescription,
+			        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+			        &depthClearValue,
+			        IID_PPV_ARGS(&m_depthBuffers[bufferIndex]))))
+			{
+				Shutdown();
+				return false;
+			}
+
+			D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilViewDescription{};
+			depthStencilViewDescription.Format = DepthBufferFormat;
+			depthStencilViewDescription.ViewDimension =
+			    (depthSampleCount > 1U)
+			        ? D3D12_DSV_DIMENSION_TEXTURE2DMS
+			        : D3D12_DSV_DIMENSION_TEXTURE2D;
+			depthStencilViewDescription.Flags = D3D12_DSV_FLAG_NONE;
+			if (depthStencilViewDescription.ViewDimension ==
+			    D3D12_DSV_DIMENSION_TEXTURE2D)
+			{
+				depthStencilViewDescription.Texture2D.MipSlice = 0;
+			}
+			m_device->CreateDepthStencilView(
+			    m_depthBuffers[bufferIndex].Get(),
+			    &depthStencilViewDescription,
+			    dsvHandle);
+			dsvHandle.ptr += static_cast<SIZE_T>(m_dsvDescriptorSize);
+
+			if (FAILED(m_device->CreateCommandAllocator(
+			        D3D12_COMMAND_LIST_TYPE_DIRECT,
+			        IID_PPV_ARGS(&m_commandAllocators[bufferIndex]))))
+			{
+				Shutdown();
+				return false;
+			}
+		}
+
+		if (!InitializeFxaaResources(swapChainDescription.Format))
+		{
+			Shutdown();
+			return false;
+		}
+
+		if (FAILED(m_device->CreateCommandList(
+		        0,
+		        D3D12_COMMAND_LIST_TYPE_DIRECT,
+		        m_commandAllocators[m_frameIndex].Get(),
+		        nullptr,
+		        IID_PPV_ARGS(&m_commandList))))
+		{
+			Shutdown();
+			return false;
+		}
+
+		if (FAILED(m_commandList->Close()))
+		{
+			Shutdown();
+			return false;
+		}
+
+		if (EnableDebugDraw &&
+		    (!InitializeDebugPipeline() || !InitializeDebugVertexBuffer()))
+		{
+			SetDebugDrawPathStatus(L"init-failed");
+			Shutdown();
+			return false;
+		}
+
+		m_isFxaaAvailable = InitializeFxaaPipeline();
+		if (!m_isFxaaAvailable)
+		{
+			OutputDebugStringW(
+			    L"[Dx12RenderBackend] FXAA pipeline init failed; using copy post-process fallback.\n");
+		}
+		m_postProcessPathStatus = m_isFxaaAvailable ? L"fxaa" : L"copy";
+
+		if (FAILED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence))))
+		{
+			Shutdown();
+			return false;
+		}
+
+		m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		if (m_fenceEvent == nullptr)
+		{
+			Shutdown();
+			return false;
+		}
+
+		m_fenceValues.fill(1);
+		m_isInitialized = true;
+		SetDebugDrawPathStatus(
+		    EnableDebugDraw ? L"ready" : L"world-draw-disabled");
+		return true;
+	}
+
+	bool Dx12RenderBackend::InitializeDebugPipeline()
+	{
+		if (m_device == nullptr)
+		{
+			return false;
+		}
+
+		const UINT sampleCount = (std::max)(1U, m_msaaSampleCount);
+
+		if (!Common::DebugOverlay::InitializePipeline(
+		        m_device.Get(),
+		        DXGI_FORMAT_R8G8B8A8_UNORM,
+		        DepthBufferFormat,
+		        &m_debugRootSignature,
+		        &m_debugPipelineState,
+		        nullptr,
+		        nullptr,
+		        Common::DebugOverlay::PipelineBlendMode::Opaque,
+		        Common::DebugOverlay::PipelineDepthWriteMode::Enabled,
+		        false,
+		        sampleCount))
+		{
+			return false;
+		}
+
+		Common::DebugOverlay::PipelineInitializationPhase alphaFailedPhase =
+		    Common::DebugOverlay::PipelineInitializationPhase::None;
+		HRESULT alphaFailedResult = S_OK;
+		Microsoft::WRL::ComPtr<ID3D12RootSignature> preservedRootSignature = m_debugRootSignature;
+		if (!Common::DebugOverlay::InitializePipeline(
+		        m_device.Get(),
+		        DXGI_FORMAT_R8G8B8A8_UNORM,
+		        DepthBufferFormat,
+		        &m_debugRootSignature,
+		        &m_debugAlphaPipelineState,
+		        &alphaFailedPhase,
+		        &alphaFailedResult,
+		        Common::DebugOverlay::PipelineBlendMode::AlphaBlend,
+		        Common::DebugOverlay::PipelineDepthWriteMode::Disabled,
+		        true,
+		        sampleCount))
+		{
+			(void)alphaFailedPhase;
+			(void)alphaFailedResult;
+			OutputDebugStringW(
+			    L"[Dx12RenderBackend] alpha debug pipeline init failed; falling back to opaque.\n");
+			m_debugAlphaPipelineState = m_debugPipelineState;
+			if ((m_debugRootSignature == nullptr) && (preservedRootSignature != nullptr))
+			{
+				m_debugRootSignature = preservedRootSignature;
+			}
+		}
+
+		return true;
+	}
+
+	bool Dx12RenderBackend::InitializeDebugVertexBuffer()
+	{
+		if (m_device == nullptr)
+		{
+			return false;
+		}
+
+		return Common::DebugOverlay::InitializeVertexBuffer(
+		    m_device.Get(),
+		    MaxDebugVertices,
+		    &m_debugVertexBuffer,
+		    &m_debugVertexBufferView,
+		    &m_debugVertexCapacity);
+	}
+
+	bool Dx12RenderBackend::InitializeFxaaResources(const DXGI_FORMAT swapChainFormat)
+	{
+		if ((m_device == nullptr) || (m_srvDescriptorSize == 0U))
+		{
+			return false;
+		}
+
+		D3D12_DESCRIPTOR_HEAP_DESC sceneRtvHeapDescription{};
+		sceneRtvHeapDescription.NumDescriptors = FrameCount;
+		sceneRtvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+		sceneRtvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		if (FAILED(m_device->CreateDescriptorHeap(
+		        &sceneRtvHeapDescription,
+		        IID_PPV_ARGS(&m_sceneRtvHeap))))
+		{
+			return false;
+		}
+
+		D3D12_DESCRIPTOR_HEAP_DESC sceneSrvHeapDescription{};
+		sceneSrvHeapDescription.NumDescriptors = FrameCount;
+		sceneSrvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		sceneSrvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		if (FAILED(m_device->CreateDescriptorHeap(
+		        &sceneSrvHeapDescription,
+		        IID_PPV_ARGS(&m_sceneSrvHeap))))
+		{
+			return false;
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE sceneRtvHandle =
+		    m_sceneRtvHeap->GetCPUDescriptorHandleForHeapStart();
+		D3D12_CPU_DESCRIPTOR_HANDLE sceneSrvHandle =
+		    m_sceneSrvHeap->GetCPUDescriptorHandleForHeapStart();
+		for (UINT bufferIndex = 0; bufferIndex < FrameCount; ++bufferIndex)
+		{
+			if (m_renderTargets[bufferIndex] == nullptr)
+			{
+				return false;
+			}
+
+			const D3D12_RESOURCE_DESC backBufferDescription =
+			    m_renderTargets[bufferIndex]->GetDesc();
+			D3D12_RESOURCE_DESC sceneDescription = backBufferDescription;
+			sceneDescription.SampleDesc.Count = 1;
+			sceneDescription.SampleDesc.Quality = 0;
+			sceneDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+			D3D12_HEAP_PROPERTIES heapProperties{};
+			heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+			heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+			heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+			heapProperties.CreationNodeMask = 1;
+			heapProperties.VisibleNodeMask = 1;
+
+			D3D12_CLEAR_VALUE clearValue{};
+			clearValue.Format = swapChainFormat;
+			clearValue.Color[0] = m_clearColor[0];
+			clearValue.Color[1] = m_clearColor[1];
+			clearValue.Color[2] = m_clearColor[2];
+			clearValue.Color[3] = m_clearColor[3];
+
+			if (FAILED(m_device->CreateCommittedResource(
+			        &heapProperties,
+			        D3D12_HEAP_FLAG_NONE,
+			        &sceneDescription,
+			        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+			        &clearValue,
+			        IID_PPV_ARGS(&m_sceneColorTargets[bufferIndex]))))
+			{
+				return false;
+			}
+
+			D3D12_RENDER_TARGET_VIEW_DESC rtvDescription{};
+			rtvDescription.Format = swapChainFormat;
+			rtvDescription.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+			rtvDescription.Texture2D.MipSlice = 0;
+			rtvDescription.Texture2D.PlaneSlice = 0;
+			m_device->CreateRenderTargetView(
+			    m_sceneColorTargets[bufferIndex].Get(),
+			    &rtvDescription,
+			    sceneRtvHandle);
+			sceneRtvHandle.ptr +=
+			    static_cast<SIZE_T>(m_rtvDescriptorSize);
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription{};
+			srvDescription.Shader4ComponentMapping =
+			    D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srvDescription.Format = swapChainFormat;
+			srvDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srvDescription.Texture2D.MostDetailedMip = 0;
+			srvDescription.Texture2D.MipLevels = 1;
+			srvDescription.Texture2D.PlaneSlice = 0;
+			srvDescription.Texture2D.ResourceMinLODClamp = 0.0F;
+			m_device->CreateShaderResourceView(
+			    m_sceneColorTargets[bufferIndex].Get(),
+			    &srvDescription,
+			    sceneSrvHandle);
+			sceneSrvHandle.ptr +=
+			    static_cast<SIZE_T>(m_srvDescriptorSize);
+		}
+
+		return true;
+	}
+
+	bool Dx12RenderBackend::InitializeFxaaPipeline()
+	{
+		if ((m_device == nullptr) || (m_sceneSrvHeap == nullptr))
+		{
+			return false;
+		}
+
+		Common::FxaaPipelineObjects fxaaPipelineObjects{};
+		if (!Common::BuildFxaaPipeline(
+		        m_device.Get(),
+		        DXGI_FORMAT_R8G8B8A8_UNORM,
+		        1U,
+		        &fxaaPipelineObjects))
+		{
+			m_fxaaRootSignature.Reset();
+			m_fxaaPipelineState.Reset();
+			return false;
+		}
+
+		m_fxaaRootSignature = std::move(fxaaPipelineObjects.rootSignature);
+		m_fxaaPipelineState = std::move(fxaaPipelineObjects.pipelineState);
+		return true;
+	}
+
+	void Dx12RenderBackend::SetDebugDrawPathStatus(const std::wstring_view status)
+	{
+		if (status.empty())
+		{
+			return;
+		}
+
+		m_debugDrawPathStatus.assign(status);
+		m_backendNameCache = L"DX12(window,dp:";
+		m_backendNameCache += m_debugDrawPathStatus;
+		if (m_msaaSampleCount > 1U)
+		{
+			m_backendNameCache += L",aa:MSAAx";
+			m_backendNameCache += std::to_wstring(m_msaaSampleCount);
+		}
+		else
+		{
+			m_backendNameCache += L",aa:off";
+		}
+		if (m_postProcessPathStatus.empty())
+		{
+			m_backendNameCache += L",pp:unknown";
+		}
+		else
+		{
+			m_backendNameCache += L",pp:";
+			m_backendNameCache += m_postProcessPathStatus;
+		}
+		m_backendNameCache += L")";
+	}
+
+	bool Dx12RenderBackend::HasDebugDrawResources() const noexcept
+	{
+		return (m_debugRootSignature != nullptr) &&
+		       (m_debugPipelineState != nullptr) &&
+		       (m_debugAlphaPipelineState != nullptr) &&
+		       (m_debugVertexBuffer != nullptr) &&
+		       (m_debugVertexCapacity != 0U) &&
+		       (m_debugVertexBufferView.SizeInBytes != 0U) &&
+		       (m_debugVertexBufferView.StrideInBytes != 0U);
+	}
+
+	std::wstring Dx12RenderBackend::BuildDebugResourceMissingReason() const
+	{
+		std::wstring reason{};
+		auto appendToken = [&](std::wstring_view token) -> void
+		{
+			if (!reason.empty())
+			{
+				reason += L"-";
+			}
+			reason += token;
+		};
+
+		if (m_debugRootSignature == nullptr)
+		{
+			appendToken(L"root");
+		}
+		if (m_debugPipelineState == nullptr)
+		{
+			appendToken(L"pso");
+		}
+		if (m_debugAlphaPipelineState == nullptr)
+		{
+			appendToken(L"alpha");
+		}
+		if (m_debugVertexBuffer == nullptr)
+		{
+			appendToken(L"vb");
+		}
+		if (m_debugVertexCapacity == 0U)
+		{
+			appendToken(L"vbcap");
+		}
+		if (m_debugVertexBufferView.SizeInBytes == 0U)
+		{
+			appendToken(L"vbvsize");
+		}
+		if (m_debugVertexBufferView.StrideInBytes == 0U)
+		{
+			appendToken(L"vbvstride");
+		}
+
+		if (reason.empty())
+		{
+			reason = L"none";
+		}
+		return reason;
+	}
+
+	void Dx12RenderBackend::RepairDebugDrawResources()
+	{
+		if ((m_debugAlphaPipelineState == nullptr) &&
+		    (m_debugPipelineState != nullptr))
+		{
+			m_debugAlphaPipelineState = m_debugPipelineState;
+		}
+
+		if ((m_debugVertexBuffer != nullptr) && (m_debugVertexCapacity == 0U))
+		{
+			const D3D12_RESOURCE_DESC vertexBufferDescription =
+			    m_debugVertexBuffer->GetDesc();
+			if (vertexBufferDescription.Width >= sizeof(Common::DebugOverlay::Vertex))
+			{
+				const UINT recoveredVertexCapacity = static_cast<UINT>(
+				    vertexBufferDescription.Width /
+				    sizeof(Common::DebugOverlay::Vertex));
+				if (recoveredVertexCapacity > 0U)
+				{
+					m_debugVertexCapacity = recoveredVertexCapacity;
+				}
+			}
+		}
+
+		const bool vertexViewMissing =
+		    (m_debugVertexBufferView.BufferLocation == 0U) ||
+		    (m_debugVertexBufferView.SizeInBytes == 0U) ||
+		    (m_debugVertexBufferView.StrideInBytes == 0U);
+		if ((m_debugVertexBuffer != nullptr) &&
+		    (m_debugVertexCapacity > 0U) &&
+		    vertexViewMissing)
+		{
+			D3D12_VERTEX_BUFFER_VIEW repairedVertexBufferView{};
+			repairedVertexBufferView.BufferLocation =
+			    m_debugVertexBuffer->GetGPUVirtualAddress();
+			repairedVertexBufferView.StrideInBytes =
+			    static_cast<UINT>(sizeof(Common::DebugOverlay::Vertex));
+			repairedVertexBufferView.SizeInBytes =
+			    static_cast<UINT>(sizeof(Common::DebugOverlay::Vertex)) *
+			    m_debugVertexCapacity;
+			m_debugVertexBufferView = repairedVertexBufferView;
+		}
+	}
+
+	void Dx12RenderBackend::BeginFrame()
+	{
+	}
+
+	void Dx12RenderBackend::RenderSimulation(const Physics::BallState& ballState)
+	{
+		m_latestBallState = ballState;
+		AppendTrajectoryPoint(ballState);
+
+		const double speed = Physics::Length(ballState.velocity);
+
+		const float xTint = Common::Math::Clamp01(
+		    static_cast<float>((ballState.position.x + 1.5) / 3.0));
+		const float yTint = Common::Math::Clamp01(
+		    static_cast<float>((ballState.position.y + 1.0) / 2.0));
+		const float speedTint = Common::Math::Clamp01(
+		    static_cast<float>(speed / 45.0));
+		m_clearColor[0] = 0.02F + (xTint * 0.07F);
+		m_clearColor[1] = 0.02F + (yTint * 0.05F);
+		m_clearColor[2] = 0.06F + (speedTint * 0.12F);
+		m_clearColor[3] = 1.0F;
+	}
+
+	void Dx12RenderBackend::EndFrame()
+	{
+		if (!m_isInitialized)
+		{
+			return;
+		}
+
+		if (FAILED(m_commandAllocators[m_frameIndex]->Reset()))
+		{
+			SetDebugDrawPathStatus(L"allocator-reset-failed");
+			return;
+		}
+
+		if (FAILED(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr)))
+		{
+			SetDebugDrawPathStatus(L"cmdlist-reset-failed");
+			return;
+		}
+
+		const UINT currentFrame = m_frameIndex;
+		const bool useMsaaRenderTarget =
+		    (m_msaaSampleCount > 1U) &&
+		    (m_msaaRenderTargets[currentFrame] != nullptr);
+		if (m_sceneColorTargets[currentFrame] == nullptr)
+		{
+			SetDebugDrawPathStatus(L"scene-target-missing");
+			return;
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE swapChainRtvHandle =
+		    m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+		swapChainRtvHandle.ptr += static_cast<SIZE_T>(currentFrame) *
+		                          static_cast<SIZE_T>(m_rtvDescriptorSize);
+		const D3D12_CPU_DESCRIPTOR_HANDLE sceneRtvHandle =
+		    GetCurrentSceneRtvHandle();
+		const D3D12_CPU_DESCRIPTOR_HANDLE drawRtvHandle =
+		    useMsaaRenderTarget ? GetCurrentRtvHandle() : sceneRtvHandle;
+		const D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = GetCurrentDsvHandle();
+
+		D3D12_RESOURCE_BARRIER toRenderTargetBarriers[2]{};
+		UINT toRenderTargetBarrierCount = 0;
+
+		D3D12_RESOURCE_BARRIER& backBufferToRenderBarrier =
+		    toRenderTargetBarriers[toRenderTargetBarrierCount++];
+		backBufferToRenderBarrier.Type =
+		    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		backBufferToRenderBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		backBufferToRenderBarrier.Transition.pResource =
+		    m_renderTargets[currentFrame].Get();
+		backBufferToRenderBarrier.Transition.StateBefore =
+		    D3D12_RESOURCE_STATE_PRESENT;
+		backBufferToRenderBarrier.Transition.StateAfter =
+		    D3D12_RESOURCE_STATE_RENDER_TARGET;
+		backBufferToRenderBarrier.Transition.Subresource =
+		    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+		D3D12_RESOURCE_BARRIER& sceneToDrawBarrier =
+		    toRenderTargetBarriers[toRenderTargetBarrierCount++];
+		sceneToDrawBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		sceneToDrawBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		sceneToDrawBarrier.Transition.pResource =
+		    m_sceneColorTargets[currentFrame].Get();
+		sceneToDrawBarrier.Transition.StateBefore =
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		sceneToDrawBarrier.Transition.StateAfter = useMsaaRenderTarget
+		                                               ? D3D12_RESOURCE_STATE_RESOLVE_DEST
+		                                               : D3D12_RESOURCE_STATE_RENDER_TARGET;
+		sceneToDrawBarrier.Transition.Subresource =
+		    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+		m_commandList->ResourceBarrier(
+		    toRenderTargetBarrierCount,
+		    toRenderTargetBarriers);
+
+		m_commandList->ClearRenderTargetView(
+		    drawRtvHandle,
+		    m_clearColor.data(),
+		    0,
+		    nullptr);
+		m_commandList->ClearDepthStencilView(
+		    dsvHandle,
+		    D3D12_CLEAR_FLAG_DEPTH,
+		    1.0F,
+		    0,
+		    0,
+		    nullptr);
+		m_commandList->OMSetRenderTargets(1, &drawRtvHandle, FALSE, &dsvHandle);
+		if (EnableDebugDraw)
+		{
+			DrawDebugMarkers(m_commandList.Get());
+		}
+		else
+		{
+			SetDebugDrawPathStatus(L"world-draw-disabled");
+		}
+
+		if (useMsaaRenderTarget)
+		{
+			D3D12_RESOURCE_BARRIER msaaToResolveBarrier{};
+			msaaToResolveBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			msaaToResolveBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			msaaToResolveBarrier.Transition.pResource =
+			    m_msaaRenderTargets[currentFrame].Get();
+			msaaToResolveBarrier.Transition.StateBefore =
+			    D3D12_RESOURCE_STATE_RENDER_TARGET;
+			msaaToResolveBarrier.Transition.StateAfter =
+			    D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+			msaaToResolveBarrier.Transition.Subresource =
+			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			m_commandList->ResourceBarrier(1, &msaaToResolveBarrier);
+
+			const DXGI_FORMAT resolveFormat =
+			    m_renderTargets[currentFrame]->GetDesc().Format;
+			m_commandList->ResolveSubresource(
+			    m_sceneColorTargets[currentFrame].Get(),
+			    0,
+			    m_msaaRenderTargets[currentFrame].Get(),
+			    0,
+			    resolveFormat);
+
+			D3D12_RESOURCE_BARRIER msaaBackToRenderBarrier{};
+			msaaBackToRenderBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			msaaBackToRenderBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			msaaBackToRenderBarrier.Transition.pResource =
+			    m_msaaRenderTargets[currentFrame].Get();
+			msaaBackToRenderBarrier.Transition.StateBefore =
+			    D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+			msaaBackToRenderBarrier.Transition.StateAfter =
+			    D3D12_RESOURCE_STATE_RENDER_TARGET;
+			msaaBackToRenderBarrier.Transition.Subresource =
+			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			m_commandList->ResourceBarrier(1, &msaaBackToRenderBarrier);
+		}
+
+		D3D12_RESOURCE_BARRIER sceneToShaderBarrier{};
+		sceneToShaderBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		sceneToShaderBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		sceneToShaderBarrier.Transition.pResource =
+		    m_sceneColorTargets[currentFrame].Get();
+		sceneToShaderBarrier.Transition.StateBefore = useMsaaRenderTarget
+		                                                  ? D3D12_RESOURCE_STATE_RESOLVE_DEST
+		                                                  : D3D12_RESOURCE_STATE_RENDER_TARGET;
+		sceneToShaderBarrier.Transition.StateAfter =
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		sceneToShaderBarrier.Transition.Subresource =
+		    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		m_commandList->ResourceBarrier(1, &sceneToShaderBarrier);
+
+		bool usedFxaaPass = false;
+		if (m_isFxaaAvailable &&
+		    (m_fxaaRootSignature != nullptr) &&
+		    (m_fxaaPipelineState != nullptr) &&
+		    (m_sceneSrvHeap != nullptr))
+		{
+			const D3D12_RESOURCE_DESC sceneDescription =
+			    m_sceneColorTargets[currentFrame]->GetDesc();
+			const float width = static_cast<float>(sceneDescription.Width);
+			const float height =
+			    static_cast<float>(sceneDescription.Height);
+			if ((width > 0.5F) && (height > 0.5F))
+			{
+				D3D12_VIEWPORT viewport{};
+				viewport.TopLeftX = 0.0F;
+				viewport.TopLeftY = 0.0F;
+				viewport.Width = width;
+				viewport.Height = height;
+				viewport.MinDepth = 0.0F;
+				viewport.MaxDepth = 1.0F;
+				D3D12_RECT scissorRect{};
+				scissorRect.left = 0;
+				scissorRect.top = 0;
+				scissorRect.right =
+				    static_cast<LONG>(sceneDescription.Width);
+				scissorRect.bottom =
+				    static_cast<LONG>(sceneDescription.Height);
+
+				ID3D12DescriptorHeap* const descriptorHeaps[] = {
+					m_sceneSrvHeap.Get()
+				};
+				m_commandList->SetDescriptorHeaps(
+				    static_cast<UINT>(std::size(descriptorHeaps)),
+				    descriptorHeaps);
+				m_commandList->RSSetViewports(1, &viewport);
+				m_commandList->RSSetScissorRects(1, &scissorRect);
+				m_commandList->OMSetRenderTargets(
+				    1,
+				    &swapChainRtvHandle,
+				    FALSE,
+				    nullptr);
+				m_commandList->SetGraphicsRootSignature(
+				    m_fxaaRootSignature.Get());
+				m_commandList->SetPipelineState(
+				    m_fxaaPipelineState.Get());
+				m_commandList->IASetPrimitiveTopology(
+				    D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				const float fxaaParameters[Common::FxaaParameterCount]{
+					1.0F / width,
+					1.0F / height,
+					m_renderQuality.fxaaEdgeThreshold,
+					m_renderQuality.fxaaEdgeThresholdMin,
+					m_renderQuality.fxaaBlendFactor
+				};
+				m_commandList->SetGraphicsRootDescriptorTable(
+				    0,
+				    GetCurrentSceneSrvGpuHandle());
+				m_commandList->SetGraphicsRoot32BitConstants(
+				    1,
+				    Common::FxaaParameterCount,
+				    fxaaParameters,
+				    0);
+				m_commandList->DrawInstanced(3, 1, 0, 0);
+				usedFxaaPass = true;
+			}
+		}
+
+		if (usedFxaaPass)
+		{
+			m_postProcessPathStatus = L"fxaa";
+			SetDebugDrawPathStatus(m_debugDrawPathStatus);
+
+			D3D12_RESOURCE_BARRIER toPresentBarrier{};
+			toPresentBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toPresentBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			toPresentBarrier.Transition.pResource =
+			    m_renderTargets[currentFrame].Get();
+			toPresentBarrier.Transition.StateBefore =
+			    D3D12_RESOURCE_STATE_RENDER_TARGET;
+			toPresentBarrier.Transition.StateAfter =
+			    D3D12_RESOURCE_STATE_PRESENT;
+			toPresentBarrier.Transition.Subresource =
+			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			m_commandList->ResourceBarrier(1, &toPresentBarrier);
+		}
+		else
+		{
+			m_postProcessPathStatus = L"copy";
+			SetDebugDrawPathStatus(m_debugDrawPathStatus);
+
+			D3D12_RESOURCE_BARRIER toCopyBarriers[2]{};
+			D3D12_RESOURCE_BARRIER& backBufferToCopyBarrier =
+			    toCopyBarriers[0];
+			backBufferToCopyBarrier.Type =
+			    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			backBufferToCopyBarrier.Flags =
+			    D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			backBufferToCopyBarrier.Transition.pResource =
+			    m_renderTargets[currentFrame].Get();
+			backBufferToCopyBarrier.Transition.StateBefore =
+			    D3D12_RESOURCE_STATE_RENDER_TARGET;
+			backBufferToCopyBarrier.Transition.StateAfter =
+			    D3D12_RESOURCE_STATE_COPY_DEST;
+			backBufferToCopyBarrier.Transition.Subresource =
+			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+			D3D12_RESOURCE_BARRIER& sceneToCopyBarrier = toCopyBarriers[1];
+			sceneToCopyBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			sceneToCopyBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			sceneToCopyBarrier.Transition.pResource =
+			    m_sceneColorTargets[currentFrame].Get();
+			sceneToCopyBarrier.Transition.StateBefore =
+			    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+			sceneToCopyBarrier.Transition.StateAfter =
+			    D3D12_RESOURCE_STATE_COPY_SOURCE;
+			sceneToCopyBarrier.Transition.Subresource =
+			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			m_commandList->ResourceBarrier(
+			    static_cast<UINT>(std::size(toCopyBarriers)),
+			    toCopyBarriers);
+
+			m_commandList->CopyResource(
+			    m_renderTargets[currentFrame].Get(),
+			    m_sceneColorTargets[currentFrame].Get());
+
+			D3D12_RESOURCE_BARRIER fromCopyBarriers[2]{};
+			D3D12_RESOURCE_BARRIER& sceneFromCopyBarrier =
+			    fromCopyBarriers[0];
+			sceneFromCopyBarrier.Type =
+			    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			sceneFromCopyBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			sceneFromCopyBarrier.Transition.pResource =
+			    m_sceneColorTargets[currentFrame].Get();
+			sceneFromCopyBarrier.Transition.StateBefore =
+			    D3D12_RESOURCE_STATE_COPY_SOURCE;
+			sceneFromCopyBarrier.Transition.StateAfter =
+			    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+			sceneFromCopyBarrier.Transition.Subresource =
+			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+			D3D12_RESOURCE_BARRIER& backBufferFromCopyBarrier =
+			    fromCopyBarriers[1];
+			backBufferFromCopyBarrier.Type =
+			    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			backBufferFromCopyBarrier.Flags =
+			    D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			backBufferFromCopyBarrier.Transition.pResource =
+			    m_renderTargets[currentFrame].Get();
+			backBufferFromCopyBarrier.Transition.StateBefore =
+			    D3D12_RESOURCE_STATE_COPY_DEST;
+			backBufferFromCopyBarrier.Transition.StateAfter =
+			    D3D12_RESOURCE_STATE_PRESENT;
+			backBufferFromCopyBarrier.Transition.Subresource =
+			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			m_commandList->ResourceBarrier(
+			    static_cast<UINT>(std::size(fromCopyBarriers)),
+			    fromCopyBarriers);
+		}
+
+		if (FAILED(m_commandList->Close()))
+		{
+			SetDebugDrawPathStatus(L"cmdlist-close-failed");
+			return;
+		}
+
+		ID3D12CommandList* commandLists[] = { m_commandList.Get() };
+		m_commandQueue->ExecuteCommandLists(static_cast<UINT>(std::size(commandLists)), commandLists);
+
+		if (FAILED(m_swapChain->Present(1, 0)))
+		{
+			SetDebugDrawPathStatus(L"present-failed");
+			return;
+		}
+
+		MoveToNextFrame();
+	}
+
+	void Dx12RenderBackend::AppendTrajectoryPoint(const Physics::BallState& ballState)
+	{
+		const auto now = std::chrono::steady_clock::now();
+		Common::TrajectoryTrailState trailState{
+			m_lastBallFlightTimeSeconds,
+			m_lastTrajectoryAdvanceTime,
+			m_trajectoryFadeScale
+		};
+		Common::UpdateTrajectoryTrail(
+		    ballState,
+		    &m_trajectoryHistory,
+		    &trailState,
+		    now);
+		m_lastBallFlightTimeSeconds = trailState.lastFlightTimeSeconds;
+		m_lastTrajectoryAdvanceTime = trailState.lastAdvanceTime;
+		m_trajectoryFadeScale = trailState.fadeScale;
+	}
+
+	void Dx12RenderBackend::DrawDebugMarkers(ID3D12GraphicsCommandList* const commandList)
+	{
+		if ((commandList == nullptr) || (m_windowHandle == nullptr))
+		{
+			SetDebugDrawPathStatus(L"frame-invalid");
+			return;
+		}
+
+		RECT clientRect{};
+		if (GetClientRect(m_windowHandle, &clientRect) == FALSE)
+		{
+			SetDebugDrawPathStatus(L"clientrect-failed");
+			return;
+		}
+
+		const LONG width = clientRect.right - clientRect.left;
+		const LONG height = clientRect.bottom - clientRect.top;
+		if ((width <= 0) || (height <= 0))
+		{
+			SetDebugDrawPathStatus(L"invalid-extent");
+			return;
+		}
+		static const std::vector<Physics::Vector3> EmptyTrajectory{};
+		const std::vector<Physics::Vector3>& trajectoryForOverlay =
+		    m_overlayVisibility.showTrajectory
+		        ? m_trajectoryHistory
+		        : EmptyTrajectory;
+
+		RepairDebugDrawResources();
+		bool debugDrawUsable = HasDebugDrawResources();
+		if (!debugDrawUsable && (m_device != nullptr))
+		{
+			const bool pipelineReady =
+			    (m_debugRootSignature != nullptr) &&
+			    (m_debugPipelineState != nullptr) &&
+			    (m_debugAlphaPipelineState != nullptr);
+			if (!pipelineReady && !InitializeDebugPipeline())
+			{
+				SetDebugDrawPathStatus(L"pipeline-reinit-failed");
+			}
+
+			const bool vertexBufferReady =
+			    (m_debugVertexBuffer != nullptr) &&
+			    (m_debugVertexCapacity != 0U) &&
+			    (m_debugVertexBufferView.SizeInBytes != 0U) &&
+			    (m_debugVertexBufferView.StrideInBytes != 0U);
+			if (!vertexBufferReady && !InitializeDebugVertexBuffer() &&
+			    (m_debugDrawPathStatus != L"pipeline-reinit-failed"))
+			{
+				SetDebugDrawPathStatus(L"vertex-reinit-failed");
+			}
+
+			RepairDebugDrawResources();
+			debugDrawUsable = HasDebugDrawResources();
+			if (debugDrawUsable)
+			{
+				SetDebugDrawPathStatus(L"resource-reinit-ok");
+			}
+		}
+		if (debugDrawUsable)
+		{
+			m_consecutiveDebugFallbackFrames = 0U;
+		}
+
+		if (!debugDrawUsable)
+		{
+			++m_consecutiveDebugFallbackFrames;
+			const bool hasPersistentFallback =
+			    (m_consecutiveDebugFallbackFrames >= 120U);
+			const std::wstring fallbackPrefix =
+			    hasPersistentFallback ? L"persistent-" : L"";
+			const std::wstring missingReason = BuildDebugResourceMissingReason();
+			const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = GetCurrentRtvHandle();
+			bool drewDynamicOverlay = false;
+			bool usedWorldFallback = false;
+			auto drawRect = [&](LONG left,
+			                    LONG top,
+			                    LONG right,
+			                    LONG bottom,
+			                    const float* const color) -> void
+			{
+				const LONG clampedLeft = (std::max)(0L, left);
+				const LONG clampedTop = (std::max)(0L, top);
+				const LONG clampedRight = (std::min)(width, right);
+				const LONG clampedBottom = (std::min)(height, bottom);
+				if ((clampedLeft >= clampedRight) || (clampedTop >= clampedBottom))
+				{
+					return;
+				}
+
+				const D3D12_RECT rect{
+					clampedLeft,
+					clampedTop,
+					clampedRight,
+					clampedBottom
+				};
+				commandList->ClearRenderTargetView(rtvHandle, color, 1, &rect);
+			};
+			auto drawFallbackMarker = [&](const ScreenPoint& point,
+			                              const LONG halfSize,
+			                              const float* const color) -> void
+			{
+				const LONG centerX = static_cast<LONG>(std::llround(point.x));
+				const LONG centerY = static_cast<LONG>(std::llround(point.y));
+				drawRect(
+				    centerX - halfSize,
+				    centerY - halfSize,
+				    centerX + halfSize + 1,
+				    centerY + halfSize + 1,
+				    color);
+				drewDynamicOverlay = true;
+			};
+			auto drawFallbackLine = [&](const ScreenPoint& startPoint,
+			                            const ScreenPoint& endPoint,
+			                            const LONG halfSize,
+			                            const float* const color) -> void
+			{
+				const double dx = endPoint.x - startPoint.x;
+				const double dy = endPoint.y - startPoint.y;
+				const double length = std::sqrt((dx * dx) + (dy * dy));
+				const int stepCount = (std::max)(1,
+				                                 static_cast<int>(std::ceil(length / 8.0)));
+				for (int stepIndex = 0; stepIndex <= stepCount; ++stepIndex)
+				{
+					const double blend = static_cast<double>(stepIndex) /
+					                     static_cast<double>(stepCount);
+					const ScreenPoint point{
+						startPoint.x + (dx * blend),
+						startPoint.y + (dy * blend),
+						startPoint.depth + static_cast<float>((endPoint.depth - startPoint.depth) * blend)
+					};
+					drawFallbackMarker(point, halfSize, color);
+				}
+			};
+			const Common::ViewProjectionState mirrorViewState = m_mirrorViewState;
+			if (mirrorViewState.isValid)
+			{
+				usedWorldFallback = true;
+				Common::EmitProjectedDebugWorldOverlay(
+				    mirrorViewState,
+				    width,
+				    height,
+				    trajectoryForOverlay,
+				    m_latestBallState,
+				    [&](const ScreenPoint& screenPoint, const LONG halfSize, const float* color) -> void
+				    {
+					    drawFallbackMarker(screenPoint, halfSize, color);
+				    },
+				    [&](const ScreenPoint& startPoint,
+				        const ScreenPoint& endPoint,
+				        const LONG halfSize,
+				        const float* color) -> void
+				    {
+					    drawFallbackLine(startPoint, endPoint, halfSize, color);
+				    },
+				    m_overlayVisibility.showTrajectory,
+				    m_overlayVisibility.showFloorMesh,
+				    m_overlayVisibility.showStrikeZone);
+				Common::EmitProjectedZonePassCircleOverlay(
+				    mirrorViewState,
+				    width,
+				    height,
+				    m_duelZonePassMarker,
+				    [&](const ScreenPoint& startPoint,
+				        const ScreenPoint& endPoint,
+				        const LONG halfSize,
+				        const float* color) -> void
+				    {
+					    drawFallbackLine(startPoint, endPoint, halfSize, color);
+				    });
+				Common::EmitProjectedBatCylinderOverlay(
+				    mirrorViewState,
+				    width,
+				    height,
+				    m_batOverlayState,
+				    [&](const ScreenPoint& startPoint,
+				        const ScreenPoint& endPoint,
+				        const LONG halfSize,
+				        const float* color) -> void
+				    {
+					    drawFallbackLine(startPoint, endPoint, halfSize, color);
+				    });
+			}
+			else
+			{
+				if (m_overlayVisibility.showTrajectory)
+				{
+					for (const Physics::Vector3& trailPoint : trajectoryForOverlay)
+					{
+						const ScreenPoint screenPoint =
+						    Common::ProjectLegacyWorldToScreen(trailPoint, width, height);
+						drawFallbackMarker(
+						    screenPoint,
+						    Common::DebugWorldStyle::TrailHalfSizePixels,
+						    Common::DebugWorldStyle::TrailColor.data());
+					}
+				}
+				const ScreenPoint ballScreenPoint =
+				    Common::ProjectLegacyWorldToScreen(m_latestBallState.position, width, height);
+				drawFallbackMarker(
+				    ballScreenPoint,
+				    Common::DebugWorldStyle::BallHalfSizePixels,
+				    Common::DebugWorldStyle::BallColor.data());
+				if (m_duelZonePassMarker.has_value())
+				{
+					constexpr int ZoneCircleSegmentCount = 24;
+					const Physics::Vector3 centerWorldPoint =
+					    Common::ConvertSimulationPositionToWorld(
+					        m_duelZonePassMarker.value());
+					constexpr double CircleRadiusMeters =
+					    Common::DebugWorldStyle::BallMeshRadiusMeters;
+					for (int segmentIndex = 0; segmentIndex < ZoneCircleSegmentCount;
+					     ++segmentIndex)
+					{
+						const double startAngle =
+						    (2.0 * std::numbers::pi *
+						     static_cast<double>(segmentIndex)) /
+						    static_cast<double>(ZoneCircleSegmentCount);
+						const double endAngle =
+						    (2.0 * std::numbers::pi *
+						     static_cast<double>(segmentIndex + 1)) /
+						    static_cast<double>(ZoneCircleSegmentCount);
+						const Physics::Vector3 startWorldPoint{
+							centerWorldPoint.x + (std::cos(startAngle) * CircleRadiusMeters),
+							centerWorldPoint.y + (std::sin(startAngle) * CircleRadiusMeters),
+							centerWorldPoint.z
+						};
+						const Physics::Vector3 endWorldPoint{
+							centerWorldPoint.x + (std::cos(endAngle) * CircleRadiusMeters),
+							centerWorldPoint.y + (std::sin(endAngle) * CircleRadiusMeters),
+							centerWorldPoint.z
+						};
+						const ScreenPoint segmentStart =
+						    Common::ProjectLegacyWorldToScreen(
+						        startWorldPoint,
+						        width,
+						        height);
+						const ScreenPoint segmentEnd =
+						    Common::ProjectLegacyWorldToScreen(
+						        endWorldPoint,
+						        width,
+						        height);
+						drawFallbackLine(
+						    segmentStart,
+						    segmentEnd,
+						    Common::DebugWorldStyle::WorldLineHalfSizePixels,
+						    Common::DebugWorldStyle::ZoneColor.data());
+					}
+				}
+			}
+			if (!drewDynamicOverlay)
+			{
+				const LONG centerX = width / 2;
+				const LONG centerY = height / 2;
+				const LONG armLength = (std::max)(8L, (std::min)(width, height) / 10L);
+				const LONG lineHalfThickness = 2L;
+				const LONG markerHalfSize = 8L;
+				drawRect(
+				    centerX - armLength,
+				    centerY - lineHalfThickness,
+				    centerX + armLength + 1,
+				    centerY + lineHalfThickness + 1,
+				    Common::DebugWorldStyle::ZoneColor.data());
+				drawRect(
+				    centerX - lineHalfThickness,
+				    centerY - armLength,
+				    centerX + lineHalfThickness + 1,
+				    centerY + armLength + 1,
+				    Common::DebugWorldStyle::ZoneColor.data());
+				drawRect(
+				    centerX - markerHalfSize,
+				    centerY - markerHalfSize,
+				    centerX + markerHalfSize + 1,
+				    centerY + markerHalfSize + 1,
+				    Common::DebugWorldStyle::PlateColor.data());
+				SetDebugDrawPathStatus(
+				    fallbackPrefix + L"center-rect-fallback-" + missingReason);
+			}
+			else if (usedWorldFallback)
+			{
+				SetDebugDrawPathStatus(
+				    fallbackPrefix + L"world-rect-fallback-" + missingReason);
+			}
+			else
+			{
+				SetDebugDrawPathStatus(
+				    fallbackPrefix + L"legacy-rect-fallback-" + missingReason);
+			}
+
+			return;
+		}
+
+		std::vector<Common::DebugOverlay::Vertex> opaqueVertices{};
+		std::vector<Common::DebugOverlay::Vertex> alphaVertices{};
+		opaqueVertices.reserve(8192);
+		alphaVertices.reserve(1024);
+		const std::size_t vertexCapacity = static_cast<std::size_t>(m_debugVertexCapacity);
+		bool hasVisibleCoverage = false;
+		const bool hasWorldMirror = m_mirrorViewState.isValid;
+		bool usedLegacyCoverageFallback = false;
+		bool usedCenterCoverageFallback = false;
+
+		auto hasCapacity = [&](const std::size_t additionalVertices) -> bool
+		{
+			return ((opaqueVertices.size() + alphaVertices.size() + additionalVertices) <=
+			        vertexCapacity);
+		};
+
+		auto selectVertexBucket =
+		    [&](const float* const color) -> std::vector<Common::DebugOverlay::Vertex>*
+		{
+			if ((color != nullptr) && (color[3] < 0.999F))
+			{
+				return &alphaVertices;
+			}
+
+			return &opaqueVertices;
+		};
+
+		auto appendMarker = [&](const ScreenPoint& centerPoint, const LONG halfSize, const float* color) -> void
+		{
+			if (!hasCapacity(6))
+			{
+				return;
+			}
+			auto* const vertices = selectVertexBucket(color);
+			Common::DebugOverlay::AppendMarkerQuad(
+			    vertices,
+			    centerPoint.x,
+			    centerPoint.y,
+			    halfSize,
+			    color,
+			    width,
+			    height,
+			    centerPoint.depth);
+			const double markerMinX = centerPoint.x - static_cast<double>(halfSize);
+			const double markerMaxX = centerPoint.x + static_cast<double>(halfSize) + 1.0;
+			const double markerMinY = centerPoint.y - static_cast<double>(halfSize);
+			const double markerMaxY = centerPoint.y + static_cast<double>(halfSize) + 1.0;
+			const double screenMaxX = static_cast<double>((std::max)(1L, width - 1));
+			const double screenMaxY = static_cast<double>((std::max)(1L, height - 1));
+			if ((markerMaxX >= 0.0) && (markerMinX <= screenMaxX) &&
+			    (markerMaxY >= 0.0) && (markerMinY <= screenMaxY))
+			{
+				hasVisibleCoverage = true;
+			}
+		};
+
+		auto appendLine = [&](const ScreenPoint& startPoint,
+		                      const ScreenPoint& endPoint,
+		                      const LONG halfSize,
+		                      const float* color) -> void
+		{
+			if (!hasCapacity(6))
+			{
+				return;
+			}
+			auto* const vertices = selectVertexBucket(color);
+			Common::DebugOverlay::AppendThickScreenLine(
+			    vertices,
+			    startPoint,
+			    endPoint,
+			    halfSize,
+			    color,
+			    width,
+			    height);
+			const double linePadding = static_cast<double>(halfSize) + 1.0;
+			const double lineMinX = (std::min)(startPoint.x, endPoint.x) - linePadding;
+			const double lineMaxX = (std::max)(startPoint.x, endPoint.x) + linePadding;
+			const double lineMinY = (std::min)(startPoint.y, endPoint.y) - linePadding;
+			const double lineMaxY = (std::max)(startPoint.y, endPoint.y) + linePadding;
+			const double screenMaxX = static_cast<double>((std::max)(1L, width - 1));
+			const double screenMaxY = static_cast<double>((std::max)(1L, height - 1));
+			if ((lineMaxX >= 0.0) && (lineMinX <= screenMaxX) &&
+			    (lineMaxY >= 0.0) && (lineMinY <= screenMaxY))
+			{
+				hasVisibleCoverage = true;
+			}
+		};
+
+		auto appendTriangle = [&](const ScreenPoint& p0,
+		                          const ScreenPoint& p1,
+		                          const ScreenPoint& p2,
+		                          const float* color) -> void
+		{
+			if (!hasCapacity(3))
+			{
+				return;
+			}
+			auto* const vertices = selectVertexBucket(color);
+
+			Common::DebugOverlay::AppendScreenTriangle(
+			    vertices,
+			    p0,
+			    p1,
+			    p2,
+			    color,
+			    width,
+			    height);
+			const double triangleMinX = (std::min)(p0.x, (std::min)(p1.x, p2.x));
+			const double triangleMaxX = (std::max)(p0.x, (std::max)(p1.x, p2.x));
+			const double triangleMinY = (std::min)(p0.y, (std::min)(p1.y, p2.y));
+			const double triangleMaxY = (std::max)(p0.y, (std::max)(p1.y, p2.y));
+			const double screenMaxX = static_cast<double>((std::max)(1L, width - 1));
+			const double screenMaxY = static_cast<double>((std::max)(1L, height - 1));
+			if ((triangleMaxX >= 0.0) && (triangleMinX <= screenMaxX) &&
+			    (triangleMaxY >= 0.0) && (triangleMinY <= screenMaxY))
+			{
+				hasVisibleCoverage = true;
+			}
+		};
+
+		const Common::ViewProjectionState mirrorViewState = m_mirrorViewState;
+		if (!mirrorViewState.isValid)
+		{
+			for (const Physics::Vector3& trailPoint : trajectoryForOverlay)
+			{
+				const ScreenPoint screenPoint =
+				    Common::ProjectLegacyWorldToScreen(trailPoint, width, height);
+				appendMarker(screenPoint, Common::DebugWorldStyle::TrailHalfSizePixels, Common::DebugWorldStyle::TrailColor.data());
+			}
+
+			const ScreenPoint ballScreenPoint =
+			    Common::ProjectLegacyWorldToScreen(m_latestBallState.position, width, height);
+			appendMarker(ballScreenPoint, Common::DebugWorldStyle::BallHalfSizePixels, Common::DebugWorldStyle::BallColor.data());
+			if (m_duelZonePassMarker.has_value())
+			{
+				constexpr int ZoneCircleSegmentCount = 24;
+				const double radiusPixels =
+				    static_cast<double>(Common::DebugWorldStyle::BallHalfSizePixels);
+				const ScreenPoint centerPoint =
+				    Common::ProjectLegacyWorldToScreen(
+				        m_duelZonePassMarker.value(),
+				        width,
+				        height);
+				for (int segmentIndex = 0; segmentIndex < ZoneCircleSegmentCount;
+				     ++segmentIndex)
+				{
+					const double startAngle =
+					    (2.0 * std::numbers::pi * static_cast<double>(segmentIndex)) /
+					    static_cast<double>(ZoneCircleSegmentCount);
+					const double endAngle =
+					    (2.0 * std::numbers::pi *
+					     static_cast<double>(segmentIndex + 1)) /
+					    static_cast<double>(ZoneCircleSegmentCount);
+					const ScreenPoint segmentStart{
+						centerPoint.x + (std::cos(startAngle) * radiusPixels),
+						centerPoint.y + (std::sin(startAngle) * radiusPixels),
+						centerPoint.depth
+					};
+					const ScreenPoint segmentEnd{
+						centerPoint.x + (std::cos(endAngle) * radiusPixels),
+						centerPoint.y + (std::sin(endAngle) * radiusPixels),
+						centerPoint.depth
+					};
+					appendLine(
+					    segmentStart,
+					    segmentEnd,
+					    Common::DebugWorldStyle::WorldLineHalfSizePixels,
+					    Common::DebugWorldStyle::ZoneColor.data());
+				}
+			}
+		}
+		else
+		{
+			if (m_overlayVisibility.showFloorMesh)
+			{
+				Common::EmitProjectedFloorMeshOverlay(
+				    mirrorViewState,
+				    width,
+				    height,
+				    [&](const ScreenPoint& p0,
+				        const ScreenPoint& p1,
+				        const ScreenPoint& p2,
+				        const float* color) -> void
+				    {
+					    appendTriangle(p0, p1, p2, color);
+				    });
+			}
+
+			Common::EmitProjectedDebugWorldOverlay(
+			    mirrorViewState,
+			    width,
+			    height,
+			    trajectoryForOverlay,
+			    m_latestBallState,
+			    [&](const ScreenPoint& screenPoint,
+			        const LONG halfSize,
+			        const float* color) -> void
+			    {
+				    appendMarker(screenPoint, halfSize, color);
+			    },
+			    [&](const ScreenPoint& startPoint,
+			        const ScreenPoint& endPoint,
+			        const LONG halfSize,
+			        const float* color) -> void
+			    {
+				    appendLine(
+				        startPoint,
+				        endPoint,
+				        halfSize,
+				        color);
+			    },
+			    false,
+			    false,
+			    m_overlayVisibility.showStrikeZone,
+			    false);
+			Common::EmitProjectedZonePassCircleOverlay(
+			    mirrorViewState,
+			    width,
+			    height,
+			    m_duelZonePassMarker,
+			    [&](const ScreenPoint& startPoint,
+			        const ScreenPoint& endPoint,
+			        const LONG halfSize,
+			        const float* color) -> void
+			    {
+				    appendLine(
+				        startPoint,
+				        endPoint,
+				        halfSize,
+				        color);
+			    });
+			Common::EmitProjectedSolidBatCylinderOverlay(
+			    mirrorViewState,
+			    width,
+			    height,
+			    m_batOverlayState,
+			    [&](const ScreenPoint& p0,
+			        const ScreenPoint& p1,
+			        const ScreenPoint& p2,
+			        const float* color) -> void
+			    {
+				    appendTriangle(p0, p1, p2, color);
+			    });
+
+			Common::EmitProjectedBallAndTrajectoryMeshOverlay(
+			    mirrorViewState,
+			    width,
+			    height,
+			    trajectoryForOverlay,
+			    m_latestBallState,
+			    [&](const ScreenPoint& p0,
+			        const ScreenPoint& p1,
+			        const ScreenPoint& p2,
+			        const float* color) -> void
+			    {
+				    appendTriangle(p0, p1, p2, color);
+			    },
+			    std::clamp(
+			        m_renderQuality.trailOpacityScale,
+			        0.0F,
+			        1.5F),
+			    std::clamp(
+			        1.0F - m_trajectoryFadeScale,
+			        0.0F,
+			        1.0F));
+		}
+
+		if (!hasVisibleCoverage)
+		{
+			usedLegacyCoverageFallback = true;
+			for (const Physics::Vector3& trailPoint : trajectoryForOverlay)
+			{
+				const ScreenPoint screenPoint =
+				    Common::ProjectLegacyWorldToScreen(trailPoint, width, height);
+				appendMarker(
+				    screenPoint,
+				    Common::DebugWorldStyle::TrailHalfSizePixels,
+				    Common::DebugWorldStyle::TrailColor.data());
+			}
+
+			const ScreenPoint ballScreenPoint =
+			    Common::ProjectLegacyWorldToScreen(m_latestBallState.position, width, height);
+			appendMarker(
+			    ballScreenPoint,
+			    Common::DebugWorldStyle::BallHalfSizePixels,
+			    Common::DebugWorldStyle::BallColor.data());
+		}
+
+		if (!hasVisibleCoverage)
+		{
+			usedCenterCoverageFallback = true;
+			const double centerX =
+			    0.5 * static_cast<double>((std::max)(1L, width - 1));
+			const double centerY =
+			    0.5 * static_cast<double>((std::max)(1L, height - 1));
+			const double reticleHalfSpan =
+			    (std::max)(4.0,
+			               (std::min)(static_cast<double>(width),
+			                          static_cast<double>(height)) *
+			                   0.08);
+			constexpr float kFallbackDepth = 0.05F;
+			const ScreenPoint centerPoint{ centerX, centerY, kFallbackDepth };
+			const ScreenPoint horizontalStart{
+				centerX - reticleHalfSpan,
+				centerY,
+				kFallbackDepth
+			};
+			const ScreenPoint horizontalEnd{
+				centerX + reticleHalfSpan,
+				centerY,
+				kFallbackDepth
+			};
+			const ScreenPoint verticalStart{
+				centerX,
+				centerY - reticleHalfSpan,
+				kFallbackDepth
+			};
+			const ScreenPoint verticalEnd{
+				centerX,
+				centerY + reticleHalfSpan,
+				kFallbackDepth
+			};
+			appendLine(
+			    horizontalStart,
+			    horizontalEnd,
+			    Common::DebugWorldStyle::WorldLineHalfSizePixels,
+			    Common::DebugWorldStyle::ZoneColor.data());
+			appendLine(
+			    verticalStart,
+			    verticalEnd,
+			    Common::DebugWorldStyle::WorldLineHalfSizePixels,
+			    Common::DebugWorldStyle::ZoneColor.data());
+			appendMarker(
+			    centerPoint,
+			    Common::DebugWorldStyle::BallHalfSizePixels,
+			    Common::DebugWorldStyle::PlateColor.data());
+		}
+
+		const UINT opaqueVertexCount = static_cast<UINT>(opaqueVertices.size());
+		const UINT alphaVertexCount = static_cast<UINT>(alphaVertices.size());
+		if ((opaqueVertexCount == 0U) && (alphaVertexCount == 0U))
+		{
+			SetDebugDrawPathStatus(L"empty-shader");
+			return;
+		}
+
+		std::vector<Common::DebugOverlay::Vertex> combinedVertices{};
+		combinedVertices.reserve(
+		    static_cast<std::size_t>(opaqueVertexCount) +
+		    static_cast<std::size_t>(alphaVertexCount));
+		combinedVertices.insert(
+		    combinedVertices.end(),
+		    opaqueVertices.begin(),
+		    opaqueVertices.end());
+		combinedVertices.insert(
+		    combinedVertices.end(),
+		    alphaVertices.begin(),
+		    alphaVertices.end());
+		if (!Common::DebugOverlay::UploadVertices(
+		        m_debugVertexBuffer.Get(),
+		        combinedVertices))
+		{
+			SetDebugDrawPathStatus(L"upload-failed");
+			return;
+		}
+
+		if ((opaqueVertexCount > 0U) &&
+		    !Common::DebugOverlay::IssueDrawCommands(
+		        commandList,
+		        width,
+		        height,
+		        m_debugRootSignature.Get(),
+		        m_debugPipelineState.Get(),
+		        m_debugVertexBufferView,
+		        opaqueVertexCount,
+		        0U))
+		{
+			SetDebugDrawPathStatus(L"opaque-draw-failed");
+			return;
+		}
+
+		if ((alphaVertexCount > 0U) &&
+		    !Common::DebugOverlay::IssueDrawCommands(
+		        commandList,
+		        width,
+		        height,
+		        m_debugRootSignature.Get(),
+		        m_debugAlphaPipelineState.Get(),
+		        m_debugVertexBufferView,
+		        alphaVertexCount,
+		        opaqueVertexCount))
+		{
+			SetDebugDrawPathStatus(L"alpha-draw-failed");
+			return;
+		}
+
+		if (usedCenterCoverageFallback)
+		{
+			SetDebugDrawPathStatus(L"center-shader-fallback");
+		}
+		else if (hasWorldMirror && usedLegacyCoverageFallback)
+		{
+			SetDebugDrawPathStatus(L"world-shader-legacy-fallback");
+		}
+		else if (hasWorldMirror)
+		{
+			SetDebugDrawPathStatus(L"world-shader");
+		}
+		else
+		{
+			SetDebugDrawPathStatus(L"legacy-shader");
+		}
+	}
+
+	void Dx12RenderBackend::Shutdown()
+	{
+		if (m_isInitialized)
+		{
+			WaitForGpu();
+		}
+
+		if (m_fenceEvent != nullptr)
+		{
+			if (CloseHandle(m_fenceEvent) == FALSE)
+			{
+				OutputDebugStringW(L"[DX12] failed to close fence event handle.\n");
+			}
+			m_fenceEvent = nullptr;
+		}
+
+		m_commandList.Reset();
+		m_debugVertexBuffer.Reset();
+		m_debugPipelineState.Reset();
+		m_debugAlphaPipelineState.Reset();
+		m_debugRootSignature.Reset();
+		m_fxaaPipelineState.Reset();
+		m_fxaaRootSignature.Reset();
+		for (auto& allocator : m_commandAllocators)
+		{
+			allocator.Reset();
+		}
+
+		for (auto& renderTarget : m_renderTargets)
+		{
+			renderTarget.Reset();
+		}
+
+		for (auto& msaaRenderTarget : m_msaaRenderTargets)
+		{
+			msaaRenderTarget.Reset();
+		}
+
+		for (auto& sceneColorTarget : m_sceneColorTargets)
+		{
+			sceneColorTarget.Reset();
+		}
+
+		for (auto& depthBuffer : m_depthBuffers)
+		{
+			depthBuffer.Reset();
+		}
+
+		m_rtvHeap.Reset();
+		m_msaaRtvHeap.Reset();
+		m_dsvHeap.Reset();
+		m_sceneRtvHeap.Reset();
+		m_sceneSrvHeap.Reset();
+		m_swapChain.Reset();
+		m_commandQueue.Reset();
+		m_device.Reset();
+		m_adapter.Reset();
+		m_factory.Reset();
+		m_fence.Reset();
+
+		m_debugVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
+		m_debugVertexCapacity = 0;
+		m_rtvDescriptorSize = 0;
+		m_dsvDescriptorSize = 0;
+		m_srvDescriptorSize = 0;
+		m_msaaSampleCount = 1U;
+		m_isFxaaAvailable = false;
+		m_frameIndex = 0;
+		m_windowHandle = nullptr;
+		m_isInitialized = false;
+		m_postProcessPathStatus = L"copy";
+		m_lastBallFlightTimeSeconds = 0.0;
+		m_trajectoryHistory.clear();
+		m_lastTrajectoryAdvanceTime = std::chrono::steady_clock::time_point{};
+		m_trajectoryFadeScale = 1.0F;
+		m_duelZonePassMarker.reset();
+		m_batOverlayState.reset();
+		SetDebugDrawPathStatus(L"shutdown");
+	}
+
+	std::wstring_view Dx12RenderBackend::GetBackendName() const noexcept
+	{
+		return m_backendNameCache;
+	}
+
+	Common::GraphicsBinding Dx12RenderBackend::GetGraphicsBinding() const noexcept
+	{
+		return Common::GraphicsBinding{
+			m_device.Get(),
+			m_commandQueue.Get()
+		};
+	}
+
+	void Dx12RenderBackend::SetDesktopMirrorView(const Common::ViewProjectionState& mirrorViewState)
+	{
+		m_mirrorViewState = mirrorViewState;
+	}
+
+	void Dx12RenderBackend::SetOverlayVisibility(const Common::OverlayVisibilitySettings& overlayVisibility)
+	{
+		m_overlayVisibility = overlayVisibility;
+	}
+
+	void Dx12RenderBackend::SetRenderQuality(
+	    const Common::RenderQualitySettings& renderQuality)
+	{
+		m_renderQuality = Common::NormalizeRenderQualitySettings(renderQuality);
+	}
+
+	void Dx12RenderBackend::SetDuelZonePassMarker(
+	    const std::optional<Physics::Vector3>& zonePassMarker)
+	{
+		m_duelZonePassMarker = zonePassMarker;
+	}
+
+	void Dx12RenderBackend::SetBatOverlayState(
+	    const std::optional<Common::BatOverlayState>& batOverlayState)
+	{
+		m_batOverlayState = batOverlayState;
+	}
+
+	void Dx12RenderBackend::WaitForGpu()
+	{
+		if (m_fence == nullptr || m_commandQueue == nullptr || m_fenceEvent == nullptr)
+		{
+			return;
+		}
+
+		const UINT64 signalValue = m_fenceValues[m_frameIndex];
+		if (FAILED(m_commandQueue->Signal(m_fence.Get(), signalValue)))
+		{
+			return;
+		}
+
+		if (FAILED(m_fence->SetEventOnCompletion(signalValue, m_fenceEvent)))
+		{
+			return;
+		}
+
+		const DWORD waitResult = WaitForSingleObject(m_fenceEvent, INFINITE);
+		if (waitResult != WAIT_OBJECT_0)
+		{
+			SetDebugDrawPathStatus(L"fence-wait-failed");
+			return;
+		}
+		m_fenceValues[m_frameIndex] = signalValue + 1;
+	}
+
+	void Dx12RenderBackend::MoveToNextFrame()
+	{
+		const UINT64 signalValue = m_fenceValues[m_frameIndex];
+		if (FAILED(m_commandQueue->Signal(m_fence.Get(), signalValue)))
+		{
+			return;
+		}
+
+		m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+		if (m_fence->GetCompletedValue() < m_fenceValues[m_frameIndex])
+		{
+			if (FAILED(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvent)))
+			{
+				return;
+			}
+			const DWORD waitResult = WaitForSingleObject(m_fenceEvent, INFINITE);
+			if (waitResult != WAIT_OBJECT_0)
+			{
+				SetDebugDrawPathStatus(L"frame-fence-wait-failed");
+				return;
+			}
+		}
+
+		m_fenceValues[m_frameIndex] = signalValue + 1;
+	}
+
+	D3D12_CPU_DESCRIPTOR_HANDLE Dx12RenderBackend::GetCurrentRtvHandle() const noexcept
+	{
+		const bool useMsaaRenderTarget =
+		    (m_msaaSampleCount > 1U) && (m_msaaRtvHeap != nullptr);
+		D3D12_CPU_DESCRIPTOR_HANDLE descriptorHandle =
+		    useMsaaRenderTarget
+		        ? m_msaaRtvHeap->GetCPUDescriptorHandleForHeapStart()
+		        : m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+		descriptorHandle.ptr += static_cast<SIZE_T>(m_frameIndex) * static_cast<SIZE_T>(m_rtvDescriptorSize);
+		return descriptorHandle;
+	}
+
+	D3D12_CPU_DESCRIPTOR_HANDLE Dx12RenderBackend::GetCurrentDsvHandle() const noexcept
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE descriptorHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+		descriptorHandle.ptr += static_cast<SIZE_T>(m_frameIndex) * static_cast<SIZE_T>(m_dsvDescriptorSize);
+		return descriptorHandle;
+	}
+
+	D3D12_CPU_DESCRIPTOR_HANDLE Dx12RenderBackend::GetCurrentSceneRtvHandle() const noexcept
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE descriptorHandle =
+		    m_sceneRtvHeap->GetCPUDescriptorHandleForHeapStart();
+		descriptorHandle.ptr +=
+		    static_cast<SIZE_T>(m_frameIndex) *
+		    static_cast<SIZE_T>(m_rtvDescriptorSize);
+		return descriptorHandle;
+	}
+
+	D3D12_GPU_DESCRIPTOR_HANDLE Dx12RenderBackend::GetCurrentSceneSrvGpuHandle() const noexcept
+	{
+		D3D12_GPU_DESCRIPTOR_HANDLE descriptorHandle =
+		    m_sceneSrvHeap->GetGPUDescriptorHandleForHeapStart();
+		descriptorHandle.ptr +=
+		    static_cast<UINT64>(m_frameIndex) *
+		    static_cast<UINT64>(m_srvDescriptorSize);
+		return descriptorHandle;
+	}
+} // namespace BaseballSimulatorVR::Render
+
+#else
+
+namespace BaseballSimulatorVR::Render
+{
+	Dx12RenderBackend::~Dx12RenderBackend() = default;
+
+	bool Dx12RenderBackend::Initialize(const HWND)
+	{
+		return false;
+	}
+
+	void Dx12RenderBackend::BeginFrame()
+	{
+	}
+
+	void Dx12RenderBackend::RenderSimulation(const Physics::BallState&)
+	{
+	}
+
+	void Dx12RenderBackend::EndFrame()
+	{
+	}
+
+	void Dx12RenderBackend::Shutdown()
+	{
+	}
+
+	std::wstring_view Dx12RenderBackend::GetBackendName() const noexcept
+	{
+		return L"DX12(unavailable)";
+	}
+
+	Common::GraphicsBinding Dx12RenderBackend::GetGraphicsBinding() const noexcept
+	{
+		return Common::GraphicsBinding{};
+	}
+
+	void Dx12RenderBackend::SetDesktopMirrorView(const Common::ViewProjectionState&)
+	{
+	}
+
+	void Dx12RenderBackend::SetOverlayVisibility(const Common::OverlayVisibilitySettings&)
+	{
+	}
+
+	void Dx12RenderBackend::SetRenderQuality(const Common::RenderQualitySettings&)
+	{
+	}
+
+	void Dx12RenderBackend::SetDuelZonePassMarker(
+	    const std::optional<Physics::Vector3>&)
+	{
+	}
+} // namespace BaseballSimulatorVR::Render
+
+#endif

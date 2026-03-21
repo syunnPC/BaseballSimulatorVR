@@ -1,0 +1,2067 @@
+#pragma once
+
+#include "../Framework.hpp"
+#include "../Physics/BallState.hpp"
+#include "../Physics/Vector3.hpp"
+#include "BatOverlayState.hpp"
+#include "ViewProjectionState.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <string_view>
+#include <vector>
+
+namespace BaseballSimulatorVR::Common
+{
+	struct ScreenPoint final
+	{
+		double x{ 0.0 };
+		double y{ 0.0 };
+		float depth{ 0.0F };
+	};
+
+	namespace DebugWorldLayout
+	{
+		inline constexpr double NearClipMeters = 0.05;
+		inline constexpr double FarClipMeters = 64.0;
+		inline constexpr double FieldGridHalfWidthMeters = 8.0;
+		inline constexpr double FieldGridNearDepthMeters = 0.5;
+		inline constexpr double FieldGridFarDepthMeters = 28.0;
+		inline constexpr double FieldGridSpacingMeters = 1.0;
+		inline constexpr double FieldGridSampleStepMeters = 0.35;
+		inline constexpr double PitchDistanceMeters = 18.44;
+		inline constexpr double BatterToPlateDistanceMeters = 1.5;
+		inline constexpr double StrikeZoneBottomMeters = 0.55;
+		inline constexpr double StrikeZoneHeightMeters = 1.0;
+		inline constexpr double StrikeZoneWidthMeters = 0.44;
+		inline constexpr double StrikeZoneTopMeters =
+		    StrikeZoneBottomMeters + StrikeZoneHeightMeters;
+		inline constexpr double StrikeZoneHalfWidthMeters =
+		    StrikeZoneWidthMeters * 0.5;
+		inline constexpr double LegacyProjectionDepthMeters = 18.5;
+		inline constexpr double LegacyProjectionMinHeightMeters = 0.2;
+		inline constexpr double LegacyProjectionHeightMeters = 2.2;
+		inline constexpr double ResultPanelCenterXMeters = 0.95;
+		inline constexpr double ResultPanelCenterYMeters = 1.20;
+		inline constexpr double ResultPanelDepthMeters = 1.2;
+		inline constexpr double ResultPanelWidthMeters = 0.44;
+		inline constexpr double ResultPanelHeightMeters = 0.62;
+		inline constexpr double ResultPanelPaddingMeters = 0.04;
+		inline constexpr double ResultPanelChipHeightMeters = 0.068;
+		inline constexpr double ResultPanelChipGapMeters = 0.014;
+		inline constexpr double ResultPanelScoreBarHeightMeters = 0.052;
+		inline constexpr double ResultPanelScoreBarGapMeters = 0.022;
+		inline constexpr double ResultPanelBorderThicknessMeters = 0.006;
+		inline constexpr double ResultPanelCenterLineHalfWidthMeters = 0.003;
+		inline constexpr double MainControlPanelCenterXMeters = -0.95;
+		inline constexpr double MainControlPanelCenterYMeters = 1.20;
+		inline constexpr double MainControlPanelDepthMeters = 1.2;
+		inline constexpr double MainControlPanelWidthMeters = 0.46;
+		inline constexpr double MainControlPanelHeightMeters = 0.52;
+		inline constexpr double MainControlPanelPaddingMeters = 0.018;
+		inline constexpr double MainControlPanelCellGapMeters = 0.008;
+		inline constexpr int MainControlPanelColumns = 3;
+		inline constexpr int MainControlPanelRows = 4;
+		inline constexpr double UiLaserMaxDistanceMeters = 3.2;
+		inline constexpr float UiLaserOverlayDepth = 0.001F;
+	} // namespace DebugWorldLayout
+
+	struct StrikeZoneRuntimeSettings final
+	{
+		double bottomMeters{ DebugWorldLayout::StrikeZoneBottomMeters };
+		double heightMeters{ DebugWorldLayout::StrikeZoneHeightMeters };
+		double widthMeters{ DebugWorldLayout::StrikeZoneWidthMeters };
+	};
+
+	struct GroundRuntimeSettings final
+	{
+		double fanRadiusMeters{ 100.0 };
+	};
+
+	inline double g_pitchDistanceMeters{ DebugWorldLayout::PitchDistanceMeters };
+	inline StrikeZoneRuntimeSettings g_strikeZoneRuntimeSettings{};
+	inline GroundRuntimeSettings g_groundRuntimeSettings{};
+
+	inline void SetPitchDistanceMeters(const double pitchDistanceMeters) noexcept
+	{
+		g_pitchDistanceMeters = std::clamp(pitchDistanceMeters, 5.0, 30.0);
+	}
+
+	[[nodiscard]] inline double GetPitchDistanceMeters() noexcept
+	{
+		return g_pitchDistanceMeters;
+	}
+
+	inline void SetStrikeZoneRuntimeSettings(
+	    StrikeZoneRuntimeSettings settings) noexcept
+	{
+		settings.bottomMeters = std::clamp(settings.bottomMeters, 0.0, 2.5);
+		settings.heightMeters = std::clamp(settings.heightMeters, 0.20, 2.0);
+		settings.widthMeters = std::clamp(settings.widthMeters, 0.20, 1.2);
+		g_strikeZoneRuntimeSettings = settings;
+	}
+
+	[[nodiscard]] inline StrikeZoneRuntimeSettings
+	GetStrikeZoneRuntimeSettings() noexcept
+	{
+		return g_strikeZoneRuntimeSettings;
+	}
+
+	inline void SetGroundRuntimeSettings(
+	    GroundRuntimeSettings settings) noexcept
+	{
+		settings.fanRadiusMeters = std::clamp(settings.fanRadiusMeters, 10.0, 300.0);
+		g_groundRuntimeSettings = settings;
+	}
+
+	[[nodiscard]] inline GroundRuntimeSettings
+	GetGroundRuntimeSettings() noexcept
+	{
+		return g_groundRuntimeSettings;
+	}
+
+	[[nodiscard]] inline double GetGroundFanRadiusMeters() noexcept
+	{
+		return g_groundRuntimeSettings.fanRadiusMeters;
+	}
+
+	[[nodiscard]] inline double GetStrikeZoneBottomMeters() noexcept
+	{
+		return g_strikeZoneRuntimeSettings.bottomMeters;
+	}
+
+	[[nodiscard]] inline double GetStrikeZoneTopMeters() noexcept
+	{
+		return g_strikeZoneRuntimeSettings.bottomMeters +
+		       g_strikeZoneRuntimeSettings.heightMeters;
+	}
+
+	[[nodiscard]] inline double GetStrikeZoneHalfWidthMeters() noexcept
+	{
+		return g_strikeZoneRuntimeSettings.widthMeters * 0.5;
+	}
+
+	struct MainControlPanelLayout final
+	{
+		double centerX{ DebugWorldLayout::MainControlPanelCenterXMeters };
+		double centerY{ DebugWorldLayout::MainControlPanelCenterYMeters };
+		double centerZ{ -DebugWorldLayout::MainControlPanelDepthMeters };
+		double widthMeters{ DebugWorldLayout::MainControlPanelWidthMeters };
+		double heightMeters{ DebugWorldLayout::MainControlPanelHeightMeters };
+		double paddingMeters{ DebugWorldLayout::MainControlPanelPaddingMeters };
+		double cellGapMeters{ DebugWorldLayout::MainControlPanelCellGapMeters };
+		int columns{ DebugWorldLayout::MainControlPanelColumns };
+		int rows{ DebugWorldLayout::MainControlPanelRows };
+	};
+
+	[[nodiscard]] inline MainControlPanelLayout BuildDefaultMainControlPanelLayout()
+	{
+		return MainControlPanelLayout{};
+	}
+
+	namespace DebugWorldStyle
+	{
+		inline constexpr LONG BallHalfSizePixels = 8;
+		inline constexpr LONG TrailHalfSizePixels = 4;
+		inline constexpr LONG WorldLineHalfSizePixels = 2;
+		inline constexpr LONG PlateMarkerHalfSizePixels = 2;
+		inline constexpr LONG UiLaserHalfSizePixels = 1;
+		inline constexpr double BallMeshRadiusMeters = 0.037;
+		inline constexpr int BallMeshLatitudeSegments = 24;
+		inline constexpr int BallMeshLongitudeSegments = 40;
+		inline constexpr double TrailMeshHalfWidthMeters = 0.03;
+		inline constexpr double FloorMeshHalfWidthMeters = 5.0;
+		inline constexpr double FloorMeshNearDepthMeters = 0.5;
+		inline constexpr double FloorMeshFarDepthMeters = 24.5;
+		inline constexpr double FloorMeshTileSizeMeters = 1.0;
+		inline constexpr double FloorMeshHeightMeters = -0.01;
+		inline constexpr std::array<float, 4> FloorMeshTileColorA{ 0.04F, 0.08F, 0.06F, 1.0F };
+		inline constexpr std::array<float, 4> FloorMeshTileColorB{ 0.05F, 0.10F, 0.07F, 1.0F };
+		inline constexpr std::array<float, 4> FloorGridColor{ 0.12F, 0.30F, 0.22F, 1.0F };
+		inline constexpr std::array<float, 4> FloorGridMajorColor{ 0.20F, 0.42F, 0.32F, 1.0F };
+		inline constexpr std::array<float, 4> PlateColor{ 0.95F, 0.95F, 0.98F, 1.0F };
+		inline constexpr std::array<float, 4> BallColor{ 1.0F, 0.98F, 0.80F, 1.0F };
+		inline constexpr std::array<float, 4> BatColor{ 0.79F, 0.56F, 0.26F, 1.0F };
+		inline constexpr std::array<float, 4> TrailMeshColor{ 0.20F, 0.64F, 0.90F, 0.92F };
+		inline constexpr std::array<float, 4> TrailColor{ 0.24F, 0.88F, 1.0F, 1.0F };
+		inline constexpr std::array<float, 4> ZoneColor{ 1.0F, 0.55F, 0.18F, 1.0F };
+		inline constexpr std::array<float, 4> ResultPanelBackgroundColor{ 0.05F, 0.07F, 0.15F, 1.0F };
+		inline constexpr std::array<float, 4> ResultPanelBorderColor{ 0.31F, 0.39F, 0.58F, 1.0F };
+		inline constexpr std::array<float, 4> ResultTagStrikeColor{ 0.24F, 0.86F, 0.40F, 1.0F };
+		inline constexpr std::array<float, 4> ResultTagBallColor{ 0.94F, 0.34F, 0.30F, 1.0F };
+		inline constexpr std::array<float, 4> ResultTagInPlayColor{ 0.24F, 0.74F, 0.96F, 1.0F };
+		inline constexpr std::array<float, 4> ResultTagFoulColor{ 0.95F, 0.76F, 0.24F, 1.0F };
+		inline constexpr std::array<float, 4> ResultTagPendingColor{ 0.70F, 0.70F, 0.74F, 1.0F };
+		inline constexpr std::array<float, 4> ResultScorePositiveColor{ 0.24F, 0.88F, 0.42F, 1.0F };
+		inline constexpr std::array<float, 4> ResultScoreNegativeColor{ 0.96F, 0.36F, 0.32F, 1.0F };
+		inline constexpr std::array<float, 4> ResultScoreNeutralColor{ 0.22F, 0.24F, 0.28F, 1.0F };
+		inline constexpr std::array<float, 4> ResultScoreCenterLineColor{ 0.90F, 0.92F, 0.96F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelBackgroundColor{ 0.05F, 0.07F, 0.15F, 0.96F };
+		inline constexpr std::array<float, 4> MainControlPanelBorderColor{ 0.31F, 0.39F, 0.58F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelModeRowColor{ 0.14F, 0.33F, 0.50F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelPresetRowColor{ 0.42F, 0.29F, 0.11F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelPlaybackRowColor{ 0.49F, 0.39F, 0.14F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelOverlayRowColor{ 0.12F, 0.15F, 0.27F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelEnvironmentRowColor{ 0.17F, 0.28F, 0.47F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelPitchRowColor{ 0.13F, 0.27F, 0.42F, 1.0F };
+		inline constexpr std::array<float, 4> MainControlPanelLabelColor{ 1.0F, 1.0F, 1.0F, 1.0F };
+		inline constexpr std::array<float, 4> UiLaserColor{ 0.78F, 0.90F, 1.0F, 0.92F };
+		inline constexpr std::array<float, 4> UiLaserHitColor{ 1.0F, 0.86F, 0.38F, 1.0F };
+	} // namespace DebugWorldStyle
+
+	[[nodiscard]] inline Physics::Vector3 ConvertSimulationPositionToWorld(
+	    const Physics::Vector3& simulationPosition)
+	{
+		return Physics::Vector3{
+			simulationPosition.x,
+			simulationPosition.y,
+			simulationPosition.z -
+			    (GetPitchDistanceMeters() +
+			     DebugWorldLayout::BatterToPlateDistanceMeters)
+		};
+	}
+
+	[[nodiscard]] inline bool TryProjectWorldToScreen(
+	    const Physics::Vector3& worldPosition,
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    ScreenPoint* const projectedPoint,
+	    const bool requireVisibleBounds = true)
+	{
+		if ((projectedPoint == nullptr) || !projectionState.isValid ||
+		    (width <= 0) || (height <= 0))
+		{
+			return false;
+		}
+
+		const double dx = worldPosition.x - projectionState.position.x;
+		const double dy = worldPosition.y - projectionState.position.y;
+		const double dz = worldPosition.z - projectionState.position.z;
+
+		const double qx = projectionState.orientation.x;
+		const double qy = projectionState.orientation.y;
+		const double qz = projectionState.orientation.z;
+		const double qw = projectionState.orientationW;
+
+		const double r00 = 1.0 - (2.0 * ((qy * qy) + (qz * qz)));
+		const double r01 = 2.0 * ((qx * qy) - (qz * qw));
+		const double r02 = 2.0 * ((qx * qz) + (qy * qw));
+		const double r10 = 2.0 * ((qx * qy) + (qz * qw));
+		const double r11 = 1.0 - (2.0 * ((qx * qx) + (qz * qz)));
+		const double r12 = 2.0 * ((qy * qz) - (qx * qw));
+		const double r20 = 2.0 * ((qx * qz) - (qy * qw));
+		const double r21 = 2.0 * ((qy * qz) + (qx * qw));
+		const double r22 = 1.0 - (2.0 * ((qx * qx) + (qy * qy)));
+
+		const double viewX = (r00 * dx) + (r10 * dy) + (r20 * dz);
+		const double viewY = (r01 * dx) + (r11 * dy) + (r21 * dz);
+		const double viewZ = (r02 * dx) + (r12 * dy) + (r22 * dz);
+		if (viewZ >= -DebugWorldLayout::NearClipMeters)
+		{
+			return false;
+		}
+
+		const double tanLeft = std::tan(projectionState.fovLeftRadians);
+		const double tanRight = std::tan(projectionState.fovRightRadians);
+		const double tanUp = std::tan(projectionState.fovUpRadians);
+		const double tanDown = std::tan(projectionState.fovDownRadians);
+
+		const double horizontalRange = tanRight - tanLeft;
+		const double verticalRange = tanUp - tanDown;
+		if ((horizontalRange <= 1e-6) || (verticalRange <= 1e-6))
+		{
+			return false;
+		}
+
+		const double invDepth = 1.0 / (-viewZ);
+		const double projectedX = viewX * invDepth;
+		const double projectedY = viewY * invDepth;
+		const double normalizedX = (projectedX - tanLeft) / horizontalRange;
+		const double normalizedY = (projectedY - tanDown) / verticalRange;
+		if (requireVisibleBounds &&
+		    ((normalizedX < 0.0) || (normalizedX > 1.0) ||
+		     (normalizedY < 0.0) || (normalizedY > 1.0)))
+		{
+			return false;
+		}
+
+		const double widthScale = static_cast<double>((std::max)(1L, width - 1));
+		const double heightScale = static_cast<double>((std::max)(1L, height - 1));
+		const double pixelX = normalizedX * widthScale;
+		const double pixelY = (1.0 - normalizedY) * heightScale;
+		const double longMin = static_cast<double>((std::numeric_limits<LONG>::min)());
+		const double longMax = static_cast<double>((std::numeric_limits<LONG>::max)());
+		projectedPoint->x = std::clamp(pixelX, longMin, longMax);
+		projectedPoint->y = std::clamp(pixelY, longMin, longMax);
+		const double linearDepth = std::clamp(
+		    ((-viewZ) - DebugWorldLayout::NearClipMeters) /
+		        (DebugWorldLayout::FarClipMeters - DebugWorldLayout::NearClipMeters),
+		    0.0,
+		    1.0);
+		projectedPoint->depth = static_cast<float>(linearDepth);
+		return true;
+	}
+
+	[[nodiscard]] inline ScreenPoint ProjectLegacyWorldToScreen(
+	    const Physics::Vector3& position,
+	    const LONG width,
+	    const LONG height)
+	{
+		const double normalizedDepth = std::clamp(
+		    position.z / DebugWorldLayout::LegacyProjectionDepthMeters,
+		    0.0,
+		    1.0);
+		const double normalizedHeight = std::clamp(
+		    (position.y - DebugWorldLayout::LegacyProjectionMinHeightMeters) /
+		        DebugWorldLayout::LegacyProjectionHeightMeters,
+		    0.0,
+		    1.0);
+
+		const double x =
+		    normalizedDepth * static_cast<double>((std::max)(1L, width - 1));
+		const double y =
+		    (1.0 - normalizedHeight) * static_cast<double>((std::max)(1L, height - 1));
+		return ScreenPoint{ x, y, static_cast<float>(normalizedDepth) };
+	}
+
+	template <typename TProjectFn, typename TEmitSegmentFn>
+	void ForEachProjectedLineSegment(
+	    const Physics::Vector3& lineStart,
+	    const Physics::Vector3& lineEnd,
+	    const double sampleStepMeters,
+	    TProjectFn&& projectPoint,
+	    TEmitSegmentFn&& emitSegment)
+	{
+		const double dx = lineEnd.x - lineStart.x;
+		const double dy = lineEnd.y - lineStart.y;
+		const double dz = lineEnd.z - lineStart.z;
+		const double lineLength = std::sqrt((dx * dx) + (dy * dy) + (dz * dz));
+		const double effectiveStep =
+		    (sampleStepMeters > 1e-6) ? sampleStepMeters : 0.1;
+		const int sampleCount = (std::max)(1,
+		                                   static_cast<int>(std::ceil(lineLength / effectiveStep)));
+
+		bool hasVisibleChunkStart = false;
+		ScreenPoint chunkStartPoint{};
+		ScreenPoint previousProjectedPoint{};
+		for (int sampleIndex = 0; sampleIndex <= sampleCount; ++sampleIndex)
+		{
+			const double blend = static_cast<double>(sampleIndex) /
+			                     static_cast<double>(sampleCount);
+			const Physics::Vector3 worldPoint{
+				lineStart.x + (dx * blend),
+				lineStart.y + (dy * blend),
+				lineStart.z + (dz * blend)
+			};
+
+			ScreenPoint projectedPoint{};
+			if (!projectPoint(worldPoint, &projectedPoint))
+			{
+				if (hasVisibleChunkStart)
+				{
+					emitSegment(chunkStartPoint, previousProjectedPoint);
+					hasVisibleChunkStart = false;
+				}
+				continue;
+			}
+
+			if (!hasVisibleChunkStart)
+			{
+				chunkStartPoint = projectedPoint;
+				hasVisibleChunkStart = true;
+			}
+
+			previousProjectedPoint = projectedPoint;
+		}
+
+		if (hasVisibleChunkStart)
+		{
+			emitSegment(chunkStartPoint, previousProjectedPoint);
+		}
+	}
+
+	[[nodiscard]] inline bool TryProjectWorldTriangle(
+	    const Physics::Vector3& worldPoint0,
+	    const Physics::Vector3& worldPoint1,
+	    const Physics::Vector3& worldPoint2,
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    ScreenPoint* const projectedPoint0,
+	    ScreenPoint* const projectedPoint1,
+	    ScreenPoint* const projectedPoint2)
+	{
+		if ((projectedPoint0 == nullptr) || (projectedPoint1 == nullptr) ||
+		    (projectedPoint2 == nullptr))
+		{
+			return false;
+		}
+
+		return TryProjectWorldToScreen(
+		           worldPoint0,
+		           projectionState,
+		           width,
+		           height,
+		           projectedPoint0,
+		           false) &&
+		       TryProjectWorldToScreen(
+		           worldPoint1,
+		           projectionState,
+		           width,
+		           height,
+		           projectedPoint1,
+		           false) &&
+		       TryProjectWorldToScreen(
+		           worldPoint2,
+		           projectionState,
+		           width,
+		           height,
+		           projectedPoint2,
+		           false);
+	}
+
+	template <typename TDrawTriangleFn>
+	void EmitProjectedWorldTriangle(
+	    const Physics::Vector3& worldPoint0,
+	    const Physics::Vector3& worldPoint1,
+	    const Physics::Vector3& worldPoint2,
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const float* const color,
+	    TDrawTriangleFn&& drawTriangle)
+	{
+		ScreenPoint projectedPoint0{};
+		ScreenPoint projectedPoint1{};
+		ScreenPoint projectedPoint2{};
+		if (!TryProjectWorldTriangle(
+		        worldPoint0,
+		        worldPoint1,
+		        worldPoint2,
+		        projectionState,
+		        width,
+		        height,
+		        &projectedPoint0,
+		        &projectedPoint1,
+		        &projectedPoint2))
+		{
+			return;
+		}
+
+		drawTriangle(
+		    projectedPoint0,
+		    projectedPoint1,
+		    projectedPoint2,
+		    color);
+	}
+
+	template <typename TDrawPointFn, typename TDrawLineFn>
+	void EmitProjectedDebugWorldOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const std::vector<Physics::Vector3>& trajectory,
+	    const Physics::BallState& latestBallState,
+	    TDrawPointFn&& drawPoint,
+	    TDrawLineFn&& drawLine,
+	    const bool drawTrajectoryPolyline = true,
+	    const bool drawFloorGrid = true,
+	    const bool drawStrikeZone = true,
+	    const bool drawBallMarker = true)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0))
+		{
+			return;
+		}
+
+		auto drawProjectedWorldPoint = [&](const Physics::Vector3& worldPoint,
+		                                   const LONG halfSize,
+		                                   const float* color) -> void
+		{
+			ScreenPoint projectedPoint{};
+			if (!TryProjectWorldToScreen(
+			        worldPoint,
+			        projectionState,
+			        width,
+			        height,
+			        &projectedPoint))
+			{
+				return;
+			}
+
+			drawPoint(projectedPoint, halfSize, color);
+		};
+
+		auto drawProjectedWorldLine = [&](const Physics::Vector3& lineStart,
+		                                  const Physics::Vector3& lineEnd,
+		                                  const float* color,
+		                                  const double sampleStepMeters = DebugWorldLayout::FieldGridSampleStepMeters) -> void
+		{
+			ForEachProjectedLineSegment(
+			    lineStart,
+			    lineEnd,
+			    sampleStepMeters,
+			    [&](const Physics::Vector3& worldPoint, ScreenPoint* const projectedPoint) -> bool
+			    {
+				    return TryProjectWorldToScreen(
+				        worldPoint,
+				        projectionState,
+				        width,
+				        height,
+				        projectedPoint);
+			    },
+			    [&](const ScreenPoint& segmentStart, const ScreenPoint& segmentEnd) -> void
+			    {
+				    drawLine(
+				        segmentStart,
+				        segmentEnd,
+				        DebugWorldStyle::WorldLineHalfSizePixels,
+				        color);
+			    });
+		};
+
+		if (drawFloorGrid)
+		{
+			const int lateralLineCount = static_cast<int>(
+			    (DebugWorldLayout::FieldGridHalfWidthMeters * 2.0) /
+			    DebugWorldLayout::FieldGridSpacingMeters);
+			for (int lineIndex = 0; lineIndex <= lateralLineCount; ++lineIndex)
+			{
+				const double x = -DebugWorldLayout::FieldGridHalfWidthMeters +
+				                 (static_cast<double>(lineIndex) * DebugWorldLayout::FieldGridSpacingMeters);
+				const bool isCenterLine = std::abs(x) < 0.001;
+				const bool isMajorLine = ((lineIndex % 5) == 0);
+				const float* lineColor = isCenterLine
+				                             ? DebugWorldStyle::PlateColor.data()
+				                             : (isMajorLine
+				                                    ? DebugWorldStyle::FloorGridMajorColor.data()
+				                                    : DebugWorldStyle::FloorGridColor.data());
+				drawProjectedWorldLine(
+				    Physics::Vector3{ x, 0.0, -DebugWorldLayout::FieldGridNearDepthMeters },
+				    Physics::Vector3{ x, 0.0, -DebugWorldLayout::FieldGridFarDepthMeters },
+				    lineColor);
+			}
+
+			const int depthLineCount = static_cast<int>(
+			    (DebugWorldLayout::FieldGridFarDepthMeters -
+			     DebugWorldLayout::FieldGridNearDepthMeters) /
+			    DebugWorldLayout::FieldGridSpacingMeters);
+			for (int lineIndex = 0; lineIndex <= depthLineCount; ++lineIndex)
+			{
+				const double depth = DebugWorldLayout::FieldGridNearDepthMeters +
+				                     (static_cast<double>(lineIndex) * DebugWorldLayout::FieldGridSpacingMeters);
+				const bool isPlateLine =
+				    std::abs(depth - DebugWorldLayout::BatterToPlateDistanceMeters) <
+				    (DebugWorldLayout::FieldGridSpacingMeters * 0.5);
+				const bool isMajorLine = ((lineIndex % 5) == 0);
+				const float* lineColor = isPlateLine
+				                             ? DebugWorldStyle::PlateColor.data()
+				                             : (isMajorLine
+				                                    ? DebugWorldStyle::FloorGridMajorColor.data()
+				                                    : DebugWorldStyle::FloorGridColor.data());
+				drawProjectedWorldLine(
+				    Physics::Vector3{
+				        -DebugWorldLayout::FieldGridHalfWidthMeters,
+				        0.0,
+				        -depth },
+				    Physics::Vector3{
+				        DebugWorldLayout::FieldGridHalfWidthMeters,
+				        0.0,
+				        -depth },
+				    lineColor);
+			}
+		}
+
+		if (drawStrikeZone)
+		{
+			const double strikeZoneBottom = GetStrikeZoneBottomMeters();
+			const double strikeZoneTop = GetStrikeZoneTopMeters();
+			const double strikeZoneHalfWidth = GetStrikeZoneHalfWidthMeters();
+			const Physics::Vector3 strikeZoneBottomLeft{
+				-strikeZoneHalfWidth,
+				strikeZoneBottom,
+				-DebugWorldLayout::BatterToPlateDistanceMeters
+			};
+			const Physics::Vector3 strikeZoneBottomRight{
+				strikeZoneHalfWidth,
+				strikeZoneBottom,
+				-DebugWorldLayout::BatterToPlateDistanceMeters
+			};
+			const Physics::Vector3 strikeZoneTopLeft{
+				-strikeZoneHalfWidth,
+				strikeZoneTop,
+				-DebugWorldLayout::BatterToPlateDistanceMeters
+			};
+			const Physics::Vector3 strikeZoneTopRight{
+				strikeZoneHalfWidth,
+				strikeZoneTop,
+				-DebugWorldLayout::BatterToPlateDistanceMeters
+			};
+			drawProjectedWorldLine(
+			    strikeZoneBottomLeft,
+			    strikeZoneBottomRight,
+			    DebugWorldStyle::ZoneColor.data(),
+			    0.05);
+			drawProjectedWorldLine(
+			    strikeZoneTopLeft,
+			    strikeZoneTopRight,
+			    DebugWorldStyle::ZoneColor.data(),
+			    0.05);
+			drawProjectedWorldLine(
+			    strikeZoneBottomLeft,
+			    strikeZoneTopLeft,
+			    DebugWorldStyle::ZoneColor.data(),
+			    0.05);
+			drawProjectedWorldLine(
+			    strikeZoneBottomRight,
+			    strikeZoneTopRight,
+			    DebugWorldStyle::ZoneColor.data(),
+			    0.05);
+
+			drawProjectedWorldLine(
+			    Physics::Vector3{
+			        -0.25,
+			        0.01,
+			        -DebugWorldLayout::BatterToPlateDistanceMeters },
+			    Physics::Vector3{
+			        0.25,
+			        0.01,
+			        -DebugWorldLayout::BatterToPlateDistanceMeters },
+			    DebugWorldStyle::PlateColor.data(),
+			    0.03);
+			drawProjectedWorldLine(
+			    Physics::Vector3{
+			        0.0,
+			        0.01,
+			        -DebugWorldLayout::BatterToPlateDistanceMeters - 0.25 },
+			    Physics::Vector3{
+			        0.0,
+			        0.01,
+			        -DebugWorldLayout::BatterToPlateDistanceMeters + 0.25 },
+			    DebugWorldStyle::PlateColor.data(),
+			    0.03);
+			drawProjectedWorldPoint(
+			    Physics::Vector3{
+			        0.0,
+			        0.01,
+			        -DebugWorldLayout::BatterToPlateDistanceMeters },
+			    DebugWorldStyle::PlateMarkerHalfSizePixels,
+			    DebugWorldStyle::PlateColor.data());
+		}
+
+		if (drawTrajectoryPolyline)
+		{
+			bool hasPreviousTrailPoint = false;
+			ScreenPoint previousTrailPoint{};
+			for (const Physics::Vector3& trailPoint : trajectory)
+			{
+				const Physics::Vector3 trailWorldPoint = ConvertSimulationPositionToWorld(trailPoint);
+				ScreenPoint projectedTrailPoint{};
+				if (!TryProjectWorldToScreen(
+				        trailWorldPoint,
+				        projectionState,
+				        width,
+				        height,
+				        &projectedTrailPoint))
+				{
+					hasPreviousTrailPoint = false;
+					continue;
+				}
+
+				if (hasPreviousTrailPoint)
+				{
+					drawLine(
+					    previousTrailPoint,
+					    projectedTrailPoint,
+					    DebugWorldStyle::TrailHalfSizePixels,
+					    DebugWorldStyle::TrailColor.data());
+				}
+
+				previousTrailPoint = projectedTrailPoint;
+				hasPreviousTrailPoint = true;
+			}
+		}
+
+		if (drawBallMarker)
+		{
+			const Physics::Vector3 ballWorldPoint =
+			    ConvertSimulationPositionToWorld(latestBallState.position);
+			drawProjectedWorldPoint(
+			    ballWorldPoint,
+			    DebugWorldStyle::BallHalfSizePixels,
+			    DebugWorldStyle::BallColor.data());
+		}
+	}
+
+	template <typename TDrawLineFn>
+	void EmitProjectedZonePassCircleOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const std::optional<Physics::Vector3>& zonePassSimulationPosition,
+	    TDrawLineFn&& drawLine)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0) ||
+		    !zonePassSimulationPosition.has_value())
+		{
+			return;
+		}
+
+		const Physics::Vector3 centerWorldPoint =
+		    ConvertSimulationPositionToWorld(zonePassSimulationPosition.value());
+		constexpr int SegmentCount = 24;
+		constexpr double CircleRadiusMeters = DebugWorldStyle::BallMeshRadiusMeters;
+		for (int segmentIndex = 0; segmentIndex < SegmentCount; ++segmentIndex)
+		{
+			const double startAngle = (2.0 * 3.14159265358979323846 * static_cast<double>(segmentIndex)) /
+			                          static_cast<double>(SegmentCount);
+			const double endAngle = (2.0 * 3.14159265358979323846 * static_cast<double>(segmentIndex + 1)) /
+			                        static_cast<double>(SegmentCount);
+			const Physics::Vector3 startWorldPoint{
+				centerWorldPoint.x + (std::cos(startAngle) * CircleRadiusMeters),
+				centerWorldPoint.y + (std::sin(startAngle) * CircleRadiusMeters),
+				centerWorldPoint.z
+			};
+			const Physics::Vector3 endWorldPoint{
+				centerWorldPoint.x + (std::cos(endAngle) * CircleRadiusMeters),
+				centerWorldPoint.y + (std::sin(endAngle) * CircleRadiusMeters),
+				centerWorldPoint.z
+			};
+			ScreenPoint startPoint{};
+			ScreenPoint endPoint{};
+			if (!TryProjectWorldToScreen(
+			        startWorldPoint,
+			        projectionState,
+			        width,
+			        height,
+			        &startPoint,
+			        false) ||
+			    !TryProjectWorldToScreen(
+			        endWorldPoint,
+			        projectionState,
+			        width,
+			        height,
+			        &endPoint,
+			        false))
+			{
+				continue;
+			}
+			drawLine(
+			    startPoint,
+			    endPoint,
+			    DebugWorldStyle::WorldLineHalfSizePixels,
+			    DebugWorldStyle::ZoneColor.data());
+		}
+	}
+
+	template <typename TDrawLineFn>
+	void EmitProjectedBatCylinderOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const std::optional<BatOverlayState>& batOverlayState,
+	    TDrawLineFn&& drawLine)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0) ||
+		    !batOverlayState.has_value())
+		{
+			return;
+		}
+
+		const BatOverlayState& batState = batOverlayState.value();
+		const double clampedRadiusMeters = std::clamp(
+		    batState.radiusMeters,
+		    0.002,
+		    0.20);
+		const Physics::Vector3 startWorldPoint =
+		    ConvertSimulationPositionToWorld(batState.startSimulationPosition);
+		const Physics::Vector3 endWorldPoint =
+		    ConvertSimulationPositionToWorld(batState.endSimulationPosition);
+		const Physics::Vector3 axisVector = endWorldPoint - startWorldPoint;
+		const double axisLength = Physics::Length(axisVector);
+		if ((clampedRadiusMeters <= 1e-6) || (axisLength <= 1e-6))
+		{
+			return;
+		}
+
+		const Physics::Vector3 axisDirection =
+		    axisVector / axisLength;
+		Physics::Vector3 radialBasisX = Physics::Cross(
+		    axisDirection,
+		    Physics::Vector3{ 0.0, 1.0, 0.0 });
+		if (Physics::Length(radialBasisX) <= 1e-6)
+		{
+			radialBasisX = Physics::Cross(
+			    axisDirection,
+			    Physics::Vector3{ 1.0, 0.0, 0.0 });
+		}
+		radialBasisX = Physics::NormalizeOrZero(radialBasisX);
+		if (Physics::Length(radialBasisX) <= 1e-6)
+		{
+			return;
+		}
+
+		Physics::Vector3 radialBasisY = Physics::NormalizeOrZero(
+		    Physics::Cross(axisDirection, radialBasisX));
+		if (Physics::Length(radialBasisY) <= 1e-6)
+		{
+			return;
+		}
+
+		auto drawProjectedLine = [&](const Physics::Vector3& worldStart,
+		                             const Physics::Vector3& worldEnd) -> void
+		{
+			ScreenPoint startPoint{};
+			ScreenPoint endPoint{};
+			if (!TryProjectWorldToScreen(
+			        worldStart,
+			        projectionState,
+			        width,
+			        height,
+			        &startPoint,
+			        false) ||
+			    !TryProjectWorldToScreen(
+			        worldEnd,
+			        projectionState,
+			        width,
+			        height,
+			        &endPoint,
+			        false))
+			{
+				return;
+			}
+			drawLine(
+			    startPoint,
+			    endPoint,
+			    DebugWorldStyle::WorldLineHalfSizePixels,
+			    DebugWorldStyle::BatColor.data());
+		};
+
+		constexpr int SegmentCount = 36;
+		constexpr double TwoPi = 6.28318530717958647692;
+		for (int segmentIndex = 0; segmentIndex < SegmentCount; ++segmentIndex)
+		{
+			const double startAngle =
+			    (TwoPi * static_cast<double>(segmentIndex)) /
+			    static_cast<double>(SegmentCount);
+			const double endAngle =
+			    (TwoPi * static_cast<double>(segmentIndex + 1)) /
+			    static_cast<double>(SegmentCount);
+			const Physics::Vector3 radialStart =
+			    (radialBasisX * std::cos(startAngle)) +
+			    (radialBasisY * std::sin(startAngle));
+			const Physics::Vector3 radialEnd =
+			    (radialBasisX * std::cos(endAngle)) +
+			    (radialBasisY * std::sin(endAngle));
+			const Physics::Vector3 startRingPoint0 =
+			    startWorldPoint + (radialStart * clampedRadiusMeters);
+			const Physics::Vector3 startRingPoint1 =
+			    startWorldPoint + (radialEnd * clampedRadiusMeters);
+			const Physics::Vector3 endRingPoint0 =
+			    endWorldPoint + (radialStart * clampedRadiusMeters);
+			const Physics::Vector3 endRingPoint1 =
+			    endWorldPoint + (radialEnd * clampedRadiusMeters);
+
+			drawProjectedLine(startRingPoint0, startRingPoint1);
+			drawProjectedLine(endRingPoint0, endRingPoint1);
+			drawProjectedLine(startRingPoint0, endRingPoint0);
+		}
+	}
+
+	template <typename TDrawTriangleFn>
+	void EmitProjectedSolidBatCylinderOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const std::optional<BatOverlayState>& batOverlayState,
+	    TDrawTriangleFn&& drawTriangle)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0) ||
+		    !batOverlayState.has_value())
+		{
+			return;
+		}
+
+		const BatOverlayState& batState = batOverlayState.value();
+		const double clampedRadiusMeters = std::clamp(
+		    batState.radiusMeters,
+		    0.002,
+		    0.20);
+		const Physics::Vector3 startWorldPoint =
+		    ConvertSimulationPositionToWorld(batState.startSimulationPosition);
+		const Physics::Vector3 endWorldPoint =
+		    ConvertSimulationPositionToWorld(batState.endSimulationPosition);
+		const Physics::Vector3 axisVector = endWorldPoint - startWorldPoint;
+		const double axisLength = Physics::Length(axisVector);
+		if ((clampedRadiusMeters <= 1e-6) || (axisLength <= 1e-6))
+		{
+			return;
+		}
+
+		const Physics::Vector3 axisDirection = axisVector / axisLength;
+		Physics::Vector3 radialBasisX = Physics::Cross(
+		    axisDirection,
+		    Physics::Vector3{ 0.0, 1.0, 0.0 });
+		if (Physics::Length(radialBasisX) <= 1e-6)
+		{
+			radialBasisX = Physics::Cross(
+			    axisDirection,
+			    Physics::Vector3{ 1.0, 0.0, 0.0 });
+		}
+		radialBasisX = Physics::NormalizeOrZero(radialBasisX);
+		if (Physics::Length(radialBasisX) <= 1e-6)
+		{
+			return;
+		}
+
+		Physics::Vector3 radialBasisY = Physics::NormalizeOrZero(
+		    Physics::Cross(axisDirection, radialBasisX));
+		if (Physics::Length(radialBasisY) <= 1e-6)
+		{
+			return;
+		}
+
+		const Physics::Vector3 lightDirection =
+		    Physics::NormalizeOrZero(Physics::Vector3{ -0.34, 0.78, -0.52 });
+		auto emitBatTriangle = [&](const Physics::Vector3& point0,
+		                           const Physics::Vector3& point1,
+		                           const Physics::Vector3& point2) -> void
+		{
+			const Physics::Vector3 triangleNormal =
+			    Physics::Cross(point1 - point0, point2 - point0);
+			if (Physics::Length(triangleNormal) <= 1e-6)
+			{
+				return;
+			}
+
+			const Physics::Vector3 triangleCenter =
+			    (point0 + point1 + point2) / 3.0;
+			const Physics::Vector3 triangleToCamera =
+			    projectionState.position - triangleCenter;
+			const double facing = Physics::Dot(triangleNormal, triangleToCamera);
+			if (facing <= 0.0)
+			{
+				return;
+			}
+
+			const Physics::Vector3 normalizedNormal =
+			    Physics::NormalizeOrZero(triangleNormal);
+			const double diffuse = std::clamp(
+			    Physics::Dot(normalizedNormal, lightDirection),
+			    0.0,
+			    1.0);
+			const float lightScale = static_cast<float>(std::clamp(
+			    0.24 + (0.62 * diffuse),
+			    0.22,
+			    0.92));
+			std::array<float, 4> shadedBatColor{
+				DebugWorldStyle::BatColor[0] * lightScale,
+				DebugWorldStyle::BatColor[1] * lightScale,
+				DebugWorldStyle::BatColor[2] * lightScale,
+				DebugWorldStyle::BatColor[3]
+			};
+			EmitProjectedWorldTriangle(
+			    point0,
+			    point1,
+			    point2,
+			    projectionState,
+			    width,
+			    height,
+			    shadedBatColor.data(),
+			    drawTriangle);
+		};
+
+		constexpr int SegmentCount = 40;
+		constexpr double TwoPi = 6.28318530717958647692;
+		for (int segmentIndex = 0; segmentIndex < SegmentCount; ++segmentIndex)
+		{
+			const double startAngle =
+			    (TwoPi * static_cast<double>(segmentIndex)) /
+			    static_cast<double>(SegmentCount);
+			const double endAngle =
+			    (TwoPi * static_cast<double>(segmentIndex + 1)) /
+			    static_cast<double>(SegmentCount);
+			const Physics::Vector3 radialStart =
+			    (radialBasisX * std::cos(startAngle)) +
+			    (radialBasisY * std::sin(startAngle));
+			const Physics::Vector3 radialEnd =
+			    (radialBasisX * std::cos(endAngle)) +
+			    (radialBasisY * std::sin(endAngle));
+			const Physics::Vector3 startRingPoint0 =
+			    startWorldPoint + (radialStart * clampedRadiusMeters);
+			const Physics::Vector3 startRingPoint1 =
+			    startWorldPoint + (radialEnd * clampedRadiusMeters);
+			const Physics::Vector3 endRingPoint0 =
+			    endWorldPoint + (radialStart * clampedRadiusMeters);
+			const Physics::Vector3 endRingPoint1 =
+			    endWorldPoint + (radialEnd * clampedRadiusMeters);
+
+			emitBatTriangle(startRingPoint0, startRingPoint1, endRingPoint1);
+			emitBatTriangle(startRingPoint0, endRingPoint1, endRingPoint0);
+			emitBatTriangle(startWorldPoint, startRingPoint1, startRingPoint0);
+			emitBatTriangle(endWorldPoint, endRingPoint0, endRingPoint1);
+		}
+	}
+
+	template <typename TDrawTriangleFn>
+	void EmitProjectedBallAndTrajectoryMeshOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const std::vector<Physics::Vector3>& trajectory,
+	    const Physics::BallState& latestBallState,
+	    TDrawTriangleFn&& drawTriangle,
+	    const float trailOpacityScale = 1.0F,
+	    const float staleFadeProgress = 0.0F)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0))
+		{
+			return;
+		}
+
+		const float clampedTrailOpacityScale =
+		    std::clamp(trailOpacityScale, 0.0F, 1.50F);
+		const float clampedStaleFadeProgress =
+		    std::clamp(staleFadeProgress, 0.0F, 1.0F);
+		const std::size_t trajectoryCount = trajectory.size();
+		if (trajectoryCount >= 2)
+		{
+			const Physics::Vector3 worldUpAxis{ 0.0, 1.0, 0.0 };
+			const Physics::Vector3 worldRightAxis{ 1.0, 0.0, 0.0 };
+			for (std::size_t index = 0; index < (trajectoryCount - 1); ++index)
+			{
+				const Physics::Vector3 startWorldPoint =
+				    ConvertSimulationPositionToWorld(trajectory[index]);
+				const Physics::Vector3 endWorldPoint =
+				    ConvertSimulationPositionToWorld(trajectory[index + 1]);
+				const Physics::Vector3 segmentDirection =
+				    endWorldPoint - startWorldPoint;
+				if (Physics::Length(segmentDirection) <= 1e-6)
+				{
+					continue;
+				}
+
+				const Physics::Vector3 segmentMidpoint =
+				    0.5 * (startWorldPoint + endWorldPoint);
+				const Physics::Vector3 segmentToCamera =
+				    projectionState.position - segmentMidpoint;
+				const double segmentDistanceMeters =
+				    Physics::Length(segmentToCamera);
+				Physics::Vector3 sideVector =
+				    Physics::Cross(segmentDirection, segmentToCamera);
+				if (Physics::Length(sideVector) <= 1e-6)
+				{
+					sideVector = Physics::Cross(segmentDirection, worldUpAxis);
+				}
+				if (Physics::Length(sideVector) <= 1e-6)
+				{
+					sideVector = Physics::Cross(segmentDirection, worldRightAxis);
+				}
+
+				const Physics::Vector3 normalizedSideVector =
+				    Physics::NormalizeOrZero(sideVector);
+				if (Physics::Length(normalizedSideVector) <= 1e-6)
+				{
+					continue;
+				}
+
+				const double indexBlend = static_cast<double>(index + 1) /
+				                          static_cast<double>(trajectoryCount - 1);
+				const double widthScale = std::clamp(
+				    1.20 - (indexBlend * 0.55),
+				    0.60,
+				    1.20);
+				const Physics::Vector3 ribbonOffset =
+				    (DebugWorldStyle::TrailMeshHalfWidthMeters * widthScale) *
+				    normalizedSideVector;
+				const Physics::Vector3 startLeft = startWorldPoint + ribbonOffset;
+				const Physics::Vector3 startRight = startWorldPoint - ribbonOffset;
+				const Physics::Vector3 endLeft = endWorldPoint + ribbonOffset;
+				const Physics::Vector3 endRight = endWorldPoint - ribbonOffset;
+
+				const double agedBlend =
+				    std::pow(std::clamp(indexBlend, 0.0, 1.0), 1.65);
+				const float colorScale = static_cast<float>(std::clamp(
+				    0.18 + (agedBlend * 0.82),
+				    0.0,
+				    1.0));
+				const float alphaScale = static_cast<float>(std::clamp(
+				    agedBlend,
+				    0.0,
+				    1.0));
+				const float distanceFade = static_cast<float>(std::clamp(
+				    1.00 - (segmentDistanceMeters / 36.0),
+				    0.20,
+				    1.0));
+				float segmentTemporalFade = 1.0F;
+				if (clampedStaleFadeProgress > 0.0F)
+				{
+					const double segmentOrder = std::clamp(indexBlend, 0.0, 1.0);
+					const double visibilityThreshold =
+					    static_cast<double>(clampedStaleFadeProgress);
+					if (segmentOrder <= visibilityThreshold)
+					{
+						segmentTemporalFade = 0.0F;
+					}
+					else
+					{
+						const double remainingRange =
+						    (std::max)(1e-6, 1.0 - visibilityThreshold);
+						const double normalizedRemain = std::clamp(
+						    (segmentOrder - visibilityThreshold) /
+						        remainingRange,
+						    0.0,
+						    1.0);
+						segmentTemporalFade = static_cast<float>(
+						    std::pow(normalizedRemain, 0.60));
+					}
+				}
+				const float finalAlpha = static_cast<float>(std::clamp(
+				    alphaScale * distanceFade * clampedTrailOpacityScale *
+				        segmentTemporalFade,
+				    0.0F,
+				    1.0F));
+				if (finalAlpha <= 0.001F)
+				{
+					continue;
+				}
+				std::array<float, 4> ribbonColor{
+					DebugWorldStyle::TrailMeshColor[0] * colorScale,
+					DebugWorldStyle::TrailMeshColor[1] * colorScale,
+					DebugWorldStyle::TrailMeshColor[2] * colorScale,
+					DebugWorldStyle::TrailMeshColor[3] * finalAlpha
+				};
+
+				EmitProjectedWorldTriangle(
+				    startLeft,
+				    endLeft,
+				    endRight,
+				    projectionState,
+				    width,
+				    height,
+				    ribbonColor.data(),
+				    drawTriangle);
+				EmitProjectedWorldTriangle(
+				    startLeft,
+				    endRight,
+				    startRight,
+				    projectionState,
+				    width,
+				    height,
+				    ribbonColor.data(),
+				    drawTriangle);
+			}
+		}
+
+		const Physics::Vector3 ballCenter =
+		    ConvertSimulationPositionToWorld(latestBallState.position);
+		constexpr double pi = 3.14159265358979323846;
+		const Physics::Vector3 lightDirection =
+		    Physics::NormalizeOrZero(Physics::Vector3{ -0.36, 0.82, -0.44 });
+		const Physics::Vector3 fillLightDirection =
+		    Physics::NormalizeOrZero(Physics::Vector3{ 0.42, 0.36, 0.84 });
+		for (int latitudeIndex = 0;
+		     latitudeIndex < DebugWorldStyle::BallMeshLatitudeSegments;
+		     ++latitudeIndex)
+		{
+			const double latitude0 =
+			    (-pi * 0.5) +
+			    (static_cast<double>(latitudeIndex) * pi /
+			     static_cast<double>(DebugWorldStyle::BallMeshLatitudeSegments));
+			const double latitude1 =
+			    (-pi * 0.5) +
+			    (static_cast<double>(latitudeIndex + 1) * pi /
+			     static_cast<double>(DebugWorldStyle::BallMeshLatitudeSegments));
+			const double sinLatitude0 = std::sin(latitude0);
+			const double sinLatitude1 = std::sin(latitude1);
+			const double cosLatitude0 = std::cos(latitude0);
+			const double cosLatitude1 = std::cos(latitude1);
+
+			for (int longitudeIndex = 0;
+			     longitudeIndex < DebugWorldStyle::BallMeshLongitudeSegments;
+			     ++longitudeIndex)
+			{
+				const double longitude0 =
+				    (static_cast<double>(longitudeIndex) * (2.0 * pi)) /
+				    static_cast<double>(DebugWorldStyle::BallMeshLongitudeSegments);
+				const double longitude1 =
+				    (static_cast<double>(longitudeIndex + 1) * (2.0 * pi)) /
+				    static_cast<double>(DebugWorldStyle::BallMeshLongitudeSegments);
+				const double sinLongitude0 = std::sin(longitude0);
+				const double sinLongitude1 = std::sin(longitude1);
+				const double cosLongitude0 = std::cos(longitude0);
+				const double cosLongitude1 = std::cos(longitude1);
+
+				const Physics::Vector3 point00{
+					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude0 * cosLongitude0),
+					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
+					                sinLatitude0),
+					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude0 * sinLongitude0)
+				};
+				const Physics::Vector3 point01{
+					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude0 * cosLongitude1),
+					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
+					                sinLatitude0),
+					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude0 * sinLongitude1)
+				};
+				const Physics::Vector3 point10{
+					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude1 * cosLongitude0),
+					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
+					                sinLatitude1),
+					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude1 * sinLongitude0)
+				};
+				const Physics::Vector3 point11{
+					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude1 * cosLongitude1),
+					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
+					                sinLatitude1),
+					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
+					                cosLatitude1 * sinLongitude1)
+				};
+
+				auto emitBallTriangle = [&](const Physics::Vector3& point0,
+				                            const Physics::Vector3& point1,
+				                            const Physics::Vector3& point2) -> void
+				{
+					const Physics::Vector3 triangleNormal =
+					    Physics::Cross(point1 - point0, point2 - point0);
+					if (Physics::Length(triangleNormal) <= 1e-6)
+					{
+						return;
+					}
+
+					const Physics::Vector3 triangleCenter =
+					    (point0 + point1 + point2) / 3.0;
+					const Physics::Vector3 triangleToCamera =
+					    projectionState.position - triangleCenter;
+					const double facing = Physics::Dot(triangleNormal, triangleToCamera);
+					if (facing <= 0.0)
+					{
+						return;
+					}
+
+					const Physics::Vector3 normalizedNormal =
+					    Physics::NormalizeOrZero(triangleNormal);
+					const double diffuse = std::clamp(
+					    Physics::Dot(normalizedNormal, lightDirection),
+					    0.0,
+					    1.0);
+					const double fillDiffuse = std::clamp(
+					    Physics::Dot(normalizedNormal, fillLightDirection),
+					    0.0,
+					    1.0);
+					const float lightScale = static_cast<float>(std::clamp(
+					    0.30 + (0.52 * diffuse) + (0.16 * fillDiffuse),
+					    0.24,
+					    0.96));
+					std::array<float, 4> ballColor{
+						DebugWorldStyle::BallColor[0] * lightScale,
+						DebugWorldStyle::BallColor[1] * lightScale,
+						DebugWorldStyle::BallColor[2] * lightScale,
+						DebugWorldStyle::BallColor[3]
+					};
+					EmitProjectedWorldTriangle(
+					    point0,
+					    point1,
+					    point2,
+					    projectionState,
+					    width,
+					    height,
+					    ballColor.data(),
+					    drawTriangle);
+				};
+
+				emitBallTriangle(point00, point01, point11);
+				emitBallTriangle(point00, point11, point10);
+			}
+		}
+	}
+
+	template <typename TDrawTriangleFn>
+	void EmitProjectedResultTagPanelOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const std::wstring_view resultLabel,
+	    const double resultScore,
+	    TDrawTriangleFn&& drawTriangle)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0))
+		{
+			return;
+		}
+
+		const double halfWidth = DebugWorldLayout::ResultPanelWidthMeters * 0.5;
+		const double halfHeight = DebugWorldLayout::ResultPanelHeightMeters * 0.5;
+		const double panelLeft = DebugWorldLayout::ResultPanelCenterXMeters - halfWidth;
+		const double panelRight = DebugWorldLayout::ResultPanelCenterXMeters + halfWidth;
+		const double panelTop = DebugWorldLayout::ResultPanelCenterYMeters + halfHeight;
+		const double panelBottom = DebugWorldLayout::ResultPanelCenterYMeters - halfHeight;
+		const double panelDepthBase = -DebugWorldLayout::ResultPanelDepthMeters;
+		const double panelDepthForeground = panelDepthBase + 0.0025;
+		const double panelDepthAccent = panelDepthForeground + 0.0025;
+
+		auto drawPanelQuad = [&](const double left,
+		                         const double top,
+		                         const double right,
+		                         const double bottom,
+		                         const double depth,
+		                         const float* const color) -> void
+		{
+			const Physics::Vector3 topLeft{ left, top, depth };
+			const Physics::Vector3 topRight{ right, top, depth };
+			const Physics::Vector3 bottomRight{ right, bottom, depth };
+			const Physics::Vector3 bottomLeft{ left, bottom, depth };
+
+			EmitProjectedWorldTriangle(
+			    topLeft,
+			    topRight,
+			    bottomRight,
+			    projectionState,
+			    width,
+			    height,
+			    color,
+			    drawTriangle);
+			EmitProjectedWorldTriangle(
+			    topLeft,
+			    bottomRight,
+			    bottomLeft,
+			    projectionState,
+			    width,
+			    height,
+			    color,
+			    drawTriangle);
+		};
+
+		drawPanelQuad(
+		    panelLeft,
+		    panelTop,
+		    panelRight,
+		    panelBottom,
+		    panelDepthBase,
+		    DebugWorldStyle::ResultPanelBackgroundColor.data());
+
+		const double border = DebugWorldLayout::ResultPanelBorderThicknessMeters;
+		drawPanelQuad(
+		    panelLeft,
+		    panelTop,
+		    panelRight,
+		    panelTop - border,
+		    panelDepthForeground,
+		    DebugWorldStyle::ResultPanelBorderColor.data());
+		drawPanelQuad(
+		    panelLeft,
+		    panelBottom + border,
+		    panelRight,
+		    panelBottom,
+		    panelDepthForeground,
+		    DebugWorldStyle::ResultPanelBorderColor.data());
+		drawPanelQuad(
+		    panelLeft,
+		    panelTop,
+		    panelLeft + border,
+		    panelBottom,
+		    panelDepthForeground,
+		    DebugWorldStyle::ResultPanelBorderColor.data());
+		drawPanelQuad(
+		    panelRight - border,
+		    panelTop,
+		    panelRight,
+		    panelBottom,
+		    panelDepthForeground,
+		    DebugWorldStyle::ResultPanelBorderColor.data());
+
+		auto resultLabelToIndex = [&](const std::wstring_view label) -> int
+		{
+			if (label == L"strike")
+			{
+				return 0;
+			}
+			if (label == L"ball")
+			{
+				return 1;
+			}
+			if (label == L"in_play")
+			{
+				return 2;
+			}
+			if (label == L"foul")
+			{
+				return 3;
+			}
+
+			return 4;
+		};
+		auto resultColorByIndex = [&](const int index) -> const std::array<float, 4>&
+		{
+			switch (index)
+			{
+				case 0:
+					return DebugWorldStyle::ResultTagStrikeColor;
+				case 1:
+					return DebugWorldStyle::ResultTagBallColor;
+				case 2:
+					return DebugWorldStyle::ResultTagInPlayColor;
+				case 3:
+					return DebugWorldStyle::ResultTagFoulColor;
+				default:
+					return DebugWorldStyle::ResultTagPendingColor;
+			}
+		};
+
+		const int activeResultIndex = resultLabelToIndex(resultLabel);
+		const double panelInnerLeft = panelLeft + DebugWorldLayout::ResultPanelPaddingMeters;
+		const double panelInnerRight = panelRight - DebugWorldLayout::ResultPanelPaddingMeters;
+		const double chipHeight = DebugWorldLayout::ResultPanelChipHeightMeters;
+		const double chipGap = DebugWorldLayout::ResultPanelChipGapMeters;
+		const double chipTopStart = panelTop - DebugWorldLayout::ResultPanelPaddingMeters;
+
+		for (int chipIndex = 0; chipIndex < 5; ++chipIndex)
+		{
+			const double chipTop =
+			    chipTopStart - (static_cast<double>(chipIndex) * (chipHeight + chipGap));
+			const double chipBottom = chipTop - chipHeight;
+			const std::array<float, 4>& baseColor = resultColorByIndex(chipIndex);
+			const bool isActiveChip = (chipIndex == activeResultIndex);
+			const float colorScale = isActiveChip ? 1.0F : 0.46F;
+			const std::array<float, 4> chipColor{
+				baseColor[0] * colorScale,
+				baseColor[1] * colorScale,
+				baseColor[2] * colorScale,
+				1.0F
+			};
+
+			drawPanelQuad(
+			    panelInnerLeft,
+			    chipTop,
+			    panelInnerRight,
+			    chipBottom,
+			    panelDepthForeground,
+			    chipColor.data());
+		}
+
+		const double scoreBarBottom = panelBottom + DebugWorldLayout::ResultPanelPaddingMeters;
+		const double scoreBarTop =
+		    scoreBarBottom + DebugWorldLayout::ResultPanelScoreBarHeightMeters;
+		const double scoreBarLeft = panelInnerLeft;
+		const double scoreBarRight = panelInnerRight;
+		const double scoreCenterX = 0.5 * (scoreBarLeft + scoreBarRight);
+		drawPanelQuad(
+		    scoreBarLeft,
+		    scoreBarTop,
+		    scoreBarRight,
+		    scoreBarBottom,
+		    panelDepthForeground,
+		    DebugWorldStyle::ResultScoreNeutralColor.data());
+		drawPanelQuad(
+		    scoreCenterX - DebugWorldLayout::ResultPanelCenterLineHalfWidthMeters,
+		    scoreBarTop,
+		    scoreCenterX + DebugWorldLayout::ResultPanelCenterLineHalfWidthMeters,
+		    scoreBarBottom,
+		    panelDepthAccent,
+		    DebugWorldStyle::ResultScoreCenterLineColor.data());
+
+		const double clampedScore = std::clamp(resultScore, -1.0, 1.0);
+		if (clampedScore > 0.0)
+		{
+			const double fillRight =
+			    scoreCenterX + (clampedScore * (scoreBarRight - scoreCenterX));
+			drawPanelQuad(
+			    scoreCenterX,
+			    scoreBarTop,
+			    fillRight,
+			    scoreBarBottom,
+			    panelDepthAccent,
+			    DebugWorldStyle::ResultScorePositiveColor.data());
+		}
+		else if (clampedScore < 0.0)
+		{
+			const double fillLeft =
+			    scoreCenterX - ((-clampedScore) * (scoreCenterX - scoreBarLeft));
+			drawPanelQuad(
+			    fillLeft,
+			    scoreBarTop,
+			    scoreCenterX,
+			    scoreBarBottom,
+			    panelDepthAccent,
+			    DebugWorldStyle::ResultScoreNegativeColor.data());
+		}
+	}
+
+	template <typename TDrawTriangleFn>
+	void EmitProjectedMainControlPanelOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const MainControlPanelLayout& panelLayout,
+	    TDrawTriangleFn&& drawTriangle)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0))
+		{
+			return;
+		}
+		if ((panelLayout.columns <= 0) || (panelLayout.rows <= 0) ||
+		    (panelLayout.widthMeters <= 1e-6) ||
+		    (panelLayout.heightMeters <= 1e-6))
+		{
+			return;
+		}
+
+		const double halfWidth = panelLayout.widthMeters * 0.5;
+		const double halfHeight = panelLayout.heightMeters * 0.5;
+		const double panelLeft = panelLayout.centerX - halfWidth;
+		const double panelRight = panelLayout.centerX + halfWidth;
+		const double panelTop = panelLayout.centerY + halfHeight;
+		const double panelBottom = panelLayout.centerY - halfHeight;
+		const double panelDepthBase = panelLayout.centerZ;
+		const double panelDepthForeground = panelDepthBase + 0.0025;
+
+		auto drawPanelQuad = [&](const double left,
+		                         const double top,
+		                         const double right,
+		                         const double bottom,
+		                         const double depth,
+		                         const float* const color) -> void
+		{
+			const Physics::Vector3 topLeft{ left, top, depth };
+			const Physics::Vector3 topRight{ right, top, depth };
+			const Physics::Vector3 bottomRight{ right, bottom, depth };
+			const Physics::Vector3 bottomLeft{ left, bottom, depth };
+
+			EmitProjectedWorldTriangle(
+			    topLeft,
+			    topRight,
+			    bottomRight,
+			    projectionState,
+			    width,
+			    height,
+			    color,
+			    drawTriangle);
+			EmitProjectedWorldTriangle(
+			    topLeft,
+			    bottomRight,
+			    bottomLeft,
+			    projectionState,
+			    width,
+			    height,
+			    color,
+			    drawTriangle);
+		};
+
+		drawPanelQuad(
+		    panelLeft,
+		    panelTop,
+		    panelRight,
+		    panelBottom,
+		    panelDepthBase,
+		    DebugWorldStyle::MainControlPanelBackgroundColor.data());
+
+		const double border = DebugWorldLayout::ResultPanelBorderThicknessMeters;
+		drawPanelQuad(
+		    panelLeft,
+		    panelTop,
+		    panelRight,
+		    panelTop - border,
+		    panelDepthForeground,
+		    DebugWorldStyle::MainControlPanelBorderColor.data());
+		drawPanelQuad(
+		    panelLeft,
+		    panelBottom + border,
+		    panelRight,
+		    panelBottom,
+		    panelDepthForeground,
+		    DebugWorldStyle::MainControlPanelBorderColor.data());
+		drawPanelQuad(
+		    panelLeft,
+		    panelTop,
+		    panelLeft + border,
+		    panelBottom,
+		    panelDepthForeground,
+		    DebugWorldStyle::MainControlPanelBorderColor.data());
+		drawPanelQuad(
+		    panelRight - border,
+		    panelTop,
+		    panelRight,
+		    panelBottom,
+		    panelDepthForeground,
+		    DebugWorldStyle::MainControlPanelBorderColor.data());
+
+		const double panelInnerLeft =
+		    panelLeft + panelLayout.paddingMeters;
+		const double panelInnerRight =
+		    panelRight - panelLayout.paddingMeters;
+		const double panelInnerTop =
+		    panelTop - panelLayout.paddingMeters;
+		const double panelInnerBottom =
+		    panelBottom + panelLayout.paddingMeters;
+		const int columnCount = panelLayout.columns;
+		const int rowCount = panelLayout.rows;
+		const double cellGap = panelLayout.cellGapMeters;
+		if ((columnCount <= 0) || (rowCount <= 0))
+		{
+			return;
+		}
+
+		const double innerWidth = panelInnerRight - panelInnerLeft;
+		const double innerHeight = panelInnerTop - panelInnerBottom;
+		const double cellWidth =
+		    (innerWidth - (cellGap * static_cast<double>(columnCount - 1))) /
+		    static_cast<double>(columnCount);
+		const double cellHeight =
+		    (innerHeight - (cellGap * static_cast<double>(rowCount - 1))) /
+		    static_cast<double>(rowCount);
+		if ((cellWidth <= 0.0) || (cellHeight <= 0.0))
+		{
+			return;
+		}
+
+		const std::array<const std::array<float, 4>*, 4> rowColors{
+			&DebugWorldStyle::MainControlPanelModeRowColor,
+			&DebugWorldStyle::MainControlPanelPresetRowColor,
+			&DebugWorldStyle::MainControlPanelOverlayRowColor,
+			&DebugWorldStyle::MainControlPanelEnvironmentRowColor
+		};
+
+		for (int rowIndex = 0; rowIndex < rowCount; ++rowIndex)
+		{
+			const double cellTop = panelInnerTop -
+			                       (static_cast<double>(rowIndex) *
+			                        (cellHeight + cellGap));
+			const double cellBottom = cellTop - cellHeight;
+			const std::array<float, 4>& baseColor =
+			    *rowColors[std::min(rowIndex, static_cast<int>(rowColors.size()) - 1)];
+
+			for (int columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+			{
+				const double cellLeft =
+				    panelInnerLeft +
+				    (static_cast<double>(columnIndex) * (cellWidth + cellGap));
+				const double cellRight = cellLeft + cellWidth;
+				const float brightnessScale = (columnIndex == 1) ? 1.0F : 0.82F;
+				const std::array<float, 4> cellColor{
+					baseColor[0] * brightnessScale,
+					baseColor[1] * brightnessScale,
+					baseColor[2] * brightnessScale,
+					baseColor[3]
+				};
+				drawPanelQuad(
+				    cellLeft,
+				    cellTop,
+				    cellRight,
+				    cellBottom,
+				    panelDepthForeground,
+				    cellColor.data());
+			}
+		}
+	}
+
+	[[nodiscard]] inline bool TryResolveMainControlPanelCellIndex(
+	    const MainControlPanelLayout& panelLayout,
+	    const Physics::Vector3& panelHitPoint,
+	    int* const cellIndex)
+	{
+		if (cellIndex == nullptr)
+		{
+			return false;
+		}
+		*cellIndex = -1;
+		if ((panelLayout.columns <= 0) || (panelLayout.rows <= 0))
+		{
+			return false;
+		}
+
+		const double halfWidth = panelLayout.widthMeters * 0.5;
+		const double halfHeight = panelLayout.heightMeters * 0.5;
+		const double panelLeft = panelLayout.centerX - halfWidth;
+		const double panelRight = panelLayout.centerX + halfWidth;
+		const double panelTop = panelLayout.centerY + halfHeight;
+		const double panelBottom = panelLayout.centerY - halfHeight;
+		const double panelInnerLeft = panelLeft + panelLayout.paddingMeters;
+		const double panelInnerRight = panelRight - panelLayout.paddingMeters;
+		const double panelInnerTop = panelTop - panelLayout.paddingMeters;
+		const double panelInnerBottom = panelBottom + panelLayout.paddingMeters;
+		if ((panelHitPoint.x < panelInnerLeft) ||
+		    (panelHitPoint.x > panelInnerRight) ||
+		    (panelHitPoint.y > panelInnerTop) ||
+		    (panelHitPoint.y < panelInnerBottom))
+		{
+			return false;
+		}
+
+		const double cellWidth =
+		    (panelInnerRight - panelInnerLeft -
+		     (panelLayout.cellGapMeters *
+		      static_cast<double>(panelLayout.columns - 1))) /
+		    static_cast<double>(panelLayout.columns);
+		const double cellHeight =
+		    (panelInnerTop - panelInnerBottom -
+		     (panelLayout.cellGapMeters *
+		      static_cast<double>(panelLayout.rows - 1))) /
+		    static_cast<double>(panelLayout.rows);
+		if ((cellWidth <= 0.0) || (cellHeight <= 0.0))
+		{
+			return false;
+		}
+
+		for (int rowIndex = 0; rowIndex < panelLayout.rows; ++rowIndex)
+		{
+			const double cellTop = panelInnerTop -
+			                       (static_cast<double>(rowIndex) *
+			                        (cellHeight + panelLayout.cellGapMeters));
+			const double cellBottom = cellTop - cellHeight;
+			for (int columnIndex = 0; columnIndex < panelLayout.columns; ++columnIndex)
+			{
+				const double cellLeft =
+				    panelInnerLeft +
+				    (static_cast<double>(columnIndex) *
+				     (cellWidth + panelLayout.cellGapMeters));
+				const double cellRight = cellLeft + cellWidth;
+				if ((panelHitPoint.x >= cellLeft) &&
+				    (panelHitPoint.x <= cellRight) &&
+				    (panelHitPoint.y <= cellTop) &&
+				    (panelHitPoint.y >= cellBottom))
+				{
+					*cellIndex = (rowIndex * panelLayout.columns) + columnIndex;
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	template <typename TDrawLineFn>
+	void EmitProjectedMainControlPanelLabelOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    const MainControlPanelLayout& panelLayout,
+	    TDrawLineFn&& drawLine)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0))
+		{
+			return;
+		}
+		if ((panelLayout.columns <= 0) || (panelLayout.rows <= 0))
+		{
+			return;
+		}
+
+		const double halfWidth = panelLayout.widthMeters * 0.5;
+		const double halfHeight = panelLayout.heightMeters * 0.5;
+		const double panelLeft = panelLayout.centerX - halfWidth;
+		const double panelRight = panelLayout.centerX + halfWidth;
+		const double panelTop = panelLayout.centerY + halfHeight;
+		const double panelBottom = panelLayout.centerY - halfHeight;
+		const double panelInnerLeft = panelLeft + panelLayout.paddingMeters;
+		const double panelInnerRight = panelRight - panelLayout.paddingMeters;
+		const double panelInnerTop = panelTop - panelLayout.paddingMeters;
+		const double panelInnerBottom = panelBottom + panelLayout.paddingMeters;
+		const double cellWidth =
+		    (panelInnerRight - panelInnerLeft -
+		     (panelLayout.cellGapMeters *
+		      static_cast<double>(panelLayout.columns - 1))) /
+		    static_cast<double>(panelLayout.columns);
+		const double cellHeight =
+		    (panelInnerTop - panelInnerBottom -
+		     (panelLayout.cellGapMeters *
+		      static_cast<double>(panelLayout.rows - 1))) /
+		    static_cast<double>(panelLayout.rows);
+		if ((cellWidth <= 0.0) || (cellHeight <= 0.0))
+		{
+			return;
+		}
+
+		auto emitProjectedWorldLine = [&](const Physics::Vector3& worldStart,
+		                                  const Physics::Vector3& worldEnd) -> void
+		{
+			ForEachProjectedLineSegment(
+			    worldStart,
+			    worldEnd,
+			    DebugWorldLayout::FieldGridSampleStepMeters,
+			    [&](const Physics::Vector3& worldPoint, ScreenPoint* const projectedPoint) -> bool
+			    {
+				    if (projectedPoint == nullptr)
+				    {
+					    return false;
+				    }
+				    return TryProjectWorldToScreen(
+				        worldPoint,
+				        projectionState,
+				        width,
+				        height,
+				        projectedPoint,
+				        false);
+			    },
+			    [&](const ScreenPoint& projectedStart,
+			        const ScreenPoint& projectedEnd) -> void
+			    {
+				    drawLine(
+				        projectedStart,
+				        projectedEnd,
+				        1,
+				        DebugWorldStyle::MainControlPanelLabelColor.data());
+			    });
+		};
+
+		auto emitDigit = [&](const int digit,
+		                     const double centerX,
+		                     const double centerY,
+		                     const double depth) -> void
+		{
+			if ((digit < 0) || (digit > 9))
+			{
+				return;
+			}
+
+			static constexpr std::array<std::uint8_t, 10> SegmentMasks{
+				0x3FU, // 0
+				0x06U, // 1
+				0x5BU, // 2
+				0x4FU, // 3
+				0x66U, // 4
+				0x6DU, // 5
+				0x7DU, // 6
+				0x07U, // 7
+				0x7FU, // 8
+				0x6FU  // 9
+			};
+
+			const double digitWidth = cellWidth * 0.28;
+			const double digitHeight = cellHeight * 0.52;
+			const double halfDigitWidth = digitWidth * 0.5;
+			const double halfDigitHeight = digitHeight * 0.5;
+			const double midY = centerY;
+			const double topY = centerY + halfDigitHeight;
+			const double bottomY = centerY - halfDigitHeight;
+			const double leftX = centerX - halfDigitWidth;
+			const double rightX = centerX + halfDigitWidth;
+
+			auto emitSegment = [&](const int segmentIndex,
+			                       const Physics::Vector3& segmentStart,
+			                       const Physics::Vector3& segmentEnd) -> void
+			{
+				const std::uint8_t mask = SegmentMasks[static_cast<std::size_t>(digit)];
+				if ((mask & (1U << segmentIndex)) == 0U)
+				{
+					return;
+				}
+				emitProjectedWorldLine(segmentStart, segmentEnd);
+			};
+
+			emitSegment(
+			    0,
+			    Physics::Vector3{ leftX, topY, depth },
+			    Physics::Vector3{ rightX, topY, depth });
+			emitSegment(
+			    1,
+			    Physics::Vector3{ rightX, topY, depth },
+			    Physics::Vector3{ rightX, midY, depth });
+			emitSegment(
+			    2,
+			    Physics::Vector3{ rightX, midY, depth },
+			    Physics::Vector3{ rightX, bottomY, depth });
+			emitSegment(
+			    3,
+			    Physics::Vector3{ leftX, bottomY, depth },
+			    Physics::Vector3{ rightX, bottomY, depth });
+			emitSegment(
+			    4,
+			    Physics::Vector3{ leftX, midY, depth },
+			    Physics::Vector3{ leftX, bottomY, depth });
+			emitSegment(
+			    5,
+			    Physics::Vector3{ leftX, topY, depth },
+			    Physics::Vector3{ leftX, midY, depth });
+			emitSegment(
+			    6,
+			    Physics::Vector3{ leftX, midY, depth },
+			    Physics::Vector3{ rightX, midY, depth });
+		};
+
+		int labelNumber = 1;
+		for (int rowIndex = 0; rowIndex < panelLayout.rows; ++rowIndex)
+		{
+			const double cellTop = panelInnerTop -
+			                       (static_cast<double>(rowIndex) *
+			                        (cellHeight + panelLayout.cellGapMeters));
+			const double cellBottom = cellTop - cellHeight;
+			for (int columnIndex = 0; columnIndex < panelLayout.columns; ++columnIndex)
+			{
+				const double cellLeft =
+				    panelInnerLeft +
+				    (static_cast<double>(columnIndex) *
+				     (cellWidth + panelLayout.cellGapMeters));
+				const double cellRight = cellLeft + cellWidth;
+				const double cellCenterX = (cellLeft + cellRight) * 0.5;
+				const double cellCenterY = (cellTop + cellBottom) * 0.5;
+				const double labelDepth = panelLayout.centerZ + 0.0035;
+				if (labelNumber >= 10)
+				{
+					emitDigit(
+					    labelNumber / 10,
+					    cellCenterX - (cellWidth * 0.16),
+					    cellCenterY,
+					    labelDepth);
+					emitDigit(
+					    labelNumber % 10,
+					    cellCenterX + (cellWidth * 0.16),
+					    cellCenterY,
+					    labelDepth);
+				}
+				else
+				{
+					emitDigit(labelNumber, cellCenterX, cellCenterY, labelDepth);
+				}
+				++labelNumber;
+			}
+		}
+	}
+
+	template <typename TDrawTriangleFn>
+	void EmitProjectedFloorMeshOverlay(
+	    const ViewProjectionState& projectionState,
+	    const LONG width,
+	    const LONG height,
+	    TDrawTriangleFn&& drawTriangle)
+	{
+		if (!projectionState.isValid || (width <= 0) || (height <= 0))
+		{
+			return;
+		}
+
+		const double strikeZoneWidthMeters = (std::max)(0.20,
+		                                                GetStrikeZoneHalfWidthMeters() * 2.0);
+		const double targetChordLengthMeters = strikeZoneWidthMeters + 2.0;
+		const double plateDepthFromCenterMeters = (std::max)(0.10,
+		                                                     std::abs(DebugWorldLayout::BatterToPlateDistanceMeters));
+		const double halfChordLengthMeters = targetChordLengthMeters * 0.5;
+		const double halfAngleRadians = std::atan2(
+		    halfChordLengthMeters,
+		    plateDepthFromCenterMeters);
+		const double innerRadiusMeters = std::sqrt(
+		    (plateDepthFromCenterMeters * plateDepthFromCenterMeters) +
+		    (halfChordLengthMeters * halfChordLengthMeters));
+		const double outerRadiusMeters = (std::max)(innerRadiusMeters + 1.0,
+		                                            GetGroundFanRadiusMeters());
+		if ((halfAngleRadians <= 1e-6) ||
+		    (innerRadiusMeters <= 1e-6) ||
+		    (outerRadiusMeters <= innerRadiusMeters))
+		{
+			return;
+		}
+
+		const double tileStepMeters = (std::max)(DebugWorldStyle::FloorMeshTileSizeMeters * 2.0,
+		                                         0.50);
+		const int radialTileCount = std::clamp(
+		    static_cast<int>(std::ceil(
+		        (outerRadiusMeters - innerRadiusMeters) /
+		        tileStepMeters)),
+		    1,
+		    120);
+		const double angularArcLengthMeters =
+		    (halfAngleRadians * 2.0) * outerRadiusMeters;
+		const int angularTileCount = std::clamp(
+		    static_cast<int>(std::ceil(
+		        angularArcLengthMeters / tileStepMeters)),
+		    16,
+		    180);
+		const double angularSpanRadians = halfAngleRadians * 2.0;
+		for (int radialIndex = 0; radialIndex < radialTileCount; ++radialIndex)
+		{
+			const double radiusNear = innerRadiusMeters +
+			                          ((outerRadiusMeters - innerRadiusMeters) *
+			                           (static_cast<double>(radialIndex) /
+			                            static_cast<double>(radialTileCount)));
+			const double radiusFar = innerRadiusMeters +
+			                         ((outerRadiusMeters - innerRadiusMeters) *
+			                          (static_cast<double>(radialIndex + 1) /
+			                           static_cast<double>(radialTileCount)));
+			for (int angleIndex = 0; angleIndex < angularTileCount; ++angleIndex)
+			{
+				const double angleNear = -halfAngleRadians +
+				                         (angularSpanRadians *
+				                          (static_cast<double>(angleIndex) /
+				                           static_cast<double>(angularTileCount)));
+				const double angleFar = -halfAngleRadians +
+				                        (angularSpanRadians *
+				                         (static_cast<double>(angleIndex + 1) /
+				                          static_cast<double>(angularTileCount)));
+				const Physics::Vector3 topLeft{
+					std::sin(angleNear) * radiusNear,
+					DebugWorldStyle::FloorMeshHeightMeters,
+					-std::cos(angleNear) * radiusNear
+				};
+				const Physics::Vector3 topRight{
+					std::sin(angleFar) * radiusNear,
+					DebugWorldStyle::FloorMeshHeightMeters,
+					-std::cos(angleFar) * radiusNear
+				};
+				const Physics::Vector3 bottomRight{
+					std::sin(angleFar) * radiusFar,
+					DebugWorldStyle::FloorMeshHeightMeters,
+					-std::cos(angleFar) * radiusFar
+				};
+				const Physics::Vector3 bottomLeft{
+					std::sin(angleNear) * radiusFar,
+					DebugWorldStyle::FloorMeshHeightMeters,
+					-std::cos(angleNear) * radiusFar
+				};
+
+				const bool usePrimaryColor = ((radialIndex + angleIndex) % 2) == 0;
+				const float* tileColor = usePrimaryColor
+				                             ? DebugWorldStyle::FloorMeshTileColorA.data()
+				                             : DebugWorldStyle::FloorMeshTileColorB.data();
+				const double radialBlend =
+				    (radialTileCount > 1)
+				        ? (static_cast<double>(radialIndex) /
+				           static_cast<double>(radialTileCount - 1))
+				        : 0.0;
+				const double angleBlend = std::abs(
+				                              ((static_cast<double>(angleIndex) + 0.5) /
+				                               static_cast<double>(angularTileCount)) -
+				                              0.5) *
+				                          2.0;
+				const float brightnessScale = static_cast<float>(std::clamp(
+				    0.94 - (radialBlend * 0.26) - (angleBlend * 0.08),
+				    0.55,
+				    1.0));
+				const std::array<float, 4> shadedTileColor{
+					tileColor[0] * brightnessScale,
+					tileColor[1] * brightnessScale,
+					tileColor[2] * brightnessScale,
+					tileColor[3]
+				};
+				EmitProjectedWorldTriangle(
+				    topLeft,
+				    topRight,
+				    bottomRight,
+				    projectionState,
+				    width,
+				    height,
+				    shadedTileColor.data(),
+				    drawTriangle);
+				EmitProjectedWorldTriangle(
+				    topLeft,
+				    bottomRight,
+				    bottomLeft,
+				    projectionState,
+				    width,
+				    height,
+				    shadedTileColor.data(),
+				    drawTriangle);
+			}
+		}
+	}
+} // namespace BaseballSimulatorVR::Common

@@ -1,0 +1,35 @@
+.clang-format
+
+# Visual Studio local state
+/.vs/
+*.user
+*.VC.db
+*.VC.opendb
+*.opendb
+*.suo
+*.rsuser
+*.sln.docstates
+
+# Build outputs
+/x64/
+/BaseballSimulatorVR/x64/
+/BaseballSimulatorVR/Debug/
+/BaseballSimulatorVR/Release/
+/BaseballSimulatorVR/Baseball.a85445c2/
+*.obj
+*.idb
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
+*.recipe
+*.res
+*.log
+*.FileListAbsolute.txt
+
+# Runtime-generated data
+SessionHistory.sqlite3
+SessionHistory.sqlite3-shm
+SessionHistory.sqlite3-wal
