@@ -9,8 +9,8 @@ namespace BaseballSimulatorVR::Common::RuntimeLimits
 	constexpr double MinimumPitchDistanceMeters = 16.0;
 	constexpr double MaximumPitchDistanceMeters = 21.0;
 
-	constexpr double MinimumDuelPitchIntervalSeconds = 0.0;
-	constexpr double MaximumDuelPitchIntervalSeconds = 3.0;
+	constexpr double MinimumDuelPitchIntervalSeconds = 5.0;
+	constexpr double MaximumDuelPitchIntervalSeconds = 10.0;
 
 	constexpr double MinimumPlaybackSpeedPercent = 0.0;
 	constexpr double MaximumPlaybackSpeedPercent = 200.0;

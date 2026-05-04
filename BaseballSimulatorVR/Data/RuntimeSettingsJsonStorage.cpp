@@ -3,6 +3,7 @@
 #include "../Common/RuntimeLimits.hpp"
 #include "../Common/ZoneMaskUtilities.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +17,46 @@ namespace BaseballSimulatorVR::Data
 	{
 		constexpr int DuelTargetZoneCount =
 		    Common::RuntimeLimits::DuelZoneCount;
+		constexpr double MinimumDuelPitchIntervalSeconds =
+		    Common::RuntimeLimits::MinimumDuelPitchIntervalSeconds;
+		constexpr double MaximumDuelPitchIntervalSeconds =
+		    Common::RuntimeLimits::MaximumDuelPitchIntervalSeconds;
+		constexpr double MinimumPlaybackSpeedPercent =
+		    Common::RuntimeLimits::MinimumPlaybackSpeedPercent;
+		constexpr double MaximumPlaybackSpeedPercent =
+		    Common::RuntimeLimits::MaximumPlaybackSpeedPercent;
+
+		[[nodiscard]] double ClampDuelPitchIntervalSeconds(
+		    const double value) noexcept
+		{
+			return std::clamp(
+			    value,
+			    MinimumDuelPitchIntervalSeconds,
+			    MaximumDuelPitchIntervalSeconds);
+		}
+
+		[[nodiscard]] double ClampPlaybackSpeedPercent(
+		    const double value) noexcept
+		{
+			return std::clamp(
+			    value,
+			    MinimumPlaybackSpeedPercent,
+			    MaximumPlaybackSpeedPercent);
+		}
+
+		[[nodiscard]] std::optional<int> NormalizeLegacyZoneIndex(
+		    const std::optional<int> zoneIndex) noexcept
+		{
+			if (!zoneIndex.has_value())
+			{
+				return std::nullopt;
+			}
+			if (!Common::IsValidZoneIndex(zoneIndex.value(), DuelTargetZoneCount))
+			{
+				return std::nullopt;
+			}
+			return zoneIndex;
+		}
 
 		[[nodiscard]] bool TryReadIntegrator(
 		    const std::string& jsonText,
@@ -357,13 +398,17 @@ namespace BaseballSimulatorVR::Data
 
 		outputFile.setf(std::ios::fixed);
 		outputFile.precision(std::numeric_limits<double>::max_digits10);
+		const double clampedDuelPitchIntervalSeconds =
+		    ClampDuelPitchIntervalSeconds(settings.duelPitchIntervalSeconds);
+		const double clampedPlaybackSpeedPercent =
+		    ClampPlaybackSpeedPercent(settings.playbackSpeedPercent);
 		outputFile << "{\n";
 		outputFile << "  \"_comment_duelPitchIntervalSeconds\": \"Wait interval between pitches in duel mode [s]\",\n";
 		outputFile << "  \"duelPitchIntervalSeconds\": "
-		           << settings.duelPitchIntervalSeconds << ",\n";
+		           << clampedDuelPitchIntervalSeconds << ",\n";
 		outputFile << "  \"_comment_playbackSpeedPercent\": \"Trajectory playback speed [%], 100 = realtime\",\n";
 		outputFile << "  \"playbackSpeedPercent\": "
-		           << settings.playbackSpeedPercent << ",\n";
+		           << clampedPlaybackSpeedPercent << ",\n";
 		outputFile << "  \"_comment_duelPitchPreviewEnabled\": \"Show predicted zone-pass marker in batting duel mode\",\n";
 		outputFile << "  \"duelPitchPreviewEnabled\": "
 		           << (settings.duelPitchPreviewEnabled ? "true" : "false")
@@ -388,7 +433,8 @@ namespace BaseballSimulatorVR::Data
 		           << normalizedZoneMask << ",\n";
 		outputFile << "  \"_comment_duelTargetZoneIndex\": \"Legacy single-zone index for compatibility (null if none)\",\n";
 		outputFile << "  \"duelTargetZoneIndex\": ";
-		std::optional<int> fallbackZoneIndex = settings.duelTargetZoneIndex;
+		std::optional<int> fallbackZoneIndex = NormalizeLegacyZoneIndex(
+		    settings.duelTargetZoneIndex);
 		if (!fallbackZoneIndex.has_value() &&
 		    (normalizedZoneMask != 0U))
 		{
@@ -538,6 +584,18 @@ namespace BaseballSimulatorVR::Data
 		settings.duelTargetZoneMask = Common::NormalizeZoneMask(
 		    settings.duelTargetZoneMask,
 		    DuelTargetZoneCount);
+		settings.duelPitchIntervalSeconds = ClampDuelPitchIntervalSeconds(
+		    settings.duelPitchIntervalSeconds);
+		settings.playbackSpeedPercent = ClampPlaybackSpeedPercent(
+		    settings.playbackSpeedPercent);
+		settings.duelTargetZoneIndex = NormalizeLegacyZoneIndex(
+		    settings.duelTargetZoneIndex);
+		if (settings.duelTargetZoneMask != 0U)
+		{
+			settings.duelTargetZoneIndex = Common::FindFirstSelectedZoneIndex(
+			    settings.duelTargetZoneMask,
+			    DuelTargetZoneCount);
+		}
 
 		return settings;
 	}

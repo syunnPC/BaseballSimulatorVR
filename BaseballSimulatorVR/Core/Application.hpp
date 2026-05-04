@@ -121,6 +121,8 @@ namespace BaseballSimulatorVR::Core
 		    std::wstring_view note = L"",
 		    bool persistToJson = true);
 		void ToggleMoundHeightOffset();
+		[[nodiscard]] bool CalibrateStrikeZoneFromPlayerHeight(
+		    std::wstring_view note = L"");
 		void AdjustPitchDistance(double deltaMeters);
 		void AdjustDuelPitchInterval(double deltaSeconds, std::wstring_view note = L"");
 		void ToggleDuelPitchPreview(std::wstring_view note = L"");
@@ -233,7 +235,7 @@ namespace BaseballSimulatorVR::Core
 		std::optional<Physics::Vector3> m_duelZonePassMarker{};
 		std::optional<Physics::Vector3> m_duelPitchPredictedZonePassPoint{};
 		std::uint32_t m_duelTargetZoneMask{ 0U };
-		double m_duelPitchIntervalSeconds{ 0.80 };
+		double m_duelPitchIntervalSeconds{ 5.0 };
 		double m_duelPitchCooldownRemainingSeconds{ 0.0 };
 		double m_duelPitchElapsedSeconds{ 0.0 };
 		bool m_duelPitchPreviewEnabled{ true };
@@ -265,6 +267,7 @@ namespace BaseballSimulatorVR::Core
 		double m_pitchMetricsSpeedMetersPerSecond{ 0.0 };
 		double m_lastFrameDeltaSeconds{ 0.0 };
 		bool m_forceTrajectoryResetOnNextFrame{ false };
+		bool m_hasStrikeZoneAutoCalibrated{ false };
 		double m_trajectoryZoneBiasLateral{ 0.0 };
 		double m_trajectoryZoneBiasVertical{ 0.0 };
 

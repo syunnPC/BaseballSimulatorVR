@@ -1,9 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -275,9 +278,12 @@ namespace BaseballSimulatorVR::Common::JsonKeyValueParser
 		}
 
 		char* parseEnd = nullptr;
+		errno = 0;
 		const double parsedValue = std::strtod(rawValue->c_str(), &parseEnd);
 		if ((parseEnd == rawValue->c_str()) ||
-		    ((parseEnd != nullptr) && (*parseEnd != '\0')))
+		    ((parseEnd != nullptr) && (*parseEnd != '\0')) ||
+		    (errno == ERANGE) ||
+		    !std::isfinite(parsedValue))
 		{
 			return std::nullopt;
 		}
@@ -334,9 +340,15 @@ namespace BaseballSimulatorVR::Common::JsonKeyValueParser
 		}
 
 		char* parseEnd = nullptr;
+		errno = 0;
 		const long parsedValue = std::strtol(rawValue->c_str(), &parseEnd, 10);
 		if ((parseEnd == rawValue->c_str()) ||
-		    ((parseEnd != nullptr) && (*parseEnd != '\0')))
+		    ((parseEnd != nullptr) && (*parseEnd != '\0')) ||
+		    (errno == ERANGE) ||
+		    (parsedValue <
+		     static_cast<long>((std::numeric_limits<int>::min)())) ||
+		    (parsedValue >
+		     static_cast<long>((std::numeric_limits<int>::max)())))
 		{
 			return std::nullopt;
 		}
@@ -391,11 +403,19 @@ namespace BaseballSimulatorVR::Common::JsonKeyValueParser
 		{
 			return std::nullopt;
 		}
+		if (!rawValue->empty() &&
+		    ((*rawValue)[0] == '-' || (*rawValue)[0] == '+'))
+		{
+			return std::nullopt;
+		}
 
 		char* parseEnd = nullptr;
+		errno = 0;
 		const unsigned long parsedValue = std::strtoul(rawValue->c_str(), &parseEnd, 10);
 		if ((parseEnd == rawValue->c_str()) ||
-		    ((parseEnd != nullptr) && (*parseEnd != '\0')))
+		    ((parseEnd != nullptr) && (*parseEnd != '\0')) ||
+		    (errno == ERANGE) ||
+		    (parsedValue > (std::numeric_limits<std::uint32_t>::max)()))
 		{
 			return std::nullopt;
 		}

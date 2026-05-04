@@ -2110,6 +2110,11 @@ namespace BaseballSimulatorVR::Render
 	    const std::optional<Physics::Vector3>&)
 	{
 	}
+
+	void Dx12RenderBackend::SetBatOverlayState(
+	    const std::optional<Common::BatOverlayState>&)
+	{
+	}
 } // namespace BaseballSimulatorVR::Render
 
 #endif

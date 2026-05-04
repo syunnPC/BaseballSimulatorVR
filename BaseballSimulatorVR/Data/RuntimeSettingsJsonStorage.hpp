@@ -34,7 +34,7 @@ namespace BaseballSimulatorVR::Data
 
 	struct PlayRuntimeSettings final
 	{
-		double duelPitchIntervalSeconds{ 0.80 };
+		double duelPitchIntervalSeconds{ 5.0 };
 		double playbackSpeedPercent{ 100.0 };
 		std::uint32_t duelTargetZoneMask{ 0U };
 		std::optional<int> duelTargetZoneIndex{};

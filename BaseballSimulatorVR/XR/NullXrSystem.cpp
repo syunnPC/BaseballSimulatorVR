@@ -1530,7 +1530,7 @@ namespace BaseballSimulatorVR::Xr
 			return true;
 		}
 
-		constexpr std::size_t MetricsControlButtonCount = 10U;
+		constexpr std::size_t MetricsControlButtonCount = 11U;
 
 		[[nodiscard]] bool TryBuildMetricsPanelBodyLayout(
 		    const OrientedUiPanelLayout& panelLayout,
@@ -3704,6 +3704,20 @@ namespace BaseballSimulatorVR::Xr
 			SwapchainContext swapchainContext{};
 			swapchainContext.width = static_cast<int32_t>(swapchainCreateInfo.width);
 			swapchainContext.height = static_cast<int32_t>(swapchainCreateInfo.height);
+			const auto cleanupCurrentSwapchainAndFail =
+			    [&](const std::wstring& failureMessage) -> bool
+			{
+				m_sessionName = failureMessage;
+				if (swapchainContext.swapchainHandle != XR_NULL_HANDLE)
+				{
+					LogXrCleanupFailure(
+					    L"xrDestroySwapchain",
+					    xrDestroySwapchain(swapchainContext.swapchainHandle));
+					swapchainContext.swapchainHandle = XR_NULL_HANDLE;
+				}
+				DestroyProjectionSwapchains();
+				return false;
+			};
 
 			const XrResult swapchainCreateResult = xrCreateSwapchain(
 			    m_sessionHandle,
@@ -3711,10 +3725,11 @@ namespace BaseballSimulatorVR::Xr
 			    &swapchainContext.swapchainHandle);
 			if (XR_FAILED(swapchainCreateResult))
 			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildXrErrorMessage(L"xrCreateSwapchain", swapchainCreateResult);
-				DestroyProjectionSwapchains();
-				return false;
+				return cleanupCurrentSwapchainAndFail(
+				    L"Session(unavailable): " +
+				    BuildXrErrorMessage(
+				        L"xrCreateSwapchain",
+				        swapchainCreateResult));
 			}
 
 			uint32_t swapchainImageCount = 0;
@@ -3725,10 +3740,11 @@ namespace BaseballSimulatorVR::Xr
 			    nullptr);
 			if (XR_FAILED(imageCountResult) || (swapchainImageCount == 0))
 			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildXrErrorMessage(L"xrEnumerateSwapchainImages", imageCountResult);
-				DestroyProjectionSwapchains();
-				return false;
+				return cleanupCurrentSwapchainAndFail(
+				    L"Session(unavailable): " +
+				    BuildXrErrorMessage(
+				        L"xrEnumerateSwapchainImages",
+				        imageCountResult));
 			}
 
 			swapchainContext.images.assign(
@@ -3741,10 +3757,11 @@ namespace BaseballSimulatorVR::Xr
 			    reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchainContext.images.data()));
 			if (XR_FAILED(imageReadResult))
 			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildXrErrorMessage(L"xrEnumerateSwapchainImages", imageReadResult);
-				DestroyProjectionSwapchains();
-				return false;
+				return cleanupCurrentSwapchainAndFail(
+				    L"Session(unavailable): " +
+				    BuildXrErrorMessage(
+				        L"xrEnumerateSwapchainImages",
+				        imageReadResult));
 			}
 
 			D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDescription{};
@@ -3757,10 +3774,11 @@ namespace BaseballSimulatorVR::Xr
 			    IID_PPV_ARGS(&swapchainContext.rtvHeap));
 			if (FAILED(descriptorHeapResult))
 			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildD3d12ErrorMessage(L"ID3D12Device::CreateDescriptorHeap", descriptorHeapResult);
-				DestroyProjectionSwapchains();
-				return false;
+				return cleanupCurrentSwapchainAndFail(
+				    L"Session(unavailable): " +
+				    BuildD3d12ErrorMessage(
+				        L"ID3D12Device::CreateDescriptorHeap",
+				        descriptorHeapResult));
 			}
 
 			D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDescription{};
@@ -3772,10 +3790,11 @@ namespace BaseballSimulatorVR::Xr
 			    IID_PPV_ARGS(&swapchainContext.dsvHeap));
 			if (FAILED(dsvHeapResult))
 			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildD3d12ErrorMessage(L"ID3D12Device::CreateDescriptorHeap", dsvHeapResult);
-				DestroyProjectionSwapchains();
-				return false;
+				return cleanupCurrentSwapchainAndFail(
+				    L"Session(unavailable): " +
+				    BuildD3d12ErrorMessage(
+				        L"ID3D12Device::CreateDescriptorHeap",
+				        dsvHeapResult));
 			}
 
 			D3D12_DESCRIPTOR_HEAP_DESC sceneRtvHeapDescription{};
@@ -3787,10 +3806,11 @@ namespace BaseballSimulatorVR::Xr
 			    IID_PPV_ARGS(&swapchainContext.sceneRtvHeap));
 			if (FAILED(sceneRtvHeapResult))
 			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildD3d12ErrorMessage(L"ID3D12Device::CreateDescriptorHeap", sceneRtvHeapResult);
-				DestroyProjectionSwapchains();
-				return false;
+				return cleanupCurrentSwapchainAndFail(
+				    L"Session(unavailable): " +
+				    BuildD3d12ErrorMessage(
+				        L"ID3D12Device::CreateDescriptorHeap",
+				        sceneRtvHeapResult));
 			}
 
 			D3D12_DESCRIPTOR_HEAP_DESC sceneSrvHeapDescription{};
@@ -3802,10 +3822,11 @@ namespace BaseballSimulatorVR::Xr
 			    IID_PPV_ARGS(&swapchainContext.sceneSrvHeap));
 			if (FAILED(sceneSrvHeapResult))
 			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildD3d12ErrorMessage(L"ID3D12Device::CreateDescriptorHeap", sceneSrvHeapResult);
-				DestroyProjectionSwapchains();
-				return false;
+				return cleanupCurrentSwapchainAndFail(
+				    L"Session(unavailable): " +
+				    BuildD3d12ErrorMessage(
+				        L"ID3D12Device::CreateDescriptorHeap",
+				        sceneSrvHeapResult));
 			}
 
 			if (m_dsvDescriptorSize == 0)
@@ -3828,9 +3849,8 @@ namespace BaseballSimulatorVR::Xr
 				ID3D12Resource* renderTargetTexture = swapchainContext.images[imageIndex].texture;
 				if (renderTargetTexture == nullptr)
 				{
-					m_sessionName = L"Session(unavailable): swapchain texture missing";
-					DestroyProjectionSwapchains();
-					return false;
+					return cleanupCurrentSwapchainAndFail(
+					    L"Session(unavailable): swapchain texture missing");
 				}
 
 				D3D12_RENDER_TARGET_VIEW_DESC renderTargetViewDesc{};
@@ -3884,10 +3904,11 @@ namespace BaseballSimulatorVR::Xr
 				    IID_PPV_ARGS(&swapchainContext.sceneColorTargets[imageIndex]));
 				if (FAILED(sceneResourceResult))
 				{
-					m_sessionName = L"Session(unavailable): " +
-					                BuildD3d12ErrorMessage(L"ID3D12Device::CreateCommittedResource", sceneResourceResult);
-					DestroyProjectionSwapchains();
-					return false;
+					return cleanupCurrentSwapchainAndFail(
+					    L"Session(unavailable): " +
+					    BuildD3d12ErrorMessage(
+					        L"ID3D12Device::CreateCommittedResource",
+					        sceneResourceResult));
 				}
 
 				D3D12_RENDER_TARGET_VIEW_DESC sceneRtvDescription{};
@@ -3950,10 +3971,11 @@ namespace BaseballSimulatorVR::Xr
 				    IID_PPV_ARGS(&swapchainContext.depthBuffers[imageIndex]));
 				if (FAILED(depthResourceResult))
 				{
-					m_sessionName = L"Session(unavailable): " +
-					                BuildD3d12ErrorMessage(L"ID3D12Device::CreateCommittedResource", depthResourceResult);
-					DestroyProjectionSwapchains();
-					return false;
+					return cleanupCurrentSwapchainAndFail(
+					    L"Session(unavailable): " +
+					    BuildD3d12ErrorMessage(
+					        L"ID3D12Device::CreateCommittedResource",
+					        depthResourceResult));
 				}
 
 				D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilViewDescription{};
@@ -6164,6 +6186,9 @@ namespace BaseballSimulatorVR::Xr
 					m_metricsPanelArcYawRadians = DefaultMetricsPanelArcYawRadians;
 					m_metricsPanelArcRadiusMeters = DefaultMetricsPanelArcRadiusMeters;
 					m_metricsPanelHeightOffsetMeters = DefaultMetricsPanelHeightOffsetMeters;
+					return;
+				case 10:
+					queueCommand(UiCommandType::RecalibrateStrikeZone);
 					return;
 				default:
 					break;
@@ -8434,7 +8459,8 @@ namespace BaseballSimulatorVR::Xr
 									batAngleUpLabel,
 									batYawDownLabel,
 									batYawUpLabel,
-									L"\u4f4d\u7f6eR"
+									L"\u4f4d\u7f6eR",
+									L"ZoneR"
 								};
 								for (std::size_t buttonIndex = 0;
 								     buttonIndex < metricsControlButtonRects.size();

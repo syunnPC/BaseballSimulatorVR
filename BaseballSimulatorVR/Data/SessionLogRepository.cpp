@@ -115,6 +115,7 @@ namespace BaseballSimulatorVR::Data
 		    "LEFT JOIN pitch_event_results r ON r.event_id = e.id;";
 
 		constexpr char SessionIdColumnDefinition[] = "session_id TEXT NOT NULL DEFAULT ''";
+		constexpr char EnableForeignKeysSql[] = "PRAGMA foreign_keys = ON;";
 
 		[[nodiscard]] bool IsSqlIdentifier(const std::string_view identifier)
 		{
@@ -217,6 +218,27 @@ namespace BaseballSimulatorVR::Data
 		}
 
 		m_database = database;
+		char* pragmaErrorMessage = nullptr;
+		const int pragmaResult = sqlite3_exec(
+		    m_database,
+		    EnableForeignKeysSql,
+		    nullptr,
+		    nullptr,
+		    &pragmaErrorMessage);
+		if (pragmaResult != SQLITE_OK)
+		{
+			const std::string rawError = (pragmaErrorMessage != nullptr)
+			                                 ? pragmaErrorMessage
+			                                 : "unknown sqlite foreign_keys error";
+			errorMessage = L"Failed to enable SQLite foreign keys: " +
+			               ToWide(rawError);
+			if (pragmaErrorMessage != nullptr)
+			{
+				sqlite3_free(pragmaErrorMessage);
+			}
+			Shutdown();
+			return false;
+		}
 		if (!EnsureSchema(errorMessage))
 		{
 			Shutdown();

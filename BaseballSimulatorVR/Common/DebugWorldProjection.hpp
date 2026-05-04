@@ -145,6 +145,43 @@ namespace BaseballSimulatorVR::Common
 		return g_strikeZoneRuntimeSettings.widthMeters * 0.5;
 	}
 
+	// Strike zone auto-calibration from player height.
+	// Lower bound: top of knees ≈ 27% of height.
+	// Upper bound: midpoint between shoulders and top of pants ≈ 53.5% of height.
+	inline constexpr double StrikeZoneBottomHeightFraction = 0.270;
+	inline constexpr double StrikeZoneTopHeightFraction = 0.535;
+	// Eye height is approximately 93% of full standing height.
+	inline constexpr double EyeHeightToFullHeightFraction = 0.93;
+
+	[[nodiscard]] inline double EstimatePlayerHeightFromEyeHeight(
+	    const double eyeHeightMeters) noexcept
+	{
+		if (eyeHeightMeters <= 0.0)
+		{
+			return 0.0;
+		}
+		return eyeHeightMeters / EyeHeightToFullHeightFraction;
+	}
+
+	struct StrikeZoneFromHeight final
+	{
+		double bottomMeters{ 0.0 };
+		double heightMeters{ 0.0 };
+	};
+
+	[[nodiscard]] inline StrikeZoneFromHeight ComputeStrikeZoneFromPlayerHeight(
+	    const double playerHeightMeters) noexcept
+	{
+		const double bottom =
+		    playerHeightMeters * StrikeZoneBottomHeightFraction;
+		const double top =
+		    playerHeightMeters * StrikeZoneTopHeightFraction;
+		return StrikeZoneFromHeight{
+			bottom,
+			top - bottom
+		};
+	}
+
 	struct MainControlPanelLayout final
 	{
 		double centerX{ DebugWorldLayout::MainControlPanelCenterXMeters };

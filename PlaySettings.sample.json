@@ -1,6 +1,6 @@
 {
   "_comment_duelPitchIntervalSeconds": "Wait interval between pitches in duel mode [s]",
-  "duelPitchIntervalSeconds": 0.8,
+  "duelPitchIntervalSeconds": 5.0,
   "_comment_playbackSpeedPercent": "Trajectory playback speed [%], 100 = realtime",
   "playbackSpeedPercent": 100.0,
   "_comment_duelPitchPreviewEnabled": "Show predicted zone-pass marker in batting duel mode",

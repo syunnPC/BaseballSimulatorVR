@@ -1663,6 +1663,24 @@ namespace BaseballSimulatorVR::Core
 			m_xrSystem->SetUiTelemetry(BuildXrUiTelemetry());
 			m_xrSystem->PollInput();
 			HandleXrUiCommands();
+
+			if (!m_hasStrikeZoneAutoCalibrated)
+			{
+				const Common::ViewProjectionState eyeState =
+				    m_xrSystem->GetLeftEyeViewState();
+				const double estimatedPlayerHeight =
+				    Common::EstimatePlayerHeightFromEyeHeight(
+				        eyeState.position.y);
+				if (eyeState.isValid &&
+				    (estimatedPlayerHeight >= 1.00) &&
+				    (estimatedPlayerHeight <= 2.50))
+				{
+					m_hasStrikeZoneAutoCalibrated =
+					    CalibrateStrikeZoneFromPlayerHeight(
+					        L"auto_calibrate_startup");
+				}
+			}
+
 			RefreshBatPoseFromXrInput();
 
 			Physics::BallState currentBallState = m_pitchSimulationService.GetBallState();
@@ -2246,6 +2264,12 @@ namespace BaseballSimulatorVR::Core
 				AdjustPlaybackSpeedPercent(snappedPercent - m_playbackSpeedPercent);
 				break;
 			}
+			case Xr::UiCommandType::RecalibrateStrikeZone:
+				if (CalibrateStrikeZoneFromPlayerHeight(L"xr_recalibrate"))
+				{
+					m_hasStrikeZoneAutoCalibrated = true;
+				}
+				break;
 			default:
 				break;
 		}
@@ -3444,6 +3468,52 @@ namespace BaseballSimulatorVR::Core
 		ApplyEnvironmentSettingsChanges(L"toggle_mound_offset");
 	}
 
+	bool Application::CalibrateStrikeZoneFromPlayerHeight(
+	    const std::wstring_view note)
+	{
+		const Common::ViewProjectionState eyeViewState =
+		    m_xrSystem->GetLeftEyeViewState();
+		double playerHeightMeters = 0.0;
+		if (eyeViewState.isValid && (eyeViewState.position.y > 0.10))
+		{
+			playerHeightMeters =
+			    Common::EstimatePlayerHeightFromEyeHeight(
+			        eyeViewState.position.y);
+		}
+
+		if (playerHeightMeters < 1.00 || playerHeightMeters > 2.50)
+		{
+			std::wostringstream logMessage{};
+			logMessage << std::fixed << std::setprecision(3);
+			logMessage << L"[StrikeZone] calibration skipped: estimated height="
+			           << playerHeightMeters
+			           << L"m (out of plausible range), note="
+			           << note << L"\n";
+			OutputDebugStringW(logMessage.str().c_str());
+			return false;
+		}
+
+		const Common::StrikeZoneFromHeight strikeZone =
+		    Common::ComputeStrikeZoneFromPlayerHeight(playerHeightMeters);
+		m_environmentSettings.strikeZoneBottomMeters =
+		    strikeZone.bottomMeters;
+		m_environmentSettings.strikeZoneHeightMeters =
+		    strikeZone.heightMeters;
+		ApplyEnvironmentSettingsChanges(
+		    note.empty() ? L"strike_zone_calibrate" : note);
+
+		std::wostringstream logMessage{};
+		logMessage << std::fixed << std::setprecision(3);
+		logMessage << L"[StrikeZone] calibrated: eyeY="
+		           << eyeViewState.position.y
+		           << L"m, playerHeight=" << playerHeightMeters
+		           << L"m, bottom=" << strikeZone.bottomMeters
+		           << L"m, height=" << strikeZone.heightMeters
+		           << L"m, note=" << note << L"\n";
+		OutputDebugStringW(logMessage.str().c_str());
+		return true;
+	}
+
 	void Application::AdjustPitchDistance(const double deltaMeters)
 	{
 		const double nextDistance = std::clamp(
@@ -3835,9 +3905,9 @@ namespace BaseballSimulatorVR::Core
 		    m_environmentSettings.enableMoundHeightOffset;
 		telemetry.moundHeightOffsetMeters =
 		    m_environmentSettings.moundHeightOffsetMeters;
-		telemetry.pitchProfileCount = static_cast<int>(std::min<std::size_t>(
-		    m_pitchProfiles.size(),
-		    telemetry.pitchProfileNames.size()));
+		telemetry.pitchProfileCount = static_cast<int>(m_pitchProfiles.size());
+		telemetry.pitchProfileNames.resize(
+		    static_cast<std::size_t>(telemetry.pitchProfileCount));
 		for (int profileIndex = 0;
 		     profileIndex < telemetry.pitchProfileCount;
 		     ++profileIndex)

@@ -34,6 +34,58 @@ namespace BaseballSimulatorVR::Physics
 		constexpr double SeamSideForceScale = 0.28;
 		constexpr double TwoPi = 2.0 * std::numbers::pi;
 
+		[[nodiscard]] bool IsFinite(const double value) noexcept
+		{
+			return std::isfinite(value);
+		}
+
+		[[nodiscard]] bool IsFinite(const Vector3& value) noexcept
+		{
+			return IsFinite(value.x) &&
+			       IsFinite(value.y) &&
+			       IsFinite(value.z);
+		}
+
+		[[nodiscard]] double FiniteOr(
+		    const double value,
+		    const double fallback) noexcept
+		{
+			return IsFinite(value) ? value : fallback;
+		}
+
+		[[nodiscard]] Vector3 FiniteOrZero(const Vector3& value) noexcept
+		{
+			return IsFinite(value) ? value : Vector3{};
+		}
+
+		[[nodiscard]] BallState SanitizeBallState(
+		    const BallState& ballState) noexcept
+		{
+			const BallState defaults{};
+			BallState sanitized = ballState;
+			if (!IsFinite(sanitized.position))
+			{
+				sanitized.position = defaults.position;
+			}
+			if (!IsFinite(sanitized.velocity))
+			{
+				sanitized.velocity = defaults.velocity;
+			}
+			if (!IsFinite(sanitized.spinAxis))
+			{
+				sanitized.spinAxis = defaults.spinAxis;
+			}
+
+			sanitized.spinAxis = NormalizeOrZero(sanitized.spinAxis);
+			sanitized.spinRpm = FiniteOr(sanitized.spinRpm, defaults.spinRpm);
+			sanitized.flightTimeSeconds = std::max(
+			    0.0,
+			    FiniteOr(
+			        sanitized.flightTimeSeconds,
+			        defaults.flightTimeSeconds));
+			return sanitized;
+		}
+
 		struct BracketingIndices final
 		{
 			std::size_t lower{ 0 };
@@ -114,23 +166,34 @@ namespace BaseballSimulatorVR::Physics
 
 	BallState PitchPhysicsEngine::Step(const BallState& currentState, const Baseball::PitchParameters& pitchParameters, std::chrono::duration<double> deltaTime) const
 	{
-		if (deltaTime <= std::chrono::duration<double>::zero())
+		const double deltaSeconds = deltaTime.count();
+		if (!IsFinite(deltaSeconds) ||
+		    (deltaSeconds <= 0.0))
 		{
 			return currentState;
 		}
 
-		const double deltaSeconds = deltaTime.count();
-		BallState nextState = currentState;
+		const BallState sanitizedCurrentState = SanitizeBallState(currentState);
+		BallState nextState = sanitizedCurrentState;
 		switch (pitchParameters.integratorType)
 		{
 			case PitchIntegratorType::SemiImplicitEuler:
-				nextState = StepSemiImplicitEuler(currentState, pitchParameters, deltaSeconds);
+				nextState = StepSemiImplicitEuler(
+				    sanitizedCurrentState,
+				    pitchParameters,
+				    deltaSeconds);
 				break;
 			case PitchIntegratorType::Rk4:
-				nextState = StepRk4(currentState, pitchParameters, deltaSeconds);
+				nextState = StepRk4(
+				    sanitizedCurrentState,
+				    pitchParameters,
+				    deltaSeconds);
 				break;
 			default:
-				nextState = StepSemiImplicitEuler(currentState, pitchParameters, deltaSeconds);
+				nextState = StepSemiImplicitEuler(
+				    sanitizedCurrentState,
+				    pitchParameters,
+				    deltaSeconds);
 				break;
 		}
 
@@ -194,44 +257,68 @@ namespace BaseballSimulatorVR::Physics
 
 	Vector3 PitchPhysicsEngine::ComputeAerodynamicAcceleration(const BallState& currentState, const Baseball::PitchParameters& pitchParameters) const
 	{
-		Vector3 windVelocity = pitchParameters.windVelocity;
+		const Vector3 velocity = FiniteOrZero(currentState.velocity);
+		Vector3 windVelocity = FiniteOrZero(pitchParameters.windVelocity);
 		if (pitchParameters.enableHeightDependentWind)
 		{
-			const double heightDelta = std::max(currentState.position.y - ReferenceWindHeightMeters, 0.0);
-			windVelocity.x += pitchParameters.windShearFactor * heightDelta;
+			const double heightDelta = std::max(
+			    FiniteOr(
+			        currentState.position.y,
+			        ReferenceWindHeightMeters) -
+			        ReferenceWindHeightMeters,
+			    0.0);
+			windVelocity.x += FiniteOr(pitchParameters.windShearFactor, 0.0) *
+			                  heightDelta;
 		}
 
-		const Vector3 relativeAirVelocity = currentState.velocity - windVelocity;
+		const Vector3 relativeAirVelocity = velocity - windVelocity;
 		const double speed = Length(relativeAirVelocity);
-		if (speed <= 1e-6)
+		if (!IsFinite(speed) ||
+		    (speed <= 1e-6))
 		{
 			return Vector3{};
 		}
 
 		const Vector3 velocityDirection = NormalizeOrZero(relativeAirVelocity);
-		const Vector3 normalizedSpinAxis = NormalizeOrZero(pitchParameters.spinAxis);
-		const double spinFactor = std::clamp(pitchParameters.spinRpm / 3000.0, 0.0, 2.0);
+		const Vector3 normalizedSpinAxis = NormalizeOrZero(
+		    FiniteOrZero(pitchParameters.spinAxis));
+		const double spinFactor = std::clamp(
+		    FiniteOr(pitchParameters.spinRpm, 0.0) / 3000.0,
+		    0.0,
+		    2.0);
 		const bool hasMeaningfulSpin =
 		    (spinFactor > 1e-6) &&
 		    (LengthSquared(normalizedSpinAxis) > 1e-12);
 		auto [dragCoefficient, liftCoefficient] = ResolveAerodynamicCoefficients(speed, spinFactor, pitchParameters);
+		dragCoefficient = std::max(0.0, FiniteOr(dragCoefficient, 0.0));
+		liftCoefficient = FiniteOr(liftCoefficient, 0.0);
 
 		double seamWave = 0.0;
-		const double seamAmplitude = std::clamp(pitchParameters.seamPerturbationAmplitude, 0.0, 0.5);
+		const double seamAmplitude = std::clamp(
+		    FiniteOr(pitchParameters.seamPerturbationAmplitude, 0.0),
+		    0.0,
+		    0.5);
 		if (pitchParameters.enableSeamPerturbation && hasMeaningfulSpin)
 		{
 			const double seamAngle =
-			    (TwoPi * pitchParameters.seamPerturbationFrequencyHz *
-			     currentState.flightTimeSeconds) +
-			    pitchParameters.seamPerturbationPhase;
-			const double wrappedSeamAngle =
-			    std::fmod(seamAngle, TwoPi);
-			seamWave = std::sin(wrappedSeamAngle);
+			    (TwoPi *
+			         FiniteOr(pitchParameters.seamPerturbationFrequencyHz, 0.0) *
+			         FiniteOr(currentState.flightTimeSeconds, 0.0)) +
+			    FiniteOr(pitchParameters.seamPerturbationPhase, 0.0);
+			if (IsFinite(seamAngle))
+			{
+				const double wrappedSeamAngle = std::fmod(seamAngle, TwoPi);
+				seamWave = std::sin(wrappedSeamAngle);
+			}
 			dragCoefficient *= (1.0 + (SeamDragInfluence * seamAmplitude * seamWave));
 			liftCoefficient *= (1.0 + (SeamLiftInfluence * seamAmplitude * seamWave));
 		}
 
 		const double speedSquared = speed * speed;
+		if (!IsFinite(speedSquared))
+		{
+			return Vector3{};
+		}
 		const Vector3 dragAcceleration =
 		    -velocityDirection * (dragCoefficient * speedSquared);
 		const Vector3 magnusDirection = NormalizeOrZero(Cross(normalizedSpinAxis, velocityDirection));
@@ -253,11 +340,30 @@ namespace BaseballSimulatorVR::Physics
 	{
 		if (!pitchParameters.useCoefficientTable)
 		{
-			return std::pair<double, double>{ pitchParameters.dragCoefficient, pitchParameters.liftCoefficient };
+			return std::pair<double, double>{
+				FiniteOr(pitchParameters.dragCoefficient, 0.0),
+				FiniteOr(pitchParameters.liftCoefficient, 0.0)
+			};
 		}
 
-		const double tableDragCoefficient = Interpolate2D(DragCoefficientTable, SpeedBreakpoints, SpinBreakpoints, speed, spinFactor);
-		const double tableLiftCoefficient = Interpolate2D(LiftCoefficientTable, SpeedBreakpoints, SpinBreakpoints, speed, spinFactor);
+		const double tableDragCoefficient = Interpolate2D(
+		    DragCoefficientTable,
+		    SpeedBreakpoints,
+		    SpinBreakpoints,
+		    std::max(0.0, FiniteOr(speed, SpeedBreakpoints.front())),
+		    std::clamp(
+		        FiniteOr(spinFactor, 0.0),
+		        SpinBreakpoints.front(),
+		        SpinBreakpoints.back()));
+		const double tableLiftCoefficient = Interpolate2D(
+		    LiftCoefficientTable,
+		    SpeedBreakpoints,
+		    SpinBreakpoints,
+		    std::max(0.0, FiniteOr(speed, SpeedBreakpoints.front())),
+		    std::clamp(
+		        FiniteOr(spinFactor, 0.0),
+		        SpinBreakpoints.front(),
+		        SpinBreakpoints.back()));
 		return std::pair<double, double>{ tableDragCoefficient, tableLiftCoefficient };
 	}
 } // namespace BaseballSimulatorVR::Physics
