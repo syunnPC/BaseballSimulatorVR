@@ -8,8 +8,12 @@
 #include "../Physics/Vector3.hpp"
 #include "../Physics/PitchIntegratorType.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
+#include <limits>
+#include <memory>
 
 namespace BaseballSimulatorVR::Data
 {
@@ -156,13 +160,15 @@ namespace BaseballSimulatorVR::Data
 
 		[[nodiscard]] std::wstring BuildSessionIdentifier()
 		{
+			static std::atomic<std::uint64_t> sequence{ 0 };
 			FILETIME fileTime{};
 			GetSystemTimeAsFileTime(&fileTime);
 			ULARGE_INTEGER timestamp{};
 			timestamp.LowPart = fileTime.dwLowDateTime;
 			timestamp.HighPart = fileTime.dwHighDateTime;
 			return L"pid" + std::to_wstring(GetCurrentProcessId()) +
-			       L"-" + std::to_wstring(timestamp.QuadPart);
+			       L"-" + std::to_wstring(timestamp.QuadPart) +
+			       L"-" + std::to_wstring(sequence.fetch_add(1, std::memory_order_relaxed));
 		}
 #endif
 	} // namespace
@@ -269,6 +275,161 @@ namespace BaseballSimulatorVR::Data
 		return m_database != nullptr;
 	}
 
+	OperationResult SessionLogRepository::ExportCurrentSessionCsv(
+	    const std::filesystem::path& filePath) const
+	{
+		if (m_database == nullptr)
+		{
+			return { false, L"SQLite database is not initialized." };
+		}
+#if !defined(_WIN64)
+		(void)filePath;
+		return { false, L"SQLite logging is only enabled for x64 builds." };
+#else
+		if (filePath.empty() || filePath.filename().empty())
+		{
+			return { false, L"CSV output file path is empty." };
+		}
+		const char* databaseName = sqlite3_db_filename(m_database, "main");
+		if ((databaseName != nullptr) && (*databaseName != '\0'))
+		{
+			std::error_code error;
+			if (std::filesystem::equivalent(filePath, std::filesystem::path(ToWide(databaseName)), error))
+			{
+				return { false, L"CSV output must not replace the session database." };
+			}
+		}
+
+		constexpr char SelectSessionSql[] =
+		    "SELECT id, created_at, session_id, event_type, preset_name, integrator_name,"
+		    " speed, spin_rpm, wind_forward, wind_cross, height_wind_enabled, seam_enabled,"
+		    " seam_amp, seam_freq, event_note, result_label, result_score, result_note,"
+		    " result_updated_at FROM pitch_event_comparison_with_results"
+		    " WHERE session_id = ? ORDER BY id;";
+		sqlite3_stmt* rawStatement = nullptr;
+		const int prepareResult = sqlite3_prepare_v2(
+		    m_database, SelectSessionSql, -1, &rawStatement, nullptr);
+		const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(
+		    rawStatement, &sqlite3_finalize);
+		if ((prepareResult != SQLITE_OK) || !statement)
+		{
+			return { false, L"Failed to prepare CSV query: " + ToWide(sqlite3_errmsg(m_database)) };
+		}
+		const std::string sessionId = ToUtf8(m_sessionId);
+		if (sqlite3_bind_text(statement.get(), 1, sessionId.c_str(), -1, SQLITE_TRANSIENT) != SQLITE_OK)
+		{
+			return { false, L"Failed to bind CSV session: " + ToWide(sqlite3_errmsg(m_database)) };
+		}
+
+		// Reserve a unique sibling so failed writes never replace a completed export.
+		const std::filesystem::path temporaryPath = filePath.wstring() + L"." +
+		    BuildSessionIdentifier() + L".tmp";
+		HANDLE output = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr,
+		                           CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (output == INVALID_HANDLE_VALUE)
+		{
+			return { false, L"Failed to create CSV output file (Windows error " +
+			    std::to_wstring(GetLastError()) + L")." };
+		}
+		struct TemporaryOutput final
+		{
+			HANDLE handle;
+			const std::filesystem::path& path;
+			~TemporaryOutput()
+			{
+				if (handle != INVALID_HANDLE_VALUE)
+				{
+					CloseHandle(handle);
+				}
+				DeleteFileW(path.c_str());
+			}
+		} temporaryOutput{ output, temporaryPath };
+		const auto write = [&](std::string_view bytes) -> bool
+		{
+			while (!bytes.empty())
+			{
+				const DWORD requested = static_cast<DWORD>((std::min)(
+				    bytes.size(), static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
+				DWORD written = 0;
+				if (!WriteFile(output, bytes.data(), requested, &written, nullptr) || (written == 0))
+				{
+					return false;
+				}
+				bytes.remove_prefix(written);
+			}
+			return true;
+		};
+		const auto appendQuoted = [](std::string& row, std::string_view value)
+		{
+			row += '"';
+			for (const char character : value)
+			{
+				if (character == '"')
+				{
+					row += '"';
+				}
+				row += character;
+			}
+			row += '"';
+		};
+		std::string row = "\xEF\xBB\xBF";
+		const int columnCount = sqlite3_column_count(statement.get());
+		for (int column = 0; column < columnCount; ++column)
+		{
+			if (column != 0) row += ',';
+			appendQuoted(row, sqlite3_column_name(statement.get(), column));
+		}
+		row += "\r\n";
+		if (!write(row))
+		{
+			return { false, L"Failed to write CSV header." };
+		}
+		int stepResult = SQLITE_OK;
+		while ((stepResult = sqlite3_step(statement.get())) == SQLITE_ROW)
+		{
+			row.clear();
+			for (int column = 0; column < columnCount; ++column)
+			{
+				if (column != 0) row += ',';
+				const int type = sqlite3_column_type(statement.get(), column);
+				if (type == SQLITE_NULL) continue;
+				const auto* value = sqlite3_column_text(statement.get(), column);
+				if (value == nullptr)
+				{
+					return { false, L"Failed to read CSV column." };
+				}
+				const std::string_view text(
+				    reinterpret_cast<const char*>(value),
+				    static_cast<std::size_t>(sqlite3_column_bytes(statement.get(), column)));
+				if (type == SQLITE_TEXT) appendQuoted(row, text);
+				else row += text;
+			}
+			row += "\r\n";
+			if (!write(row))
+			{
+				return { false, L"Failed to write CSV row." };
+			}
+		}
+		if (stepResult != SQLITE_DONE)
+		{
+			return { false, L"Failed to query session for CSV: " + ToWide(sqlite3_errmsg(m_database)) };
+		}
+		if (!FlushFileBuffers(output))
+		{
+			return { false, L"Failed to flush CSV output." };
+		}
+		const BOOL closeResult = CloseHandle(output);
+		temporaryOutput.handle = INVALID_HANDLE_VALUE;
+		if (!closeResult || !MoveFileExW(temporaryPath.c_str(), filePath.c_str(),
+		                                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		{
+			return { false, L"Failed to publish CSV output (Windows error " +
+			    std::to_wstring(GetLastError()) + L")." };
+		}
+		return { true, {} };
+#endif
+	}
+
 	PitchEventLogResult SessionLogRepository::LogPitchEvent(
 	    std::wstring_view eventType,
 	    std::wstring_view presetName,
@@ -307,6 +468,17 @@ namespace BaseballSimulatorVR::Data
 		if (m_database == nullptr)
 		{
 			errorMessage = L"SQLite database is not initialized.";
+			return std::nullopt;
+		}
+		const double speedMetersPerSecond = Physics::Length(pitchParameters.initialVelocity);
+		if (!std::isfinite(speedMetersPerSecond) ||
+		    !std::isfinite(pitchParameters.spinRpm) ||
+		    !std::isfinite(pitchParameters.windVelocity.z) ||
+		    !std::isfinite(pitchParameters.windVelocity.x) ||
+		    !std::isfinite(pitchParameters.seamPerturbationAmplitude) ||
+		    !std::isfinite(pitchParameters.seamPerturbationFrequencyHz))
+		{
+			errorMessage = L"Pitch event numeric values must be finite.";
 			return std::nullopt;
 		}
 
@@ -354,22 +526,33 @@ namespace BaseballSimulatorVR::Data
 		const std::string integratorNameUtf8 = ToUtf8(integratorName);
 		const std::string noteUtf8 = ToUtf8(note);
 
-		const double speedMetersPerSecond =
-		    Physics::Length(pitchParameters.initialVelocity);
-
-		sqlite3_bind_text(statement, 1, sessionIdUtf8.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(statement, 2, eventTypeUtf8.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(statement, 3, presetNameUtf8.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(statement, 4, integratorNameUtf8.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_double(statement, 5, speedMetersPerSecond);
-		sqlite3_bind_double(statement, 6, pitchParameters.spinRpm);
-		sqlite3_bind_double(statement, 7, pitchParameters.windVelocity.z);
-		sqlite3_bind_double(statement, 8, pitchParameters.windVelocity.x);
-		sqlite3_bind_int(statement, 9, pitchParameters.enableHeightDependentWind ? 1 : 0);
-		sqlite3_bind_int(statement, 10, pitchParameters.enableSeamPerturbation ? 1 : 0);
-		sqlite3_bind_double(statement, 11, pitchParameters.seamPerturbationAmplitude);
-		sqlite3_bind_double(statement, 12, pitchParameters.seamPerturbationFrequencyHz);
-		sqlite3_bind_text(statement, 13, noteUtf8.c_str(), -1, SQLITE_TRANSIENT);
+		if ((!eventType.empty() && eventTypeUtf8.empty()) ||
+		    (!presetName.empty() && presetNameUtf8.empty()) ||
+		    (!integratorName.empty() && integratorNameUtf8.empty()) ||
+		    (!note.empty() && noteUtf8.empty()))
+		{
+			sqlite3_finalize(statement);
+			errorMessage = L"Pitch event text is not valid Unicode.";
+			return std::nullopt;
+		}
+		if ((sqlite3_bind_text64(statement, 1, sessionIdUtf8.c_str(), sessionIdUtf8.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK) ||
+		    (sqlite3_bind_text64(statement, 2, eventTypeUtf8.c_str(), eventTypeUtf8.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK) ||
+		    (sqlite3_bind_text64(statement, 3, presetNameUtf8.c_str(), presetNameUtf8.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK) ||
+		    (sqlite3_bind_text64(statement, 4, integratorNameUtf8.c_str(), integratorNameUtf8.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK) ||
+		    (sqlite3_bind_double(statement, 5, speedMetersPerSecond) != SQLITE_OK) ||
+		    (sqlite3_bind_double(statement, 6, pitchParameters.spinRpm) != SQLITE_OK) ||
+		    (sqlite3_bind_double(statement, 7, pitchParameters.windVelocity.z) != SQLITE_OK) ||
+		    (sqlite3_bind_double(statement, 8, pitchParameters.windVelocity.x) != SQLITE_OK) ||
+		    (sqlite3_bind_int(statement, 9, pitchParameters.enableHeightDependentWind ? 1 : 0) != SQLITE_OK) ||
+		    (sqlite3_bind_int(statement, 10, pitchParameters.enableSeamPerturbation ? 1 : 0) != SQLITE_OK) ||
+		    (sqlite3_bind_double(statement, 11, pitchParameters.seamPerturbationAmplitude) != SQLITE_OK) ||
+		    (sqlite3_bind_double(statement, 12, pitchParameters.seamPerturbationFrequencyHz) != SQLITE_OK) ||
+		    (sqlite3_bind_text64(statement, 13, noteUtf8.c_str(), noteUtf8.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK))
+		{
+			errorMessage = L"Failed to bind SQLite pitch event: " + ToWide(sqlite3_errmsg(m_database));
+			sqlite3_finalize(statement);
+			return std::nullopt;
+		}
 
 		const int stepResult = sqlite3_step(statement);
 		const int finalizeResult = sqlite3_finalize(statement);
@@ -430,6 +613,11 @@ namespace BaseballSimulatorVR::Data
 			errorMessage = L"SQLite result tag event ID must be positive.";
 			return false;
 		}
+		if (!std::isfinite(resultScore))
+		{
+			errorMessage = L"Pitch result score must be finite.";
+			return false;
+		}
 
 		const std::string resultLabelUtf8 = ToUtf8(resultLabel);
 		if (resultLabelUtf8.empty())
@@ -470,10 +658,16 @@ namespace BaseballSimulatorVR::Data
 			return false;
 		}
 
-		sqlite3_bind_int64(statement, 1, static_cast<sqlite3_int64>(eventId));
-		sqlite3_bind_text(statement, 2, resultLabelUtf8.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_double(statement, 3, resultScore);
-		sqlite3_bind_text(statement, 4, noteUtf8.c_str(), -1, SQLITE_TRANSIENT);
+		if ((!note.empty() && noteUtf8.empty()) ||
+		    (sqlite3_bind_int64(statement, 1, static_cast<sqlite3_int64>(eventId)) != SQLITE_OK) ||
+		    (sqlite3_bind_text64(statement, 2, resultLabelUtf8.c_str(), resultLabelUtf8.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK) ||
+		    (sqlite3_bind_double(statement, 3, resultScore) != SQLITE_OK) ||
+		    (sqlite3_bind_text64(statement, 4, noteUtf8.c_str(), noteUtf8.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK))
+		{
+			errorMessage = L"Failed to encode or bind SQLite pitch result: " + ToWide(sqlite3_errmsg(m_database));
+			sqlite3_finalize(statement);
+			return false;
+		}
 
 		const int stepResult = sqlite3_step(statement);
 		const int finalizeResult = sqlite3_finalize(statement);
@@ -675,19 +869,19 @@ namespace BaseballSimulatorVR::Data
 
 	std::string SessionLogRepository::ToUtf8(std::wstring_view value)
 	{
-		if (value.empty())
+		if (value.empty() || value.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)()))
 		{
 			return std::string{};
 		}
 
-		const int utf8Size = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+		const int utf8Size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
 		if (utf8Size <= 0)
 		{
 			return std::string{};
 		}
 
 		std::string utf8(utf8Size, '\0');
-		const int convertedSize = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), utf8.data(), utf8Size, nullptr, nullptr);
+		const int convertedSize = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), utf8.data(), utf8Size, nullptr, nullptr);
 		if (convertedSize != utf8Size)
 		{
 			return std::string{};
@@ -698,7 +892,7 @@ namespace BaseballSimulatorVR::Data
 
 	std::wstring SessionLogRepository::ToWide(std::string_view value)
 	{
-		if (value.empty())
+		if (value.empty() || value.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)()))
 		{
 			return std::wstring{};
 		}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Vector3.hpp"
+#include "BallAerodynamicsModel.hpp"
 
 namespace BaseballSimulatorVR::Physics
 {
@@ -11,5 +12,6 @@ namespace BaseballSimulatorVR::Physics
 		Vector3 spinAxis{ 0.0, 1.0, 0.0 };
 		double spinRpm{ 0.0 };
 		double flightTimeSeconds{ 0.0 };
+		BallAerodynamicsModel aerodynamicsModel{ BallAerodynamicsModel::PitchProfile };
 	};
 } // namespace BaseballSimulatorVR::Physics

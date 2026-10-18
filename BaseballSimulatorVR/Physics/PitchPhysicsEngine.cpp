@@ -1,4 +1,5 @@
 #include "PitchPhysicsEngine.hpp"
+#include "BattedBallAerodynamics.hpp"
 
 #include "../Common/MathUtilities.hpp"
 
@@ -6,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <stdexcept>
 
 namespace BaseballSimulatorVR::Physics
 {
@@ -279,11 +281,22 @@ namespace BaseballSimulatorVR::Physics
 			return Vector3{};
 		}
 
+		switch (currentState.aerodynamicsModel)
+		{
+			case BallAerodynamicsModel::BattedBall:
+				return ComputeBattedBallAerodynamicAcceleration(relativeAirVelocity,
+				    currentState.spinAxis, currentState.spinRpm);
+			case BallAerodynamicsModel::PitchProfile:
+				break;
+			default:
+				throw std::invalid_argument("Unknown ball aerodynamics model");
+		}
+
 		const Vector3 velocityDirection = NormalizeOrZero(relativeAirVelocity);
 		const Vector3 normalizedSpinAxis = NormalizeOrZero(
-		    FiniteOrZero(pitchParameters.spinAxis));
+		    FiniteOrZero(currentState.spinAxis));
 		const double spinFactor = std::clamp(
-		    FiniteOr(pitchParameters.spinRpm, 0.0) / 3000.0,
+		    FiniteOr(currentState.spinRpm, 0.0) / 3000.0,
 		    0.0,
 		    2.0);
 		const bool hasMeaningfulSpin =

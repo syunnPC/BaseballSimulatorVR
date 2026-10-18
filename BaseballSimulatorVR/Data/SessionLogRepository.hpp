@@ -3,6 +3,7 @@
 #include "../Baseball/PitchParameters.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -48,6 +49,8 @@ namespace BaseballSimulatorVR::Data
 		[[nodiscard]] bool Initialize(std::wstring_view databasePath, std::wstring& errorMessage);
 		void Shutdown();
 		[[nodiscard]] bool IsInitialized() const noexcept;
+		[[nodiscard]] OperationResult ExportCurrentSessionCsv(
+		    const std::filesystem::path& filePath) const;
 
 		[[nodiscard]] PitchEventLogResult LogPitchEvent(
 		    std::wstring_view eventType,

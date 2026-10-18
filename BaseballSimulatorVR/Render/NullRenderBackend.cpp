@@ -1,7 +1,9 @@
 #include "NullRenderBackend.hpp"
 
 #include "../Common/DebugWorldProjection.hpp"
+#include "../Common/FieldPresentationOverlay.hpp"
 #include "../Common/MathUtilities.hpp"
+#include "../Common/PhaseTrajectoryOverlay.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +12,11 @@
 
 namespace BaseballSimulatorVR::Render
 {
+	void NullRenderBackend::SetFieldPresentationState(const Common::FieldPresentationState& state)
+	{
+		m_fieldPresentation = state;
+	}
+
 	namespace
 	{
 		constexpr COLORREF BackgroundColor = RGB(16, 18, 26);
@@ -34,7 +41,6 @@ namespace BaseballSimulatorVR::Render
 		constexpr double TopViewMinZ = 0.0;
 		constexpr double TopViewMaxZ = 20.0;
 
-		constexpr std::size_t MaxTrajectorySampleCount = 600;
 
 		[[nodiscard]] LONG InterpolateToPixel(double normalizedValue, LONG pixelMin, LONG pixelMax)
 		{
@@ -71,8 +77,7 @@ namespace BaseballSimulatorVR::Render
 	bool NullRenderBackend::Initialize([[maybe_unused]] HWND windowHandle)
 	{
 		m_windowHandle = windowHandle;
-		m_trajectorySamples.clear();
-		m_lastBallFlightTimeSeconds = 0.0;
+		m_trajectoryTrails.Clear();
 		m_duelZonePassMarker.reset();
 		m_batOverlayState.reset();
 		m_isInitialized = true;
@@ -93,6 +98,8 @@ namespace BaseballSimulatorVR::Render
 		{
 			return;
 		}
+		Common::UpdatePhaseTrajectoryTrails(m_trajectoryTrails, ballState,
+		    m_fieldPresentation, std::chrono::steady_clock::now());
 
 		RECT clientRect{};
 		if (GetClientRect(m_windowHandle, &clientRect) == FALSE)
@@ -106,13 +113,6 @@ namespace BaseballSimulatorVR::Render
 		{
 			return;
 		}
-
-		if (ShouldResetTrajectorySamples(ballState))
-		{
-			m_trajectorySamples.clear();
-		}
-		m_lastBallFlightTimeSeconds = ballState.flightTimeSeconds;
-		PushTrajectorySample(ballState.position);
 
 		HDC windowDeviceContext = GetDC(m_windowHandle);
 		if (windowDeviceContext == nullptr)
@@ -164,6 +164,54 @@ namespace BaseballSimulatorVR::Render
 				break;
 			}
 			FillRect(backBufferDeviceContext, &clientRect, backgroundBrush);
+
+			if (m_mirrorViewState.isValid)
+			{
+			    struct Triangle final { std::array<POINT,3> points; float depth; COLORREF color; };
+			    std::vector<Triangle> triangles;
+			    const auto append = [&](const Common::ScreenPoint& a, const Common::ScreenPoint& b,
+			                            const Common::ScreenPoint& c, const float* color) {
+			        const auto point = [](const Common::ScreenPoint& p) { return POINT{static_cast<LONG>(std::lround(p.x)), static_cast<LONG>(std::lround(p.y))}; };
+			        triangles.push_back({{point(a),point(b),point(c)}, (a.depth+b.depth+c.depth)/3.0F,
+			            RGB(static_cast<BYTE>(color[0]*255),static_cast<BYTE>(color[1]*255),static_cast<BYTE>(color[2]*255))});
+			    };
+			    if (m_overlayVisibility.showFloorMesh)
+			        Common::EmitProjectedFloorMeshOverlay(m_mirrorViewState,clientWidth,clientHeight,append);
+			    Common::EmitProjectedFieldPresentation(m_fieldPresentation,m_mirrorViewState,clientWidth,clientHeight,append);
+			    Common::EmitProjectedSolidBatCylinderOverlay(m_mirrorViewState,clientWidth,clientHeight,m_batOverlayState,append);
+			    if (m_fieldPresentation.ballVisible) {
+			        Common::EmitProjectedPhaseBallAndTrajectoryMeshOverlay(m_mirrorViewState,clientWidth,clientHeight,
+			            m_trajectoryTrails,m_overlayVisibility,ballState,append,m_renderQuality.trailOpacityScale);
+			    }
+			    std::stable_sort(triangles.begin(),triangles.end(),[](const auto& a,const auto& b) { return a.depth>b.depth; });
+			    const auto oldPen = SelectObject(backBufferDeviceContext,GetStockObject(NULL_PEN));
+			    const auto oldBrush = SelectObject(backBufferDeviceContext,GetStockObject(DC_BRUSH));
+			    for (const auto& tri : triangles) {
+			        SetDCBrushColor(backBufferDeviceContext,tri.color);
+			        Polygon(backBufferDeviceContext,tri.points.data(),3);
+			    }
+			    const auto marker = [&](const Common::ScreenPoint& p, LONG radius, const float* color) {
+			        SetDCBrushColor(backBufferDeviceContext,RGB(static_cast<BYTE>(color[0]*255),static_cast<BYTE>(color[1]*255),static_cast<BYTE>(color[2]*255)));
+			        const LONG x=static_cast<LONG>(std::lround(p.x)), y=static_cast<LONG>(std::lround(p.y));
+			        Rectangle(backBufferDeviceContext,x-radius,y-radius,x+radius+1,y+radius+1);
+			    };
+			    const auto line = [&](const Common::ScreenPoint& a,const Common::ScreenPoint& b,LONG radius,const float* color) {
+			        const double length=std::hypot(b.x-a.x,b.y-a.y);
+			        const int steps=(std::max)(1,static_cast<int>(std::ceil(length/2)));
+			        for(int i=0;i<=steps;++i) {
+			            const double t=static_cast<double>(i)/steps;
+			            marker({a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.depth},radius,color);
+			        }
+			    };
+			    const std::vector<Physics::Vector3> noTrail{};
+			    Common::EmitProjectedDebugWorldOverlay(m_mirrorViewState,clientWidth,clientHeight,noTrail,ballState,marker,line,
+			        false,false,m_overlayVisibility.showStrikeZone,false);
+			    Common::EmitProjectedZonePassCircleOverlay(m_mirrorViewState,clientWidth,clientHeight,m_duelZonePassMarker,line);
+			    SelectObject(backBufferDeviceContext,oldBrush);
+			    SelectObject(backBufferDeviceContext,oldPen);
+			    canPresent = true;
+			    break;
+			}
 
 			panelBorderPen = CreatePen(PS_SOLID, 1, PanelBorderColor);
 			strikeZonePen = CreatePen(PS_SOLID, 2, StrikeZoneColor);
@@ -238,15 +286,16 @@ namespace BaseballSimulatorVR::Render
 				    std::max(topStrikeMin.y, topStrikeMax.y));
 			}
 
-			if (m_overlayVisibility.showTrajectory)
+			if (m_fieldPresentation.ballVisible)
 			{
 				SelectObject(backBufferDeviceContext, trajectoryPen);
+				m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryTrail& trail) {
 				std::vector<POINT> sideViewTrajectory{};
 				std::vector<POINT> topViewTrajectory{};
-				sideViewTrajectory.reserve(m_trajectorySamples.size());
-				topViewTrajectory.reserve(m_trajectorySamples.size());
+				sideViewTrajectory.reserve(trail.Points().size());
+				topViewTrajectory.reserve(trail.Points().size());
 
-				for (const Physics::Vector3& sample : m_trajectorySamples)
+				for (const Physics::Vector3& sample : trail.Points())
 				{
 					sideViewTrajectory.push_back(ProjectSideViewPoint(sample, sideViewRect));
 					topViewTrajectory.push_back(ProjectTopViewPoint(sample, topViewRect));
@@ -254,6 +303,7 @@ namespace BaseballSimulatorVR::Render
 
 				DrawTrajectory(backBufferDeviceContext, sideViewTrajectory);
 				DrawTrajectory(backBufferDeviceContext, topViewTrajectory);
+				});
 			}
 
 			const POINT sideBall = ProjectSideViewPoint(ballState.position, sideViewRect);
@@ -268,6 +318,8 @@ namespace BaseballSimulatorVR::Render
 			                                               Common::DebugWorldStyle::BallMeshRadiusMeters *
 			                                               (static_cast<double>(topViewRect.right - topViewRect.left) /
 			                                                (TopViewMaxX - TopViewMinX)))));
+			if (m_fieldPresentation.ballVisible)
+			{
 			SelectObject(backBufferDeviceContext, ballBrush);
 			Ellipse(
 			    backBufferDeviceContext,
@@ -281,6 +333,7 @@ namespace BaseballSimulatorVR::Render
 			    topBall.y - topBallRadiusPixels,
 			    topBall.x + topBallRadiusPixels,
 			    topBall.y + topBallRadiusPixels);
+			}
 
 			if (m_duelZonePassMarker.has_value())
 			{
@@ -470,8 +523,7 @@ namespace BaseballSimulatorVR::Render
 	{
 		m_isInitialized = false;
 		m_windowHandle = nullptr;
-		m_trajectorySamples.clear();
-		m_lastBallFlightTimeSeconds = 0.0;
+		m_trajectoryTrails.Clear();
 		m_duelZonePassMarker.reset();
 		m_batOverlayState.reset();
 	}
@@ -486,8 +538,9 @@ namespace BaseballSimulatorVR::Render
 		return Common::GraphicsBinding{};
 	}
 
-	void NullRenderBackend::SetDesktopMirrorView([[maybe_unused]] const Common::ViewProjectionState& mirrorViewState)
+	void NullRenderBackend::SetDesktopMirrorView(const Common::ViewProjectionState& mirrorViewState)
 	{
+		m_mirrorViewState = mirrorViewState;
 	}
 
 	void NullRenderBackend::SetOverlayVisibility(const Common::OverlayVisibilitySettings& overlayVisibility)
@@ -561,46 +614,4 @@ namespace BaseballSimulatorVR::Render
 		return projectedPoint;
 	}
 
-	bool NullRenderBackend::ShouldResetTrajectorySamples(
-	    const Physics::BallState& ballState) const noexcept
-	{
-		const double velocityMagnitudeSquared =
-		    Physics::LengthSquared(ballState.velocity);
-		const bool isStaticBallSample =
-		    (ballState.flightTimeSeconds <= 1e-6) &&
-		    (velocityMagnitudeSquared <= 1e-8);
-		const bool isDynamicSampleAtCycleStart =
-		    (ballState.flightTimeSeconds <= 1e-6) &&
-		    (velocityMagnitudeSquared > 1e-8) &&
-		    (m_lastBallFlightTimeSeconds <= 1e-6);
-		return isStaticBallSample ||
-		       isDynamicSampleAtCycleStart ||
-		       (ballState.flightTimeSeconds < m_lastBallFlightTimeSeconds);
-	}
-
-	void NullRenderBackend::PushTrajectorySample(const Physics::Vector3& position)
-	{
-		if (!m_trajectorySamples.empty())
-		{
-			const Physics::Vector3& latest = m_trajectorySamples.back();
-			if (position.z < (latest.z - 1.0))
-			{
-				m_trajectorySamples.clear();
-			}
-			else
-			{
-				const Physics::Vector3 delta = position - latest;
-				if (Physics::LengthSquared(delta) < 1e-7)
-				{
-					return;
-				}
-			}
-		}
-
-		m_trajectorySamples.push_back(position);
-		if (m_trajectorySamples.size() > MaxTrajectorySampleCount)
-		{
-			m_trajectorySamples.pop_front();
-		}
-	}
 } // namespace BaseballSimulatorVR::Render

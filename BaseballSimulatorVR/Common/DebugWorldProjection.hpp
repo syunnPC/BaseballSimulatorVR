@@ -4,7 +4,10 @@
 #include "../Physics/BallState.hpp"
 #include "../Physics/Vector3.hpp"
 #include "BatOverlayState.hpp"
+#include "PreparedWorldProjection.hpp"
+#include "IndexedWorldMesh.hpp"
 #include "ViewProjectionState.hpp"
+#include "StrikeZoneCalibration.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,17 +20,10 @@
 
 namespace BaseballSimulatorVR::Common
 {
-	struct ScreenPoint final
-	{
-		double x{ 0.0 };
-		double y{ 0.0 };
-		float depth{ 0.0F };
-	};
-
 	namespace DebugWorldLayout
 	{
 		inline constexpr double NearClipMeters = 0.05;
-		inline constexpr double FarClipMeters = 64.0;
+		inline constexpr double FarClipMeters = 400.0;
 		inline constexpr double FieldGridHalfWidthMeters = 8.0;
 		inline constexpr double FieldGridNearDepthMeters = 0.5;
 		inline constexpr double FieldGridFarDepthMeters = 28.0;
@@ -145,43 +141,6 @@ namespace BaseballSimulatorVR::Common
 		return g_strikeZoneRuntimeSettings.widthMeters * 0.5;
 	}
 
-	// Strike zone auto-calibration from player height.
-	// Lower bound: top of knees ≈ 27% of height.
-	// Upper bound: midpoint between shoulders and top of pants ≈ 53.5% of height.
-	inline constexpr double StrikeZoneBottomHeightFraction = 0.270;
-	inline constexpr double StrikeZoneTopHeightFraction = 0.535;
-	// Eye height is approximately 93% of full standing height.
-	inline constexpr double EyeHeightToFullHeightFraction = 0.93;
-
-	[[nodiscard]] inline double EstimatePlayerHeightFromEyeHeight(
-	    const double eyeHeightMeters) noexcept
-	{
-		if (eyeHeightMeters <= 0.0)
-		{
-			return 0.0;
-		}
-		return eyeHeightMeters / EyeHeightToFullHeightFraction;
-	}
-
-	struct StrikeZoneFromHeight final
-	{
-		double bottomMeters{ 0.0 };
-		double heightMeters{ 0.0 };
-	};
-
-	[[nodiscard]] inline StrikeZoneFromHeight ComputeStrikeZoneFromPlayerHeight(
-	    const double playerHeightMeters) noexcept
-	{
-		const double bottom =
-		    playerHeightMeters * StrikeZoneBottomHeightFraction;
-		const double top =
-		    playerHeightMeters * StrikeZoneTopHeightFraction;
-		return StrikeZoneFromHeight{
-			bottom,
-			top - bottom
-		};
-	}
-
 	struct MainControlPanelLayout final
 	{
 		double centerX{ DebugWorldLayout::MainControlPanelCenterXMeters };
@@ -253,101 +212,22 @@ namespace BaseballSimulatorVR::Common
 	[[nodiscard]] inline Physics::Vector3 ConvertSimulationPositionToWorld(
 	    const Physics::Vector3& simulationPosition)
 	{
-		return Physics::Vector3{
-			simulationPosition.x,
-			simulationPosition.y,
-			simulationPosition.z -
-			    (GetPitchDistanceMeters() +
-			     DebugWorldLayout::BatterToPlateDistanceMeters)
-		};
+		return Physics::Vector3{simulationPosition.x, simulationPosition.y,
+		    simulationPosition.z -
+		        (GetPitchDistanceMeters() + DebugWorldLayout::BatterToPlateDistanceMeters)};
 	}
 
-	[[nodiscard]] inline bool TryProjectWorldToScreen(
-	    const Physics::Vector3& worldPosition,
-	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
-	    ScreenPoint* const projectedPoint,
-	    const bool requireVisibleBounds = true)
+	[[nodiscard]] inline bool TryProjectWorldToScreen(const Physics::Vector3& worldPosition,
+	    const ViewProjectionState& projectionState, const LONG width, const LONG height,
+	    ScreenPoint* const projectedPoint, const bool requireVisibleBounds = true)
 	{
-		if ((projectedPoint == nullptr) || !projectionState.isValid ||
-		    (width <= 0) || (height <= 0))
-		{
-			return false;
-		}
-
-		const double dx = worldPosition.x - projectionState.position.x;
-		const double dy = worldPosition.y - projectionState.position.y;
-		const double dz = worldPosition.z - projectionState.position.z;
-
-		const double qx = projectionState.orientation.x;
-		const double qy = projectionState.orientation.y;
-		const double qz = projectionState.orientation.z;
-		const double qw = projectionState.orientationW;
-
-		const double r00 = 1.0 - (2.0 * ((qy * qy) + (qz * qz)));
-		const double r01 = 2.0 * ((qx * qy) - (qz * qw));
-		const double r02 = 2.0 * ((qx * qz) + (qy * qw));
-		const double r10 = 2.0 * ((qx * qy) + (qz * qw));
-		const double r11 = 1.0 - (2.0 * ((qx * qx) + (qz * qz)));
-		const double r12 = 2.0 * ((qy * qz) - (qx * qw));
-		const double r20 = 2.0 * ((qx * qz) - (qy * qw));
-		const double r21 = 2.0 * ((qy * qz) + (qx * qw));
-		const double r22 = 1.0 - (2.0 * ((qx * qx) + (qy * qy)));
-
-		const double viewX = (r00 * dx) + (r10 * dy) + (r20 * dz);
-		const double viewY = (r01 * dx) + (r11 * dy) + (r21 * dz);
-		const double viewZ = (r02 * dx) + (r12 * dy) + (r22 * dz);
-		if (viewZ >= -DebugWorldLayout::NearClipMeters)
-		{
-			return false;
-		}
-
-		const double tanLeft = std::tan(projectionState.fovLeftRadians);
-		const double tanRight = std::tan(projectionState.fovRightRadians);
-		const double tanUp = std::tan(projectionState.fovUpRadians);
-		const double tanDown = std::tan(projectionState.fovDownRadians);
-
-		const double horizontalRange = tanRight - tanLeft;
-		const double verticalRange = tanUp - tanDown;
-		if ((horizontalRange <= 1e-6) || (verticalRange <= 1e-6))
-		{
-			return false;
-		}
-
-		const double invDepth = 1.0 / (-viewZ);
-		const double projectedX = viewX * invDepth;
-		const double projectedY = viewY * invDepth;
-		const double normalizedX = (projectedX - tanLeft) / horizontalRange;
-		const double normalizedY = (projectedY - tanDown) / verticalRange;
-		if (requireVisibleBounds &&
-		    ((normalizedX < 0.0) || (normalizedX > 1.0) ||
-		     (normalizedY < 0.0) || (normalizedY > 1.0)))
-		{
-			return false;
-		}
-
-		const double widthScale = static_cast<double>((std::max)(1L, width - 1));
-		const double heightScale = static_cast<double>((std::max)(1L, height - 1));
-		const double pixelX = normalizedX * widthScale;
-		const double pixelY = (1.0 - normalizedY) * heightScale;
-		const double longMin = static_cast<double>((std::numeric_limits<LONG>::min)());
-		const double longMax = static_cast<double>((std::numeric_limits<LONG>::max)());
-		projectedPoint->x = std::clamp(pixelX, longMin, longMax);
-		projectedPoint->y = std::clamp(pixelY, longMin, longMax);
-		const double linearDepth = std::clamp(
-		    ((-viewZ) - DebugWorldLayout::NearClipMeters) /
-		        (DebugWorldLayout::FarClipMeters - DebugWorldLayout::NearClipMeters),
-		    0.0,
-		    1.0);
-		projectedPoint->depth = static_cast<float>(linearDepth);
-		return true;
+		const PreparedWorldProjection projection(projectionState, width, height,
+		    DebugWorldLayout::NearClipMeters, DebugWorldLayout::FarClipMeters);
+		return projection.Project(worldPosition, projectedPoint, requireVisibleBounds);
 	}
 
 	[[nodiscard]] inline ScreenPoint ProjectLegacyWorldToScreen(
-	    const Physics::Vector3& position,
-	    const LONG width,
-	    const LONG height)
+	    const Physics::Vector3& position, const LONG width, const LONG height)
 	{
 		const double normalizedDepth = std::clamp(
 		    position.z / DebugWorldLayout::LegacyProjectionDepthMeters,
@@ -422,15 +302,10 @@ namespace BaseballSimulatorVR::Common
 		}
 	}
 
-	[[nodiscard]] inline bool TryProjectWorldTriangle(
-	    const Physics::Vector3& worldPoint0,
-	    const Physics::Vector3& worldPoint1,
-	    const Physics::Vector3& worldPoint2,
-	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
-	    ScreenPoint* const projectedPoint0,
-	    ScreenPoint* const projectedPoint1,
+	[[nodiscard]] inline bool TryProjectWorldTriangle(const Physics::Vector3& worldPoint0,
+	    const Physics::Vector3& worldPoint1, const Physics::Vector3& worldPoint2,
+	    const ViewProjectionState& projectionState, const LONG width, const LONG height,
+	    ScreenPoint* const projectedPoint0, ScreenPoint* const projectedPoint1,
 	    ScreenPoint* const projectedPoint2)
 	{
 		if ((projectedPoint0 == nullptr) || (projectedPoint1 == nullptr) ||
@@ -439,27 +314,11 @@ namespace BaseballSimulatorVR::Common
 			return false;
 		}
 
-		return TryProjectWorldToScreen(
-		           worldPoint0,
-		           projectionState,
-		           width,
-		           height,
-		           projectedPoint0,
-		           false) &&
-		       TryProjectWorldToScreen(
-		           worldPoint1,
-		           projectionState,
-		           width,
-		           height,
-		           projectedPoint1,
-		           false) &&
-		       TryProjectWorldToScreen(
-		           worldPoint2,
-		           projectionState,
-		           width,
-		           height,
-		           projectedPoint2,
-		           false);
+		const PreparedWorldProjection projection(projectionState, width, height,
+		    DebugWorldLayout::NearClipMeters, DebugWorldLayout::FarClipMeters);
+		return projection.Project(worldPoint0, projectedPoint0, false) &&
+		       projection.Project(worldPoint1, projectedPoint1, false) &&
+		       projection.Project(worldPoint2, projectedPoint2, false);
 	}
 
 	template <typename TDrawTriangleFn>
@@ -1054,7 +913,8 @@ namespace BaseballSimulatorVR::Common
 	    const Physics::BallState& latestBallState,
 	    TDrawTriangleFn&& drawTriangle,
 	    const float trailOpacityScale = 1.0F,
-	    const float staleFadeProgress = 0.0F)
+	    const float staleFadeProgress = 0.0F,
+	    const bool drawBall = true)
 	{
 		if (!projectionState.isValid || (width <= 0) || (height <= 0))
 		{
@@ -1195,6 +1055,7 @@ namespace BaseballSimulatorVR::Common
 			}
 		}
 
+		if (!drawBall) return;
 		const Physics::Vector3 ballCenter =
 		    ConvertSimulationPositionToWorld(latestBallState.position);
 		constexpr double pi = 3.14159265358979323846;
@@ -1966,139 +1827,134 @@ namespace BaseballSimulatorVR::Common
 		}
 	}
 
-	template <typename TDrawTriangleFn>
-	void EmitProjectedFloorMeshOverlay(
-	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
-	    TDrawTriangleFn&& drawTriangle)
+	[[nodiscard]] inline IndexedWorldMesh BuildFloorWorldMesh(
+	    double strikeZoneWidthMeters, double fanRadiusMeters)
 	{
-		if (!projectionState.isValid || (width <= 0) || (height <= 0))
-		{
-			return;
-		}
-
-		const double strikeZoneWidthMeters = (std::max)(0.20,
-		                                                GetStrikeZoneHalfWidthMeters() * 2.0);
+		IndexedWorldMesh mesh;
+		strikeZoneWidthMeters = (std::max)(.20, strikeZoneWidthMeters);
 		const double targetChordLengthMeters = strikeZoneWidthMeters + 2.0;
-		const double plateDepthFromCenterMeters = (std::max)(0.10,
-		                                                     std::abs(DebugWorldLayout::BatterToPlateDistanceMeters));
-		const double halfChordLengthMeters = targetChordLengthMeters * 0.5;
-		const double halfAngleRadians = std::atan2(
-		    halfChordLengthMeters,
-		    plateDepthFromCenterMeters);
-		const double innerRadiusMeters = std::sqrt(
-		    (plateDepthFromCenterMeters * plateDepthFromCenterMeters) +
-		    (halfChordLengthMeters * halfChordLengthMeters));
-		const double outerRadiusMeters = (std::max)(innerRadiusMeters + 1.0,
-		                                            GetGroundFanRadiusMeters());
-		if ((halfAngleRadians <= 1e-6) ||
-		    (innerRadiusMeters <= 1e-6) ||
-		    (outerRadiusMeters <= innerRadiusMeters))
+		const double plateDepthFromCenterMeters =
+		    (std::max)(.10, std::abs(DebugWorldLayout::BatterToPlateDistanceMeters));
+		const double halfChordLengthMeters = targetChordLengthMeters * .5;
+		const double halfAngleRadians =
+		    std::atan2(halfChordLengthMeters, plateDepthFromCenterMeters);
+		const double innerRadiusMeters =
+		    std::sqrt(plateDepthFromCenterMeters * plateDepthFromCenterMeters +
+		              halfChordLengthMeters * halfChordLengthMeters);
+		const double outerRadiusMeters = (std::max)(innerRadiusMeters + 1.0, fanRadiusMeters);
+		if (halfAngleRadians <= 1e-6 || innerRadiusMeters <= 1e-6 ||
+		    outerRadiusMeters <= innerRadiusMeters)
 		{
-			return;
+			return mesh;
 		}
-
-		const double tileStepMeters = (std::max)(DebugWorldStyle::FloorMeshTileSizeMeters * 2.0,
-		                                         0.50);
+		const double tileStepMeters =
+		    (std::max)(DebugWorldStyle::FloorMeshTileSizeMeters * 2.0, .50);
 		const int radialTileCount = std::clamp(
-		    static_cast<int>(std::ceil(
-		        (outerRadiusMeters - innerRadiusMeters) /
-		        tileStepMeters)),
-		    1,
-		    120);
-		const double angularArcLengthMeters =
-		    (halfAngleRadians * 2.0) * outerRadiusMeters;
-		const int angularTileCount = std::clamp(
-		    static_cast<int>(std::ceil(
-		        angularArcLengthMeters / tileStepMeters)),
-		    16,
-		    180);
+		    static_cast<int>(std::ceil((outerRadiusMeters - innerRadiusMeters) / tileStepMeters)),
+		    1, 120);
+		const int angularTileCount =
+		    std::clamp(static_cast<int>(
+		                   std::ceil(halfAngleRadians * 2.0 * outerRadiusMeters / tileStepMeters)),
+		        16, 180);
 		const double angularSpanRadians = halfAngleRadians * 2.0;
-		for (int radialIndex = 0; radialIndex < radialTileCount; ++radialIndex)
+		std::vector<std::array<double, 2>> angles;
+		angles.reserve(static_cast<std::size_t>(angularTileCount) + 1);
+		for (int angleIndex = 0; angleIndex <= angularTileCount; ++angleIndex)
 		{
-			const double radiusNear = innerRadiusMeters +
-			                          ((outerRadiusMeters - innerRadiusMeters) *
-			                           (static_cast<double>(radialIndex) /
-			                            static_cast<double>(radialTileCount)));
-			const double radiusFar = innerRadiusMeters +
-			                         ((outerRadiusMeters - innerRadiusMeters) *
-			                          (static_cast<double>(radialIndex + 1) /
-			                           static_cast<double>(radialTileCount)));
-			for (int angleIndex = 0; angleIndex < angularTileCount; ++angleIndex)
+			const double angle =
+			    -halfAngleRadians +
+			    angularSpanRadians * (static_cast<double>(angleIndex) / angularTileCount);
+			angles.push_back({std::sin(angle), std::cos(angle)});
+		}
+		mesh.vertices.reserve(
+		    static_cast<std::size_t>(radialTileCount + 1) * (angularTileCount + 1));
+		mesh.triangles.reserve(static_cast<std::size_t>(radialTileCount) * angularTileCount * 2);
+		for (int radialIndex = 0; radialIndex <= radialTileCount; ++radialIndex)
+		{
+			const double radius =
+			    innerRadiusMeters + (outerRadiusMeters - innerRadiusMeters) *
+			                            (static_cast<double>(radialIndex) / radialTileCount);
+			for (const auto& angle : angles)
 			{
-				const double angleNear = -halfAngleRadians +
-				                         (angularSpanRadians *
-				                          (static_cast<double>(angleIndex) /
-				                           static_cast<double>(angularTileCount)));
-				const double angleFar = -halfAngleRadians +
-				                        (angularSpanRadians *
-				                         (static_cast<double>(angleIndex + 1) /
-				                          static_cast<double>(angularTileCount)));
-				const Physics::Vector3 topLeft{
-					std::sin(angleNear) * radiusNear,
-					DebugWorldStyle::FloorMeshHeightMeters,
-					-std::cos(angleNear) * radiusNear
-				};
-				const Physics::Vector3 topRight{
-					std::sin(angleFar) * radiusNear,
-					DebugWorldStyle::FloorMeshHeightMeters,
-					-std::cos(angleFar) * radiusNear
-				};
-				const Physics::Vector3 bottomRight{
-					std::sin(angleFar) * radiusFar,
-					DebugWorldStyle::FloorMeshHeightMeters,
-					-std::cos(angleFar) * radiusFar
-				};
-				const Physics::Vector3 bottomLeft{
-					std::sin(angleNear) * radiusFar,
-					DebugWorldStyle::FloorMeshHeightMeters,
-					-std::cos(angleNear) * radiusFar
-				};
-
-				const bool usePrimaryColor = ((radialIndex + angleIndex) % 2) == 0;
-				const float* tileColor = usePrimaryColor
-				                             ? DebugWorldStyle::FloorMeshTileColorA.data()
-				                             : DebugWorldStyle::FloorMeshTileColorB.data();
-				const double radialBlend =
-				    (radialTileCount > 1)
-				        ? (static_cast<double>(radialIndex) /
-				           static_cast<double>(radialTileCount - 1))
-				        : 0.0;
-				const double angleBlend = std::abs(
-				                              ((static_cast<double>(angleIndex) + 0.5) /
-				                               static_cast<double>(angularTileCount)) -
-				                              0.5) *
-				                          2.0;
-				const float brightnessScale = static_cast<float>(std::clamp(
-				    0.94 - (radialBlend * 0.26) - (angleBlend * 0.08),
-				    0.55,
-				    1.0));
-				const std::array<float, 4> shadedTileColor{
-					tileColor[0] * brightnessScale,
-					tileColor[1] * brightnessScale,
-					tileColor[2] * brightnessScale,
-					tileColor[3]
-				};
-				EmitProjectedWorldTriangle(
-				    topLeft,
-				    topRight,
-				    bottomRight,
-				    projectionState,
-				    width,
-				    height,
-				    shadedTileColor.data(),
-				    drawTriangle);
-				EmitProjectedWorldTriangle(
-				    topLeft,
-				    bottomRight,
-				    bottomLeft,
-				    projectionState,
-				    width,
-				    height,
-				    shadedTileColor.data(),
-				    drawTriangle);
+				mesh.vertices.push_back({angle[0] * radius, DebugWorldStyle::FloorMeshHeightMeters,
+				    -angle[1] * radius});
 			}
 		}
+		for (int radialIndex = 0; radialIndex < radialTileCount; ++radialIndex)
+		{
+			for (int angleIndex = 0; angleIndex < angularTileCount; ++angleIndex)
+			{
+				const auto& tileColor = (radialIndex + angleIndex) % 2 == 0
+				                            ? DebugWorldStyle::FloorMeshTileColorA
+				                            : DebugWorldStyle::FloorMeshTileColorB;
+				const double radialBlend =
+				    radialTileCount > 1 ? static_cast<double>(radialIndex) / (radialTileCount - 1)
+				                        : 0.0;
+				const double angleBlend =
+				    std::abs((static_cast<double>(angleIndex) + .5) / angularTileCount - .5) * 2.0;
+				const float brightnessScale = static_cast<float>(
+				    std::clamp(.94 - radialBlend * .26 - angleBlend * .08, .55, 1.0));
+				const std::array<float, 4> color{tileColor[0] * brightnessScale,
+				    tileColor[1] * brightnessScale, tileColor[2] * brightnessScale, tileColor[3]};
+				const auto topLeft =
+				    static_cast<std::uint32_t>(radialIndex * (angularTileCount + 1) + angleIndex);
+				const auto topRight = topLeft + 1,
+				           bottomLeft = topLeft + static_cast<std::uint32_t>(angularTileCount + 1),
+				           bottomRight = bottomLeft + 1;
+				mesh.triangles.push_back({{topLeft, topRight, bottomRight}, color});
+				mesh.triangles.push_back({{topLeft, bottomRight, bottomLeft}, color});
+			}
+		}
+		return mesh;
+	}
+	class FloorWorldMeshCache final
+	{
+	  public:
+		[[nodiscard]] const IndexedWorldMesh& Get(
+		    double strikeZoneWidthMeters, double fanRadiusMeters)
+		{
+			// One current configuration bounds memory even while settings are edited.
+			if (!m_valid || m_width != strikeZoneWidthMeters || m_radius != fanRadiusMeters)
+			{
+				m_mesh = BuildFloorWorldMesh(strikeZoneWidthMeters, fanRadiusMeters);
+				m_width = strikeZoneWidthMeters;
+				m_radius = fanRadiusMeters;
+				m_valid = true;
+				++m_buildCount;
+			}
+			return m_mesh;
+		}
+		[[nodiscard]] std::uint64_t BuildCount() const noexcept
+		{
+			return m_buildCount;
+		}
+
+	  private:
+		IndexedWorldMesh m_mesh;
+		double m_width{}, m_radius{};
+		bool m_valid{};
+		std::uint64_t m_buildCount{};
+	};
+	[[nodiscard]] inline const IndexedWorldMesh& GetFloorWorldMesh(
+	    double strikeZoneWidthMeters, double fanRadiusMeters)
+	{
+		static thread_local FloorWorldMeshCache cache;
+		return cache.Get(strikeZoneWidthMeters, fanRadiusMeters);
+	}
+	template <typename TDrawTriangleFn>
+	void EmitProjectedFloorMeshOverlay(
+	    const ViewProjectionState& view, LONG width, LONG height, TDrawTriangleFn&& triangle)
+	{
+		if (!view.isValid || width <= 0 || height <= 0)
+		{
+			return;
+		}
+		static thread_local WorldMeshProjectionWorkspace workspace;
+		const auto& mesh =
+		    GetFloorWorldMesh(GetStrikeZoneHalfWidthMeters() * 2.0, GetGroundFanRadiusMeters());
+		workspace.Emit(mesh,
+		    PreparedWorldProjection(view, width, height, DebugWorldLayout::NearClipMeters,
+		        DebugWorldLayout::FarClipMeters),
+		    triangle);
 	}
 } // namespace BaseballSimulatorVR::Common

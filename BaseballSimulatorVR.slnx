@@ -3,4 +3,5 @@
     <Platform Name="x64" />
   </Configurations>
   <Project Path="BaseballSimulatorVR/BaseballSimulatorVR.vcxproj" Id="a85445c2-e3c5-446e-88ee-d16c24c26994" />
+  <Project Path="Tests/BaseballSimulatorVR.Tests.vcxproj" Id="a182f7df-1245-4bf8-bce3-1da55db13618" />
 </Solution>

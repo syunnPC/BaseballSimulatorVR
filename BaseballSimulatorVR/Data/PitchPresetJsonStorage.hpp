@@ -22,6 +22,7 @@ namespace BaseballSimulatorVR::Data
 		std::vector<PitchProfileEntry> pitchProfiles{};
 		int activePitchProfileIndex{ -1 };
 		bool randomPitchProfileEnabled{ true };
+		bool pitcherThrowsLeftHanded{ false };
 	};
 
 	class PitchPresetJsonStorage final

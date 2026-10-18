@@ -116,11 +116,6 @@ namespace BaseballSimulatorVR::Simulation
 		m_ballState.flightTimeSeconds = FiniteOr(
 		    m_ballState.flightTimeSeconds,
 		    defaults.flightTimeSeconds);
-
-		m_pitchParameters.initialVelocity = m_ballState.velocity;
-		m_pitchParameters.releaseHeightMeters = m_ballState.position.y;
-		m_pitchParameters.spinAxis = m_ballState.spinAxis;
-		m_pitchParameters.spinRpm = m_ballState.spinRpm;
 	}
 
 	const Physics::BallState& PitchSimulationService::GetBallState() const noexcept

@@ -1,13 +1,15 @@
 #include "FrameStatistics.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace BaseballSimulatorVR::Core
 {
 	void FrameStatistics::AddFrameSample(std::chrono::duration<double> frameDuration)
 	{
-		if (frameDuration <= std::chrono::duration<double>::zero())
+		if (!std::isfinite(frameDuration.count()) ||
+		    frameDuration <= std::chrono::duration<double>::zero())
 		{
 			return;
 		}

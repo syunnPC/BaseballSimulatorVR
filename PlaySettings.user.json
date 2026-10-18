@@ -7,12 +7,12 @@
   "duelPitchPreviewEnabled": true,
   "_comment_batUseRightHand": "Use right hand for bat control (false = left hand)",
   "batUseRightHand": true,
-  "_comment_pitchTrajectoryVisible": "Show trajectory in PitchTrajectory mode",
+  "_comment_pitchTrajectoryVisible": "Show pitched-ball trajectory in every mode, independently of batted balls",
   "pitchTrajectoryVisible": true,
-  "_comment_battedTrajectoryVisible": "Show trajectory in BattingDuel/Tee mode",
+  "_comment_battedTrajectoryVisible": "Show batted-ball trajectory in every mode, independently of pitches",
   "battedTrajectoryVisible": true,
   "_comment_duelTargetZoneMask": "Target zone bit mask for duel mode (25-zone grid)",
   "duelTargetZoneMask": 0,
-  "_comment_duelTargetZoneIndex": "Legacy single-zone index for compatibility (null if none)",
+  "_comment_duelTargetZoneIndex": "Single-zone selection index (null if none)",
   "duelTargetZoneIndex": null
 }

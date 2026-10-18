@@ -1,9 +1,14 @@
 #include "NullXrSystem.hpp"
 #include "../Common/D3d12DebugOverlay.hpp"
 #include "../Common/DebugWorldProjection.hpp"
+#include "../Common/FieldPresentationOverlay.hpp"
+#include "../Common/UiTextRasterization.hpp"
+#include "../Common/UiTextAtlas.hpp"
+#include "../Common/TransparentGeometry.hpp"
+#include "../Common/BatPoseUtilities.hpp"
 #include "../Common/FxaaPipelineUtilities.hpp"
 #include "../Common/RuntimeLimits.hpp"
-#include "../Common/TrajectoryTrail.hpp"
+#include "../Common/PhaseTrajectoryOverlay.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <span>
 #include <string>
@@ -24,6 +30,11 @@
 
 namespace BaseballSimulatorVR::Xr
 {
+	void NullXrSystem::SetFieldPresentationState(const Common::FieldPresentationState& state)
+	{
+		m_fieldPresentation = state;
+	}
+
 	namespace
 	{
 		constexpr wchar_t ActiveRuntimeValueName[] = L"ActiveRuntime";
@@ -38,7 +49,7 @@ namespace BaseballSimulatorVR::Xr
 			DXGI_FORMAT_B8G8R8A8_UNORM
 		};
 		constexpr DXGI_FORMAT DepthBufferFormat = DXGI_FORMAT_D32_FLOAT;
-		constexpr UINT MaxDebugVertices = 65536;
+		constexpr UINT MaxDebugVertices = 262144;
 #if defined(BASEBALLSIMVR_DISABLE_WORLD_DRAW)
 		constexpr bool EnableDebugDraw = false;
 #else
@@ -188,52 +199,6 @@ namespace BaseballSimulatorVR::Xr
 			       std::to_wstring(static_cast<unsigned long long>(static_cast<unsigned long>(result))) + L")";
 		}
 
-		[[nodiscard]] std::wstring BuildHresultHex(const HRESULT result)
-		{
-			std::wstringstream stream{};
-			stream << std::uppercase << std::hex << std::setw(8) << std::setfill(L'0')
-			       << static_cast<unsigned long>(result);
-			return stream.str();
-		}
-
-		[[nodiscard]] std::wstring BuildPipelineInitPhaseToken(
-		    const Common::DebugOverlay::PipelineInitializationPhase phase)
-		{
-			switch (phase)
-			{
-				case Common::DebugOverlay::PipelineInitializationPhase::InvalidArguments:
-					return L"invalidargs";
-				case Common::DebugOverlay::PipelineInitializationPhase::SerializeRootSignature:
-					return L"serializeroot";
-				case Common::DebugOverlay::PipelineInitializationPhase::CreateRootSignature:
-					return L"createroot";
-				case Common::DebugOverlay::PipelineInitializationPhase::CompileVertexShader:
-					return L"compilevs";
-				case Common::DebugOverlay::PipelineInitializationPhase::CompilePixelShader:
-					return L"compileps";
-				case Common::DebugOverlay::PipelineInitializationPhase::CreatePipelineState:
-					return L"createpso";
-				case Common::DebugOverlay::PipelineInitializationPhase::None:
-				default:
-					return L"none";
-			}
-		}
-
-		[[nodiscard]] std::wstring BuildVertexInitPhaseToken(
-		    const Common::DebugOverlay::VertexBufferInitializationPhase phase)
-		{
-			switch (phase)
-			{
-				case Common::DebugOverlay::VertexBufferInitializationPhase::InvalidArguments:
-					return L"invalidargs";
-				case Common::DebugOverlay::VertexBufferInitializationPhase::CreateCommittedResource:
-					return L"createresource";
-				case Common::DebugOverlay::VertexBufferInitializationPhase::None:
-				default:
-					return L"none";
-			}
-		}
-
 		[[nodiscard]] std::wstring BuildDebugPipelineInitializationErrorMessage(
 		    const Common::DebugOverlay::PipelineInitializationPhase failedPhase,
 		    const HRESULT failedResult)
@@ -258,40 +223,6 @@ namespace BaseballSimulatorVR::Xr
 				case Common::DebugOverlay::PipelineInitializationPhase::None:
 				default:
 					return L"debug pipeline initialization failed";
-			}
-		}
-
-		[[nodiscard]] std::wstring BuildDebugVertexBufferInitializationErrorMessage(
-		    const Common::DebugOverlay::VertexBufferInitializationPhase failedPhase,
-		    const HRESULT failedResult)
-		{
-			switch (failedPhase)
-			{
-				case Common::DebugOverlay::VertexBufferInitializationPhase::InvalidArguments:
-					return L"debug vertex buffer initialization arguments invalid";
-				case Common::DebugOverlay::VertexBufferInitializationPhase::CreateCommittedResource:
-					return BuildD3d12ErrorMessage(
-					    L"ID3D12Device::CreateCommittedResource",
-					    failedResult);
-				case Common::DebugOverlay::VertexBufferInitializationPhase::None:
-				default:
-					return L"debug vertex buffer initialization failed";
-			}
-		}
-
-		[[nodiscard]] std::wstring BuildDebugVertexUploadErrorMessage(
-		    const Common::DebugOverlay::VertexUploadPhase failedPhase,
-		    const HRESULT failedResult)
-		{
-			switch (failedPhase)
-			{
-				case Common::DebugOverlay::VertexUploadPhase::InvalidArguments:
-					return L"debug vertex upload arguments invalid";
-				case Common::DebugOverlay::VertexUploadPhase::Map:
-					return BuildD3d12ErrorMessage(L"ID3D12Resource::Map", failedResult);
-				case Common::DebugOverlay::VertexUploadPhase::None:
-				default:
-					return L"debug vertex upload failed";
 			}
 		}
 
@@ -737,181 +668,7 @@ namespace BaseballSimulatorVR::Xr
 			};
 		}
 
-		struct RasterizedUiText final
-		{
-			int width{ 1 };
-			int height{ 1 };
-			std::vector<std::uint8_t> coverage{ 0U };
-		};
-
-		[[nodiscard]] RasterizedUiText BuildRasterizedUiText(
-		    const std::wstring_view text,
-		    const int requestedPixelHeight)
-		{
-			RasterizedUiText raster{};
-			if (text.empty())
-			{
-				return raster;
-			}
-
-			const int pixelHeight = (std::max)(12, requestedPixelHeight);
-			HDC memoryDeviceContext = CreateCompatibleDC(nullptr);
-			if (memoryDeviceContext == nullptr)
-			{
-				return raster;
-			}
-
-			static constexpr std::array<const wchar_t*, 3> FontFamilies{
-				L"Meiryo UI",
-				L"Meiryo",
-				L"Segoe UI"
-			};
-			HFONT selectedFont = nullptr;
-			HFONT previousFont = nullptr;
-			SIZE textSize{};
-			for (const wchar_t* const fontFamily : FontFamilies)
-			{
-				HFONT candidateFont = CreateFontW(
-				    -pixelHeight,
-				    0,
-				    0,
-				    0,
-				    FW_SEMIBOLD,
-				    FALSE,
-				    FALSE,
-				    FALSE,
-				    DEFAULT_CHARSET,
-				    OUT_OUTLINE_PRECIS,
-				    CLIP_DEFAULT_PRECIS,
-				    CLEARTYPE_QUALITY,
-				    DEFAULT_PITCH | FF_DONTCARE,
-				    fontFamily);
-				if (candidateFont == nullptr)
-				{
-					continue;
-				}
-
-				previousFont =
-				    static_cast<HFONT>(SelectObject(memoryDeviceContext, candidateFont));
-				SIZE measuredSize{};
-				const BOOL measured = GetTextExtentPoint32W(
-				    memoryDeviceContext,
-				    text.data(),
-				    static_cast<int>(text.size()),
-				    &measuredSize);
-				if ((measured != FALSE) && (measuredSize.cx > 0) &&
-				    (measuredSize.cy > 0))
-				{
-					selectedFont = candidateFont;
-					textSize = measuredSize;
-					break;
-				}
-
-				SelectObject(memoryDeviceContext, previousFont);
-				DeleteObject(candidateFont);
-				previousFont = nullptr;
-			}
-
-			if (selectedFont == nullptr)
-			{
-				DeleteDC(memoryDeviceContext);
-				return raster;
-			}
-
-			raster.width = (std::max)(1, static_cast<int>(textSize.cx) + 4);
-			raster.height = (std::max)(1, static_cast<int>(textSize.cy) + 4);
-			BITMAPINFO bitmapInfo{};
-			bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-			bitmapInfo.bmiHeader.biWidth = raster.width;
-			bitmapInfo.bmiHeader.biHeight = -raster.height;
-			bitmapInfo.bmiHeader.biPlanes = 1;
-			bitmapInfo.bmiHeader.biBitCount = 32;
-			bitmapInfo.bmiHeader.biCompression = BI_RGB;
-
-			void* bitmapBits = nullptr;
-			HBITMAP textBitmap = CreateDIBSection(
-			    memoryDeviceContext,
-			    &bitmapInfo,
-			    DIB_RGB_COLORS,
-			    &bitmapBits,
-			    nullptr,
-			    0);
-			if ((textBitmap == nullptr) || (bitmapBits == nullptr))
-			{
-				SelectObject(memoryDeviceContext, previousFont);
-				DeleteObject(selectedFont);
-				DeleteDC(memoryDeviceContext);
-				return raster;
-			}
-
-			HBITMAP previousBitmap =
-			    static_cast<HBITMAP>(SelectObject(memoryDeviceContext, textBitmap));
-			RECT canvasRect{
-				0,
-				0,
-				raster.width,
-				raster.height
-			};
-			HBRUSH backgroundBrush = CreateSolidBrush(RGB(0, 0, 0));
-			if (backgroundBrush != nullptr)
-			{
-				FillRect(memoryDeviceContext, &canvasRect, backgroundBrush);
-				DeleteObject(backgroundBrush);
-			}
-			SetBkMode(memoryDeviceContext, TRANSPARENT);
-			SetTextColor(memoryDeviceContext, RGB(255, 255, 255));
-			(void)TextOutW(
-			    memoryDeviceContext,
-			    2,
-			    2,
-			    text.data(),
-			    static_cast<int>(text.size()));
-
-			raster.coverage.assign(
-			    static_cast<std::size_t>(raster.width) *
-			        static_cast<std::size_t>(raster.height),
-			    0U);
-			const auto* const pixels =
-			    static_cast<const std::uint32_t*>(bitmapBits);
-			for (int y = 0; y < raster.height; ++y)
-			{
-				for (int x = 0; x < raster.width; ++x)
-				{
-					const std::size_t pixelIndex =
-					    (static_cast<std::size_t>(y) *
-					     static_cast<std::size_t>(raster.width)) +
-					    static_cast<std::size_t>(x);
-					const std::uint32_t pixel = pixels[pixelIndex];
-					const std::uint8_t blue = static_cast<std::uint8_t>(pixel & 0xFFU);
-					const std::uint8_t green =
-					    static_cast<std::uint8_t>((pixel >> 8) & 0xFFU);
-					const std::uint8_t red =
-					    static_cast<std::uint8_t>((pixel >> 16) & 0xFFU);
-					raster.coverage[pixelIndex] = (std::max)(red, (std::max)(green, blue));
-				}
-			}
-
-			SelectObject(memoryDeviceContext, previousBitmap);
-			SelectObject(memoryDeviceContext, previousFont);
-			DeleteObject(textBitmap);
-			DeleteObject(selectedFont);
-			DeleteDC(memoryDeviceContext);
-			return raster;
-		}
-
-		struct OrientedUiPanelLayout final
-		{
-			Physics::Vector3 center{};
-			Physics::Vector3 rightAxis{ 1.0, 0.0, 0.0 };
-			Physics::Vector3 upAxis{ 0.0, 1.0, 0.0 };
-			Physics::Vector3 forwardAxis{ 0.0, 0.0, -1.0 };
-			double widthMeters{ 0.30 };
-			double heightMeters{ 0.24 };
-			double paddingMeters{ 0.012 };
-			double cellGapMeters{ 0.006 };
-			int columns{ 1 };
-			int rows{ 1 };
-		};
+		using OrientedUiPanelLayout=Common::UiText::PanelLayout;
 
 		struct UiPanelInnerLayout final
 		{
@@ -931,13 +688,7 @@ namespace BaseballSimulatorVR::Xr
 			bool isInCloseButton{ false };
 		};
 
-		struct UiPanelLocalRect final
-		{
-			double left{ 0.0 };
-			double top{ 0.0 };
-			double right{ 0.0 };
-			double bottom{ 0.0 };
-		};
+		using UiPanelLocalRect=Common::UiText::PanelLocalRect;
 
 		[[nodiscard]] Physics::Vector3 ClampUiPanelCenter(
 		    const Physics::Vector3& center)
@@ -1130,26 +881,6 @@ namespace BaseballSimulatorVR::Xr
 			return hitInfo;
 		}
 
-		[[nodiscard]] const RasterizedUiText& GetCachedUiLabelBitmap(
-		    const std::wstring_view label,
-		    const int requestedPixelHeight)
-		{
-			static std::unordered_map<std::wstring, RasterizedUiText> cache{};
-			const int pixelHeight = (std::max)(12, requestedPixelHeight);
-			std::wstring key{ label };
-			key += L"#";
-			key += std::to_wstring(pixelHeight);
-			const auto existing = cache.find(key);
-			if (existing != cache.end())
-			{
-				return existing->second;
-			}
-
-			RasterizedUiText generated = BuildRasterizedUiText(label, pixelHeight);
-			const auto insertResult = cache.emplace(key, std::move(generated));
-			return insertResult.first->second;
-		}
-
 		[[nodiscard]] bool IsPointInsidePanelLocalRect(
 		    const UiPanelLocalRect& rect,
 		    const double localX,
@@ -1172,8 +903,9 @@ namespace BaseballSimulatorVR::Xr
 		    const UiPanelLocalRect& rect,
 		    const std::array<float, 4>& color,
 		    const double depthOffsetMeters,
-		    TDrawTriangleFn&& drawTriangle)
+		    TDrawTriangleFn&& drawTriangle,Common::UiText::AtlasDrawContext& textContext)
 		{
+			Common::UiText::ScopedPanelGroup group(textContext,panelLayout,projectionState);
 			if (!projectionState.isValid || (width <= 0) || (height <= 0))
 			{
 				return;
@@ -1229,149 +961,15 @@ namespace BaseballSimulatorVR::Xr
 
 		template <typename TDrawTriangleFn>
 		void EmitProjectedOrientedPanelTextInRect(
-		    const Common::ViewProjectionState& projectionState,
-		    const LONG width,
-		    const LONG height,
-		    const OrientedUiPanelLayout& panelLayout,
-		    const UiPanelLocalRect& rect,
-		    const std::wstring_view label,
-		    const int fontPixelHeight,
-		    const double rectWidthUsage,
-		    const double rectHeightUsage,
-		    const double alignX,
-		    const double alignY,
-		    const std::array<float, 4>& textColor,
-		    TDrawTriangleFn&& drawTriangle)
+		    const Common::ViewProjectionState& projectionState,const LONG width,const LONG height,
+		    const OrientedUiPanelLayout& panelLayout,const UiPanelLocalRect& rect,const std::wstring_view label,
+		    const int minimumFontPixelHeight,const double rectWidthUsage,const double rectHeightUsage,
+		    const double alignX,const double alignY,const std::array<float,4>& textColor,
+		    TDrawTriangleFn&& drawTriangle,Common::UiText::AtlasDrawContext& textContext)
 		{
-			if (!projectionState.isValid || (width <= 0) || (height <= 0))
-			{
-				return;
-			}
-			if (label.empty())
-			{
-				return;
-			}
-			if ((rect.right <= rect.left) || (rect.top <= rect.bottom))
-			{
-				return;
-			}
-
-			const RasterizedUiText& bitmap =
-			    GetCachedUiLabelBitmap(label, fontPixelHeight);
-			if ((bitmap.width <= 0) || (bitmap.height <= 0))
-			{
-				return;
-			}
-
-			const double rectWidth = rect.right - rect.left;
-			const double rectHeight = rect.top - rect.bottom;
-			const double widthUsage = std::clamp(rectWidthUsage, 0.1, 1.0);
-			const double heightUsage = std::clamp(rectHeightUsage, 0.1, 1.0);
-			const double availableWidth = rectWidth * widthUsage;
-			const double availableHeight = rectHeight * heightUsage;
-			if ((availableWidth <= 1e-6) || (availableHeight <= 1e-6))
-			{
-				return;
-			}
-			const double availableLeft =
-			    rect.left + ((rectWidth - availableWidth) * 0.5);
-			const double availableTop =
-			    rect.top - ((rectHeight - availableHeight) * 0.5);
-			const double pixelScale = (std::min)(availableWidth / static_cast<double>(bitmap.width),
-			                                     availableHeight / static_cast<double>(bitmap.height));
-			if (pixelScale <= 1e-6)
-			{
-				return;
-			}
-
-			const double pixelWorldWidth = pixelScale;
-			const double pixelWorldHeight = pixelScale;
-			const double textWorldWidth =
-			    static_cast<double>(bitmap.width) * pixelWorldWidth;
-			const double textWorldHeight =
-			    static_cast<double>(bitmap.height) * pixelWorldHeight;
-			const double clampedAlignX = std::clamp(alignX, 0.0, 1.0);
-			const double clampedAlignY = std::clamp(alignY, 0.0, 1.0);
-			const double textLeft = availableLeft +
-			                        ((availableWidth - textWorldWidth) * clampedAlignX);
-			const double textTop = availableTop -
-			                       ((availableHeight - textWorldHeight) * clampedAlignY);
-			const double cameraSide = Physics::Dot(
-			    projectionState.position - panelLayout.center,
-			    panelLayout.forwardAxis);
-			const double towardCameraDepthSign = (cameraSide >= 0.0) ? 1.0 : -1.0;
-			const double textDepthOffset = 0.0240 * towardCameraDepthSign;
-			for (int y = 0; y < bitmap.height; ++y)
-			{
-				int runStartPixel = -1;
-				for (int x = 0; x <= bitmap.width; ++x)
-				{
-					bool isTextPixel = false;
-					if (x < bitmap.width)
-					{
-						const std::size_t pixelIndex =
-						    (static_cast<std::size_t>(y) *
-						     static_cast<std::size_t>(bitmap.width)) +
-						    static_cast<std::size_t>(x);
-						isTextPixel = (bitmap.coverage[pixelIndex] >= 96U);
-					}
-
-					if (isTextPixel && (runStartPixel < 0))
-					{
-						runStartPixel = x;
-					}
-					else if (!isTextPixel && (runStartPixel >= 0))
-					{
-						const double runLeft =
-						    textLeft +
-						    (static_cast<double>(runStartPixel) * pixelWorldWidth);
-						const double runRight =
-						    textLeft + (static_cast<double>(x) * pixelWorldWidth);
-						const double runTop =
-						    textTop - (static_cast<double>(y) * pixelWorldHeight);
-						const double runBottom = runTop - pixelWorldHeight;
-						const Physics::Vector3 topLeft = ConvertPanelLocalToWorld(
-						    panelLayout,
-						    runLeft,
-						    runTop,
-						    textDepthOffset);
-						const Physics::Vector3 topRight = ConvertPanelLocalToWorld(
-						    panelLayout,
-						    runRight,
-						    runTop,
-						    textDepthOffset);
-						const Physics::Vector3 bottomRight = ConvertPanelLocalToWorld(
-						    panelLayout,
-						    runRight,
-						    runBottom,
-						    textDepthOffset);
-						const Physics::Vector3 bottomLeft = ConvertPanelLocalToWorld(
-						    panelLayout,
-						    runLeft,
-						    runBottom,
-						    textDepthOffset);
-						Common::EmitProjectedWorldTriangle(
-						    topLeft,
-						    topRight,
-						    bottomRight,
-						    projectionState,
-						    width,
-						    height,
-						    textColor.data(),
-						    drawTriangle);
-						Common::EmitProjectedWorldTriangle(
-						    topLeft,
-						    bottomRight,
-						    bottomLeft,
-						    projectionState,
-						    width,
-						    height,
-						    textColor.data(),
-						    drawTriangle);
-						runStartPixel = -1;
-					}
-				}
-			}
+		    (void)minimumFontPixelHeight;(void)drawTriangle;
+		    Common::UiText::AppendProjectedPanelText(panelLayout,rect,label,rectWidthUsage,rectHeightUsage,
+		        alignX,alignY,textColor,projectionState,width,height,textContext);
 		}
 
 		[[nodiscard]] bool TryBuildPitchPlaybackSliderRects(
@@ -1530,7 +1128,7 @@ namespace BaseballSimulatorVR::Xr
 			return true;
 		}
 
-		constexpr std::size_t MetricsControlButtonCount = 11U;
+		constexpr std::size_t MetricsControlButtonCount = 12U;
 
 		[[nodiscard]] bool TryBuildMetricsPanelBodyLayout(
 		    const OrientedUiPanelLayout& panelLayout,
@@ -1646,8 +1244,9 @@ namespace BaseballSimulatorVR::Xr
 		    const LONG height,
 		    const OrientedUiPanelLayout& panelLayout,
 		    TResolveRowColorFn&& resolveRowColor,
-		    TDrawTriangleFn&& drawTriangle)
+		    TDrawTriangleFn&& drawTriangle,Common::UiText::AtlasDrawContext& textContext)
 		{
+			Common::UiText::ScopedPanelGroup group(textContext,panelLayout,projectionState);
 			if (!projectionState.isValid || (width <= 0) || (height <= 0))
 			{
 				return;
@@ -1796,8 +1395,9 @@ namespace BaseballSimulatorVR::Xr
 		    const std::array<float, 4>& titleBarColor,
 		    const std::array<float, 4>& minimizeButtonColor,
 		    const std::array<float, 4>& closeButtonColor,
-		    TDrawTriangleFn&& drawTriangle)
+		    TDrawTriangleFn&& drawTriangle,Common::UiText::AtlasDrawContext& textContext)
 		{
+			Common::UiText::ScopedPanelGroup group(textContext,panelLayout,projectionState);
 			if (!projectionState.isValid || (width <= 0) || (height <= 0))
 			{
 				return;
@@ -2031,8 +1631,9 @@ namespace BaseballSimulatorVR::Xr
 		    const int cellIndex,
 		    const std::array<float, 4>& color,
 		    const double depthOffsetMeters,
-		    TDrawTriangleFn&& drawTriangle)
+		    TDrawTriangleFn&& drawTriangle,Common::UiText::AtlasDrawContext& textContext)
 		{
+			Common::UiText::ScopedPanelGroup group(textContext,panelLayout,projectionState);
 			if (!projectionState.isValid || (width <= 0) || (height <= 0))
 			{
 				return;
@@ -2146,171 +1747,22 @@ namespace BaseballSimulatorVR::Xr
 			return true;
 		}
 
-		template <typename TLabelResolverFn, typename TDrawTriangleFn>
+		template <typename TLabelResolverFn,typename TDrawTriangleFn>
 		void EmitProjectedOrientedPanelTextOverlay(
-		    const Common::ViewProjectionState& projectionState,
-		    const LONG width,
-		    const LONG height,
-		    const OrientedUiPanelLayout& panelLayout,
-		    const int labelCount,
-		    const int fontPixelHeight,
-		    const double cellWidthUsage,
-		    const double cellHeightUsage,
-		    TLabelResolverFn&& resolveLabel,
-		    TDrawTriangleFn&& drawTriangle)
+		    const Common::ViewProjectionState& projectionState,const LONG width,const LONG height,
+		    const OrientedUiPanelLayout& panelLayout,const int labelCount,const int fontPixelHeight,
+		    const double cellWidthUsage,const double cellHeightUsage,
+		    TLabelResolverFn&& resolveLabel,TDrawTriangleFn&& drawTriangle,Common::UiText::AtlasDrawContext& textContext)
 		{
-			if (!projectionState.isValid || (width <= 0) || (height <= 0))
-			{
-				return;
-			}
-			if ((panelLayout.columns <= 0) || (panelLayout.rows <= 0))
-			{
-				return;
-			}
-
-			UiPanelInnerLayout innerLayout{};
-			if (!TryBuildPanelInnerLayout(panelLayout, &innerLayout))
-			{
-				return;
-			}
-
-			const std::array<float, 4> textColor{ 1.0F, 1.0F, 1.0F, 1.0F };
-			const double cameraSide = Physics::Dot(
-			    projectionState.position - panelLayout.center,
-			    panelLayout.forwardAxis);
-			const double towardCameraDepthSign = (cameraSide >= 0.0) ? 1.0 : -1.0;
-			const double textDepthOffset = 0.0240 * towardCameraDepthSign;
-			const int clampedLabelCount = (std::min)((std::max)(0, labelCount),
-			                                         panelLayout.columns * panelLayout.rows);
-			for (int labelIndex = 0; labelIndex < clampedLabelCount; ++labelIndex)
-			{
-				const std::wstring_view label = resolveLabel(labelIndex);
-				if (label.empty())
-				{
-					continue;
-				}
-
-				const int rowIndex = labelIndex / panelLayout.columns;
-				const int columnIndex = labelIndex % panelLayout.columns;
-				const double cellTop = innerLayout.innerTop -
-				                       (static_cast<double>(rowIndex) *
-				                        (innerLayout.cellHeight + panelLayout.cellGapMeters));
-				const double cellBottom = cellTop - innerLayout.cellHeight;
-				const double cellLeft =
-				    innerLayout.innerLeft +
-				    (static_cast<double>(columnIndex) *
-				     (innerLayout.cellWidth + panelLayout.cellGapMeters));
-				const double cellRight = cellLeft + innerLayout.cellWidth;
-
-				const RasterizedUiText& bitmap =
-				    GetCachedUiLabelBitmap(label, fontPixelHeight);
-				if ((bitmap.width <= 0) || (bitmap.height <= 0))
-				{
-					continue;
-				}
-
-				const double availableTextWidth =
-				    innerLayout.cellWidth * std::clamp(cellWidthUsage, 0.1, 1.0);
-				const double availableTextHeight =
-				    innerLayout.cellHeight * std::clamp(cellHeightUsage, 0.1, 1.0);
-				const double pixelScale = (std::min)(availableTextWidth / static_cast<double>(bitmap.width),
-				                                     availableTextHeight / static_cast<double>(bitmap.height));
-				if (pixelScale <= 1e-6)
-				{
-					continue;
-				}
-
-				const double pixelWorldWidth = pixelScale;
-				const double pixelWorldHeight = pixelScale;
-				const double textWorldWidth =
-				    static_cast<double>(bitmap.width) * pixelWorldWidth;
-				const double textWorldHeight =
-				    static_cast<double>(bitmap.height) * pixelWorldHeight;
-				const double textLeft =
-				    ((cellLeft + cellRight) - textWorldWidth) * 0.5;
-				const double textTop =
-				    ((cellTop + cellBottom) + textWorldHeight) * 0.5;
-
-				for (int y = 0; y < bitmap.height; ++y)
-				{
-					int runStartPixel = -1;
-					for (int x = 0; x <= bitmap.width; ++x)
-					{
-						bool isTextPixel = false;
-						if (x < bitmap.width)
-						{
-							const std::size_t pixelIndex =
-							    (static_cast<std::size_t>(y) *
-							     static_cast<std::size_t>(bitmap.width)) +
-							    static_cast<std::size_t>(x);
-							isTextPixel = (bitmap.coverage[pixelIndex] >= 96U);
-						}
-
-						if (isTextPixel && (runStartPixel < 0))
-						{
-							runStartPixel = x;
-						}
-
-						if ((!isTextPixel || (x == bitmap.width)) &&
-						    (runStartPixel >= 0))
-						{
-							const int runEndPixel = x;
-							const double left =
-							    textLeft +
-							    (static_cast<double>(runStartPixel) *
-							     pixelWorldWidth);
-							const double right =
-							    textLeft +
-							    (static_cast<double>(runEndPixel) *
-							     pixelWorldWidth);
-							const double top =
-							    textTop -
-							    (static_cast<double>(y) * pixelWorldHeight);
-							const double bottom = top - pixelWorldHeight;
-							const Physics::Vector3 topLeft = ConvertPanelLocalToWorld(
-							    panelLayout,
-							    left,
-							    top,
-							    textDepthOffset);
-							const Physics::Vector3 topRight = ConvertPanelLocalToWorld(
-							    panelLayout,
-							    right,
-							    top,
-							    textDepthOffset);
-							const Physics::Vector3 bottomRight = ConvertPanelLocalToWorld(
-							    panelLayout,
-							    right,
-							    bottom,
-							    textDepthOffset);
-							const Physics::Vector3 bottomLeft = ConvertPanelLocalToWorld(
-							    panelLayout,
-							    left,
-							    bottom,
-							    textDepthOffset);
-
-							Common::EmitProjectedWorldTriangle(
-							    topLeft,
-							    topRight,
-							    bottomRight,
-							    projectionState,
-							    width,
-							    height,
-							    textColor.data(),
-							    drawTriangle);
-							Common::EmitProjectedWorldTriangle(
-							    topLeft,
-							    bottomRight,
-							    bottomLeft,
-							    projectionState,
-							    width,
-							    height,
-							    textColor.data(),
-							    drawTriangle);
-							runStartPixel = -1;
-						}
-					}
-				}
-			}
+		    UiPanelInnerLayout inner{};
+		    if(!TryBuildPanelInnerLayout(panelLayout,&inner)) return;
+		    const int count=std::clamp(labelCount,0,panelLayout.columns*panelLayout.rows);
+		    for(int index=0;index<count;++index) {
+				        const UiPanelLocalRect rect=Common::UiText::BuildPanelCellRect(inner.innerLeft,inner.innerTop,inner.cellWidth,inner.cellHeight,
+		            panelLayout.cellGapMeters,panelLayout.columns,index);
+		        EmitProjectedOrientedPanelTextInRect(projectionState,width,height,panelLayout,rect,resolveLabel(index),
+		            fontPixelHeight,cellWidthUsage,cellHeightUsage,.5,.5,{1,1,1,1},drawTriangle,textContext);
+		    }
 		}
 
 		constexpr double UiMainPanelAnchorDistanceMeters = 0.008;
@@ -2679,11 +2131,11 @@ namespace BaseballSimulatorVR::Xr
 			layout.rightAxis = rightAxis;
 			layout.upAxis = upAxis;
 			layout.forwardAxis = forwardAxis;
-			layout.widthMeters = 0.27;
+			layout.widthMeters = 0.36;
 			layout.heightMeters = 0.16;
 			layout.paddingMeters = 0.010;
 			layout.cellGapMeters = 0.004;
-			layout.columns = 3;
+			layout.columns = 4;
 			layout.rows = 2;
 			return layout;
 		}
@@ -2921,6 +2373,13 @@ namespace BaseballSimulatorVR::Xr
 
 	void NullXrSystem::PollInput()
 	{
+		m_floorEyeHeightSample = {};
+#if defined(_WIN64)
+		m_floorEyeHeightSample.referenceSpaceRevision = m_floorReferenceRevision;
+		m_floorEyeHeightSample.isFloorReferenced = m_sessionHandle != XR_NULL_HANDLE && m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE;
+		m_leftHandPose = {};
+		m_rightHandPose = {};
+#endif
 		if (!m_isInitialized)
 		{
 			return;
@@ -2948,6 +2407,14 @@ namespace BaseballSimulatorVR::Xr
 				break;
 			}
 
+			if (eventData.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING)
+			{
+				const auto* changed = reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(&eventData);
+				m_pendingReferenceChangeTime = (std::max)(m_pendingReferenceChangeTime, changed->changeTime);
+				++m_floorReferenceRevision;
+				++m_handReferenceRevision;
+				m_floorEyeHeightSample = {};
+			}
 			if (eventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
 			{
 				const auto* sessionStateChanged =
@@ -3029,6 +2496,7 @@ namespace BaseballSimulatorVR::Xr
 			    xrDestroySpace(m_referenceSpaceHandle));
 		}
 
+		++m_handReferenceRevision;
 		m_referenceSpaceHandle = updatedReferenceSpaceHandle;
 		m_appliedReferenceSpaceYawOffsetRadians = m_viewYawOffsetRadians;
 		m_appliedReferenceSpacePositionOffset = referenceSpacePositionOffset;
@@ -3074,6 +2542,11 @@ namespace BaseballSimulatorVR::Xr
 	Common::ViewProjectionState NullXrSystem::GetLeftEyeViewState() const noexcept
 	{
 		return m_leftEyeViewState;
+	}
+
+	Common::FloorEyeHeightSample NullXrSystem::GetFloorEyeHeightSample() const noexcept
+	{
+		return m_floorEyeHeightSample;
 	}
 
 	HandPoseState NullXrSystem::GetLeftHandPose() const noexcept
@@ -3333,6 +2806,10 @@ namespace BaseballSimulatorVR::Xr
 			return false;
 		}
 
+		++m_floorReferenceRevision;
+		++m_handReferenceRevision;
+		m_floorEyeHeightSample = {};
+		m_pendingReferenceChangeTime = 0;
 		XrReferenceSpaceCreateInfo referenceSpaceCreateInfo{ XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
 		referenceSpaceCreateInfo.poseInReferenceSpace.orientation.w = 1.0F;
 		referenceSpaceCreateInfo.poseInReferenceSpace.orientation.x = 0.0F;
@@ -3689,14 +3166,21 @@ namespace BaseballSimulatorVR::Xr
 			    XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 			swapchainCreateInfo.format = static_cast<int64_t>(m_colorSwapchainFormat);
 			swapchainCreateInfo.sampleCount = m_projectionSampleCount;
-			swapchainCreateInfo.width =
-			    (viewConfiguration.recommendedImageRectWidth == 0)
-			        ? 1U
-			        : viewConfiguration.recommendedImageRectWidth;
-			swapchainCreateInfo.height =
-			    (viewConfiguration.recommendedImageRectHeight == 0)
-			        ? 1U
-			        : viewConfiguration.recommendedImageRectHeight;
+			if (viewConfiguration.recommendedImageRectWidth==0 || viewConfiguration.recommendedImageRectHeight==0 ||
+			    viewConfiguration.recommendedImageRectWidth>static_cast<uint32_t>((std::numeric_limits<int32_t>::max)()) ||
+			    viewConfiguration.recommendedImageRectHeight>static_cast<uint32_t>((std::numeric_limits<int32_t>::max)()))
+			{
+			    m_sessionName=L"Session(unavailable): OpenXR recommended eye resolution is invalid";
+			    DestroyProjectionSwapchains();
+			    return false;
+			}
+			swapchainCreateInfo.width=viewConfiguration.recommendedImageRectWidth;
+			swapchainCreateInfo.height=viewConfiguration.recommendedImageRectHeight;
+			std::wostringstream resolutionLog;
+			resolutionLog << L"[OpenXR] eye " << viewIndex << L": " << swapchainCreateInfo.width << L"x"
+			    << swapchainCreateInfo.height << L", MSAA " << m_projectionSampleCount
+			    << L", FXAA blend " << m_renderQuality.fxaaBlendFactor << L", UI coverage AA with adaptive font density\n";
+			OutputDebugStringW(resolutionLog.str().c_str());
 			swapchainCreateInfo.faceCount = 1;
 			swapchainCreateInfo.arraySize = 1;
 			swapchainCreateInfo.mipCount = 1;
@@ -4000,43 +3484,22 @@ namespace BaseballSimulatorVR::Xr
 			m_projectionSwapchains.push_back(std::move(swapchainContext));
 		}
 
-		const HRESULT allocatorCreateResult = m_d3d12Device->CreateCommandAllocator(
-		    D3D12_COMMAND_LIST_TYPE_DIRECT,
-		    IID_PPV_ARGS(&m_xrCommandAllocator));
-		if (FAILED(allocatorCreateResult))
+		if (EnableDebugDraw && !InitializeDebugPipeline())
 		{
-			m_sessionName = L"Session(unavailable): " +
-			                BuildD3d12ErrorMessage(L"ID3D12Device::CreateCommandAllocator", allocatorCreateResult);
 			DestroyProjectionSwapchains();
 			return false;
 		}
-
-		const HRESULT commandListCreateResult = m_d3d12Device->CreateCommandList(
-		    0,
-		    D3D12_COMMAND_LIST_TYPE_DIRECT,
-		    m_xrCommandAllocator.Get(),
-		    nullptr,
-		    IID_PPV_ARGS(&m_xrCommandList));
-		if (FAILED(commandListCreateResult))
+		for (auto& swapchain : m_projectionSwapchains)
 		{
-			m_sessionName = L"Session(unavailable): " +
-			                BuildD3d12ErrorMessage(L"ID3D12Device::CreateCommandList", commandListCreateResult);
-			DestroyProjectionSwapchains();
-			return false;
-		}
-
-		if (FAILED(m_xrCommandList->Close()))
-		{
-			m_sessionName = L"Session(unavailable): ID3D12GraphicsCommandList::Close failed";
-			DestroyProjectionSwapchains();
-			return false;
-		}
-
-		if (EnableDebugDraw &&
-		    (!InitializeDebugPipeline() || !InitializeDebugVertexBuffer()))
-		{
-			DestroyProjectionSwapchains();
-			return false;
+			const HRESULT result = swapchain.frame.Initialize(m_d3d12Device.Get(),
+			    ResolveRtvFormat(m_colorSwapchainFormat), DepthBufferFormat,
+			    m_projectionSampleCount, MaxDebugVertices);
+			if (FAILED(result))
+			{
+				m_sessionName = L"Session(unavailable): " + BuildD3d12ErrorMessage(L"XR per-view resources", result);
+				DestroyProjectionSwapchains();
+				return false;
+			}
 		}
 
 		m_isFxaaAvailable = InitializeFxaaPipeline();
@@ -4108,64 +3571,6 @@ namespace BaseballSimulatorVR::Xr
 		{
 			m_lastProjectionLayerStatus = L"pipeline-init-empty";
 			m_sessionName = L"Session(unavailable): XR debug pipeline resources missing";
-			return false;
-		}
-
-		failedPhase = Common::DebugOverlay::PipelineInitializationPhase::None;
-		failedResult = S_OK;
-		if (!Common::DebugOverlay::InitializePipeline(
-		        m_d3d12Device.Get(),
-		        ResolveRtvFormat(m_colorSwapchainFormat),
-		        DepthBufferFormat,
-		        &m_debugRootSignature,
-		        &m_debugAlphaPipelineState,
-		        &failedPhase,
-		        &failedResult,
-		        Common::DebugOverlay::PipelineBlendMode::AlphaBlend,
-		        Common::DebugOverlay::PipelineDepthWriteMode::Disabled,
-		        true,
-		        (std::max)(1U, m_projectionSampleCount)))
-		{
-			OutputDebugStringW(
-			    L"[OpenXR] alpha debug pipeline init failed; using opaque pipeline.\n");
-			m_debugAlphaPipelineState = m_debugPipelineState;
-		}
-		if (m_debugAlphaPipelineState.Get() == nullptr)
-		{
-			m_lastProjectionLayerStatus = L"alpha-pso-missing";
-			m_sessionName = L"Session(unavailable): XR alpha debug pipeline missing";
-			return false;
-		}
-
-		return true;
-	}
-
-	bool NullXrSystem::InitializeDebugVertexBuffer()
-	{
-		if (m_d3d12Device == nullptr)
-		{
-			m_lastProjectionLayerStatus = L"vertex-init-device-missing";
-			m_sessionName = L"Session(unavailable): D3D12 device unavailable";
-			return false;
-		}
-
-		Common::DebugOverlay::VertexBufferInitializationPhase failedPhase =
-		    Common::DebugOverlay::VertexBufferInitializationPhase::None;
-		HRESULT failedResult = S_OK;
-		if (!Common::DebugOverlay::InitializeVertexBuffer(
-		        m_d3d12Device.Get(),
-		        MaxDebugVertices,
-		        &m_debugVertexBuffer,
-		        &m_debugVertexBufferView,
-		        &m_debugVertexCapacity,
-		        &failedPhase,
-		        &failedResult))
-		{
-			m_lastProjectionLayerStatus = L"vertex-init-failed";
-			m_sessionName = L"Session(unavailable): " +
-			                BuildDebugVertexBufferInitializationErrorMessage(
-			                    failedPhase,
-			                    failedResult);
 			return false;
 		}
 
@@ -4950,7 +4355,8 @@ namespace BaseballSimulatorVR::Xr
 		auto queryPose = [&](const XrAction poseAction,
 		                     const XrPath handPath,
 		                     const XrSpace actionSpace,
-		                     XrPosef* const outPose) -> bool
+		                     XrPosef* const outPose,
+		                     const bool requireTracked = false) -> bool
 		{
 			if ((outPose == nullptr) ||
 			    (poseAction == XR_NULL_HANDLE) ||
@@ -4987,7 +4393,8 @@ namespace BaseballSimulatorVR::Xr
 
 			const XrSpaceLocationFlags requiredFlags =
 			    XR_SPACE_LOCATION_POSITION_VALID_BIT |
-			    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+			    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
+			    (requireTracked ? (XR_SPACE_LOCATION_POSITION_TRACKED_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) : 0);
 			if ((spaceLocation.locationFlags & requiredFlags) != requiredFlags)
 			{
 				return false;
@@ -5045,30 +4452,22 @@ namespace BaseballSimulatorVR::Xr
 		};
 
 		auto queryHandPoseState = [&](const XrPath handPath,
-		                              const XrSpace aimActionSpace,
 		                              const XrSpace gripActionSpace) -> HandPoseState
 		{
 			HandPoseState handPoseState{};
-			XrPosef aimPose{};
-			const bool hasAimPose = queryPose(
-			    m_aimPoseAction,
-			    handPath,
-			    aimActionSpace,
-			    &aimPose);
 			XrPosef gripPose{};
 			const bool hasGripPose = queryPose(
 			    m_gripPoseAction,
 			    handPath,
 			    gripActionSpace,
-			    &gripPose);
-			if (!hasAimPose && !hasGripPose)
+			    &gripPose, true);
+			if (!hasGripPose)
 			{
 				return handPoseState;
 			}
 
-			const XrPosef sourceOriginPose = hasGripPose ? gripPose : aimPose;
-			const XrPosef sourceDirectionPose =
-			    hasAimPose ? aimPose : sourceOriginPose;
+			const XrPosef sourceOriginPose = gripPose;
+			const XrPosef sourceDirectionPose = gripPose;
 			const Physics::Vector3 forward = RotateVectorByQuaternion(
 			    Physics::Vector3{ 0.0, 0.0, -1.0 },
 			    sourceDirectionPose.orientation);
@@ -5085,10 +4484,12 @@ namespace BaseballSimulatorVR::Xr
 			up = Physics::NormalizeOrZero(up);
 			if (Physics::Length(up) <= 1e-6)
 			{
-				up = Physics::Vector3{ 0.0, 1.0, 0.0 };
+				return handPoseState;
 			}
 
 			handPoseState.isValid = true;
+			handPoseState.sampleTimeSeconds = static_cast<double>(predictedDisplayTime) / 1'000'000'000.0;
+			handPoseState.referenceSpaceRevision = m_handReferenceRevision;
 			handPoseState.position = Physics::Vector3{
 				static_cast<double>(sourceOriginPose.position.x),
 				static_cast<double>(sourceOriginPose.position.y),
@@ -5109,11 +4510,9 @@ namespace BaseballSimulatorVR::Xr
 		    m_leftGripActionSpace);
 		const HandPoseState rightHandPoseState = queryHandPoseState(
 		    m_rightHandPath,
-		    m_rightAimActionSpace,
 		    m_rightGripActionSpace);
 		const HandPoseState leftHandPoseState = queryHandPoseState(
 		    m_leftHandPath,
-		    m_leftAimActionSpace,
 		    m_leftGripActionSpace);
 		if (rightHandPoseState.isValid)
 		{
@@ -6037,6 +5436,12 @@ namespace BaseballSimulatorVR::Xr
 					    DefaultBattingMetricsPanelHeightOffsetMeters;
 					m_resultPanelLaserStatus = L"batting-metrics-rescue";
 					return;
+				case 6:
+					queueCommand(UiCommandType::TogglePitchTrajectoryVisibility);
+					return;
+				case 7:
+					queueCommand(UiCommandType::ToggleBattedTrajectoryVisibility);
+					return;
 				default:
 					break;
 			}
@@ -6156,7 +5561,7 @@ namespace BaseballSimulatorVR::Xr
 			switch (hoveredMetricsControlButtonIndex)
 			{
 				case 0:
-					queueCommand(UiCommandType::ToggleTrajectoryVisibility);
+					queueCommand(UiCommandType::TogglePitchTrajectoryVisibility);
 					return;
 				case 1:
 					queueCommand(UiCommandType::ToggleStrikeZoneVisibility);
@@ -6189,6 +5594,9 @@ namespace BaseballSimulatorVR::Xr
 					return;
 				case 10:
 					queueCommand(UiCommandType::RecalibrateStrikeZone);
+					return;
+				case 11:
+					queueCommand(UiCommandType::ToggleBattedTrajectoryVisibility);
 					return;
 				default:
 					break;
@@ -6227,6 +5635,16 @@ namespace BaseballSimulatorVR::Xr
 
 	void NullXrSystem::DestroyProjectionSwapchains()
 	{
+		// The runtime consumes the same queue. Keep all view uploads, command
+		// allocators, textures and pipelines alive until queued work completes.
+		if (m_xrFence && m_d3d12Queue && m_xrFenceEvent)
+		{
+			const UINT64 value = m_xrFenceValue++;
+			const bool completed = SUCCEEDED(m_d3d12Queue->Signal(m_xrFence.Get(), value)) &&
+			    SUCCEEDED(Common::D3d12RenderFrame::WaitForFence(m_xrFence.Get(), value, m_xrFenceEvent));
+			Common::D3d12RenderFrame::EnsureSafeResourceRelease(m_d3d12Device.Get(), completed);
+		}
+		m_projectionRenderingFailed = false;
 		if (m_xrFenceEvent != nullptr)
 		{
 			if (CloseHandle(m_xrFenceEvent) == FALSE)
@@ -6239,11 +5657,7 @@ namespace BaseballSimulatorVR::Xr
 		}
 
 		m_xrFence.Reset();
-		m_xrCommandList.Reset();
-		m_xrCommandAllocator.Reset();
-		m_debugVertexBuffer.Reset();
 		m_debugPipelineState.Reset();
-		m_debugAlphaPipelineState.Reset();
 		m_debugRootSignature.Reset();
 		m_fxaaPipelineState.Reset();
 		m_fxaaRootSignature.Reset();
@@ -6251,8 +5665,6 @@ namespace BaseballSimulatorVR::Xr
 		m_rtvDescriptorSize = 0;
 		m_dsvDescriptorSize = 0;
 		m_srvDescriptorSize = 0;
-		m_debugVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
-		m_debugVertexCapacity = 0;
 		m_projectionSampleCount = 1U;
 		m_isFxaaAvailable = false;
 		m_xrPostProcessStatus = L"none";
@@ -6340,6 +5752,7 @@ namespace BaseballSimulatorVR::Xr
 
 	void NullXrSystem::TryRenderFrame()
 	{
+		if(m_projectionRenderingFailed) {m_leftEyeViewState.isValid=false;return;}
 		if (!m_isSessionRunning || (m_sessionHandle == XR_NULL_HANDLE) ||
 		    (m_referenceSpaceHandle == XR_NULL_HANDLE))
 		{
@@ -6381,7 +5794,12 @@ namespace BaseballSimulatorVR::Xr
 		frameEndInfo.layers = nullptr;
 		const XrTime previousPredictedDisplayTime = m_lastPredictedDisplayTime;
 
-		const bool hasProjectionLayer =
+		if (frameState.shouldRender != XR_TRUE)
+		{
+		    m_leftEyeViewState.isValid = false;
+		    m_floorEyeHeightSample.sampleTimeSeconds = static_cast<double>(frameState.predictedDisplayTime) / 1'000'000'000.0;
+		}
+		const bool hasProjectionLayer = frameState.shouldRender == XR_TRUE &&
 		    RenderProjectionLayer(frameState.predictedDisplayTime);
 		const XrCompositionLayerBaseHeader* layers[] = {
 			reinterpret_cast<const XrCompositionLayerBaseHeader*>(&m_projectionLayer)
@@ -6415,6 +5833,11 @@ namespace BaseballSimulatorVR::Xr
 	bool NullXrSystem::RenderProjectionLayer(const XrTime predictedDisplayTime)
 	{
 		m_lastProjectionLayerStatus = L"locating";
+		if (m_pendingReferenceChangeTime > 0 && predictedDisplayTime >= m_pendingReferenceChangeTime) {
+		    ++m_floorReferenceRevision;
+		    ++m_handReferenceRevision;
+		    m_pendingReferenceChangeTime = 0;
+		}
 		if (!UpdateReferenceSpace())
 		{
 			m_lastProjectionLayerStatus = L"reference-space-update-failed";
@@ -6470,6 +5893,21 @@ namespace BaseballSimulatorVR::Xr
 			return false;
 		}
 
+		m_floorEyeHeightSample = {};
+		m_floorEyeHeightSample.sampleTimeSeconds = static_cast<double>(predictedDisplayTime) / 1'000'000'000.0;
+		m_floorEyeHeightSample.referenceSpaceRevision = m_floorReferenceRevision;
+		m_floorEyeHeightSample.isFloorReferenced = m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE;
+		m_floorEyeHeightSample.isPositionTracked =
+		    (viewState.viewStateFlags & (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_POSITION_TRACKED_BIT)) ==
+		    (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_POSITION_TRACKED_BIT);
+		if (m_floorEyeHeightSample.isFloorReferenced && m_floorEyeHeightSample.isPositionTracked && viewCount >= 2 && m_pendingReferenceChangeTime == 0) {
+		    m_floorEyeHeightSample.heightMeters =
+		        (static_cast<double>(m_views[0].pose.position.y) + static_cast<double>(m_views[1].pose.position.y)) * .5 -
+		        m_appliedReferenceSpacePositionOffset.y;
+		} else {
+		    m_floorEyeHeightSample.isPositionTracked = false;
+		}
+
 		Physics::Vector3 lookPitchPivot{};
 		const Physics::Vector3* lookPitchPivotPtr = nullptr;
 		XrQuaternionf lookPitchOrientation{ 0.0F, 0.0F, 0.0F, 1.0F };
@@ -6504,6 +5942,22 @@ namespace BaseballSimulatorVR::Xr
 		    lookPitchOrientationPtr);
 		m_leftEyeViewState = BuildProjectionStateFromView(preUiLeftEyeView);
 		UpdateUiPanelInteraction(predictedDisplayTime);
+		m_batOverlayState.reset();
+		const bool batting = m_uiTelemetry.operationMode == UiOperationMode::BattingDuel ||
+		                     m_uiTelemetry.operationMode == UiOperationMode::TeeBatting;
+		const auto& hand = m_uiTelemetry.batUseRightHand ? m_rightHandPose : m_leftHandPose;
+		if (batting && hand.isValid) {
+		    const auto axis = Common::BuildBatAxisDirection(hand.forward, hand.up,
+		        m_uiTelemetry.batAngleOffsetDegrees, m_uiTelemetry.batYawOffsetDegrees);
+		    if (axis) {
+		        const Physics::Vector3 simulationOffset{0, 0, Common::GetPitchDistanceMeters() + Common::DebugWorldLayout::BatterToPlateDistanceMeters};
+		        m_batOverlayState = Common::BatOverlayState{
+		            hand.position + *axis * Common::BatHandleStartOffsetMeters + simulationOffset,
+		            hand.position + *axis * m_uiTelemetry.batLengthMeters + simulationOffset,
+		            m_uiTelemetry.batRadiusMeters};
+		    }
+		}
+
 		XrView leftEyeView = m_views.front();
 		leftEyeView.pose = ApplyLocomotionToPose(
 		    leftEyeView.pose,
@@ -6515,6 +5969,7 @@ namespace BaseballSimulatorVR::Xr
 		m_leftEyeViewState = BuildProjectionStateFromView(leftEyeView);
 		m_xrPostProcessStatus = m_isFxaaAvailable ? L"fxaa" : L"direct";
 
+		m_uiTextAtlas.BeginFrame();
 		for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex)
 		{
 			SwapchainContext& swapchainContext = m_projectionSwapchains[viewIndex];
@@ -6618,30 +6073,18 @@ namespace BaseballSimulatorVR::Xr
 
 	void NullXrSystem::AppendTrajectoryPoint(const Physics::BallState& ballState)
 	{
-		const auto now = std::chrono::steady_clock::now();
-		Common::TrajectoryTrailState trailState{
-			m_lastBallFlightTimeSeconds,
-			m_lastTrajectoryAdvanceTime,
-			m_trajectoryFadeScale
-		};
-		Common::UpdateTrajectoryTrail(
-		    ballState,
-		    &m_ballTrajectory,
-		    &trailState,
-		    now);
-		m_lastBallFlightTimeSeconds = trailState.lastFlightTimeSeconds;
-		m_lastTrajectoryAdvanceTime = trailState.lastAdvanceTime;
-		m_trajectoryFadeScale = trailState.fadeScale;
+		Common::UpdatePhaseTrajectoryTrails(m_trajectoryTrails, ballState,
+		    m_fieldPresentation, std::chrono::steady_clock::now());
 	}
 
 	bool NullXrSystem::ClearSwapchainImage(
-	    const SwapchainContext& swapchainContext,
+	    SwapchainContext& swapchainContext,
 	    const uint32_t imageIndex,
 	    const float* clearColor,
 	    const XrView& view)
 	{
-		if ((m_xrCommandAllocator == nullptr) ||
-		    (m_xrCommandList == nullptr) ||
+		if ((swapchainContext.frame.allocator == nullptr) ||
+		    (swapchainContext.frame.commands == nullptr) ||
 		    (m_d3d12Queue == nullptr))
 		{
 			m_lastProjectionLayerStatus = L"command-missing";
@@ -6693,40 +6136,22 @@ namespace BaseballSimulatorVR::Xr
 			return false;
 		}
 
-		const HRESULT allocatorResetResult = m_xrCommandAllocator->Reset();
-		if (FAILED(allocatorResetResult))
+		const HRESULT beginResult = swapchainContext.frame.Begin(m_xrFence.Get(), m_xrFenceEvent);
+		if (FAILED(beginResult))
 		{
-			m_lastProjectionLayerStatus = L"allocator-reset-failed";
-			m_sessionName = L"Session(unavailable): " +
-			                BuildD3d12ErrorMessage(L"ID3D12CommandAllocator::Reset", allocatorResetResult);
-			return false;
-		}
-
-		const HRESULT commandListResetResult = m_xrCommandList->Reset(m_xrCommandAllocator.Get(), nullptr);
-		if (FAILED(commandListResetResult))
-		{
-			m_lastProjectionLayerStatus = L"command-reset-failed";
-			m_sessionName = L"Session(unavailable): " +
-			                BuildD3d12ErrorMessage(L"ID3D12GraphicsCommandList::Reset", commandListResetResult);
+			m_projectionRenderingFailed = true;
+			m_lastProjectionLayerStatus = L"view-frame-reuse-failed";
+			m_sessionName = L"Session(unavailable): " + BuildD3d12ErrorMessage(L"XR view Begin", beginResult);
 			return false;
 		}
 		auto closeCommandListOnFailure = [&]() noexcept
 		{
-			const HRESULT ignored = m_xrCommandList->Close();
-			(void)ignored;
+			(void)swapchainContext.frame.commands->Close();
+			m_projectionRenderingFailed = true;
 		};
 
 		D3D12_RESOURCE_BARRIER toDrawBarriers[2]{};
 		UINT toDrawBarrierCount = 0;
-
-		D3D12_RESOURCE_BARRIER& renderTargetToDrawBarrier =
-		    toDrawBarriers[toDrawBarrierCount++];
-		renderTargetToDrawBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		renderTargetToDrawBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		renderTargetToDrawBarrier.Transition.pResource = renderTargetTexture;
-		renderTargetToDrawBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-		renderTargetToDrawBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		renderTargetToDrawBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
 		ID3D12Resource* sceneColorTexture = nullptr;
 		if (hasSceneResources)
@@ -6750,7 +6175,7 @@ namespace BaseballSimulatorVR::Xr
 			sceneToDrawBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		}
-		m_xrCommandList->ResourceBarrier(toDrawBarrierCount, toDrawBarriers);
+		if (toDrawBarrierCount > 0) swapchainContext.frame.commands->ResourceBarrier(toDrawBarrierCount, toDrawBarriers);
 
 		D3D12_CPU_DESCRIPTOR_HANDLE swapchainRtvHandle =
 		    swapchainContext.rtvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -6768,323 +6193,31 @@ namespace BaseballSimulatorVR::Xr
 		    useSceneDrawPath ? sceneRtvHandle : swapchainRtvHandle;
 		D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = swapchainContext.dsvHeap->GetCPUDescriptorHandleForHeapStart();
 		dsvHandle.ptr += static_cast<SIZE_T>(imageIndex) * static_cast<SIZE_T>(m_dsvDescriptorSize);
-		m_xrCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-		m_xrCommandList->ClearDepthStencilView(
+		swapchainContext.frame.commands->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+		swapchainContext.frame.commands->ClearDepthStencilView(
 		    dsvHandle,
 		    D3D12_CLEAR_FLAG_DEPTH,
 		    1.0F,
 		    0,
 		    0,
 		    nullptr);
-		m_xrCommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
+		swapchainContext.frame.commands->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
 #if defined(BASEBALLSIMVR_DISABLE_WORLD_DRAW)
 		(void)view;
 		m_lastProjectionLayerStatus = L"world-draw-disabled";
 #else
-		Microsoft::WRL::ComPtr<ID3D12RootSignature> fallbackRootSignature{};
-		Microsoft::WRL::ComPtr<ID3D12PipelineState> fallbackOpaquePipelineState{};
-		Microsoft::WRL::ComPtr<ID3D12PipelineState> fallbackAlphaPipelineState{};
-		Microsoft::WRL::ComPtr<ID3D12Resource> fallbackVertexBuffer{};
-		D3D12_VERTEX_BUFFER_VIEW activeVertexBufferView = m_debugVertexBufferView;
-		UINT activeVertexCapacity = m_debugVertexCapacity;
+		D3D12_VERTEX_BUFFER_VIEW activeVertexBufferView = swapchainContext.frame.vertexView;
+		UINT activeVertexCapacity = swapchainContext.frame.vertexCapacity;
 		ID3D12RootSignature* activeRootSignature = m_debugRootSignature.Get();
 		ID3D12PipelineState* activeOpaquePipelineState = m_debugPipelineState.Get();
-		ID3D12PipelineState* activeAlphaPipelineState = m_debugAlphaPipelineState.Get();
-		ID3D12Resource* activeVertexBuffer = m_debugVertexBuffer.Get();
-		auto refreshMemberDebugResources = [&]() -> void
+		ID3D12Resource* activeVertexBuffer = swapchainContext.frame.vertices.Get();
+		if (!activeRootSignature || !activeOpaquePipelineState || !activeVertexBuffer)
 		{
-			const bool pipelineMissing =
-			    (m_debugRootSignature.Get() == nullptr) ||
-			    (m_debugPipelineState.Get() == nullptr) ||
-			    (m_debugAlphaPipelineState.Get() == nullptr);
-			if (pipelineMissing)
-			{
-				if (!InitializeDebugPipeline())
-				{
-					m_lastProjectionLayerStatus = L"debug-pipeline-reinit-failed";
-				}
-			}
-
-			const bool vertexMissing =
-			    (m_debugVertexBuffer.Get() == nullptr) ||
-			    (m_debugVertexCapacity == 0U) ||
-			    (m_debugVertexBufferView.SizeInBytes == 0U) ||
-			    (m_debugVertexBufferView.StrideInBytes == 0U);
-			if (vertexMissing)
-			{
-				if (!InitializeDebugVertexBuffer())
-				{
-					m_lastProjectionLayerStatus = L"debug-vertex-reinit-failed";
-				}
-			}
-
-			activeVertexBufferView = m_debugVertexBufferView;
-			activeVertexCapacity = m_debugVertexCapacity;
-			activeRootSignature = m_debugRootSignature.Get();
-			activeOpaquePipelineState = m_debugPipelineState.Get();
-			activeAlphaPipelineState = m_debugAlphaPipelineState.Get();
-			activeVertexBuffer = m_debugVertexBuffer.Get();
-		};
-		auto repairActiveDebugResources = [&]() -> void
-		{
-			if ((activeAlphaPipelineState == nullptr) &&
-			    (activeOpaquePipelineState != nullptr))
-			{
-				activeAlphaPipelineState = activeOpaquePipelineState;
-			}
-
-			if ((activeVertexBuffer != nullptr) && (activeVertexCapacity == 0U))
-			{
-				if ((activeVertexBufferView.SizeInBytes != 0U) &&
-				    (activeVertexBufferView.StrideInBytes ==
-				     sizeof(Common::DebugOverlay::Vertex)))
-				{
-					activeVertexCapacity =
-					    activeVertexBufferView.SizeInBytes /
-					    activeVertexBufferView.StrideInBytes;
-				}
-				else
-				{
-					activeVertexCapacity = MaxDebugVertices;
-				}
-			}
-
-			if ((activeVertexBuffer != nullptr) &&
-			    (activeVertexCapacity != 0U) &&
-			    ((activeVertexBufferView.SizeInBytes == 0U) ||
-			     (activeVertexBufferView.StrideInBytes == 0U)))
-			{
-				activeVertexBufferView.BufferLocation =
-				    activeVertexBuffer->GetGPUVirtualAddress();
-				activeVertexBufferView.StrideInBytes =
-				    sizeof(Common::DebugOverlay::Vertex);
-				activeVertexBufferView.SizeInBytes =
-				    static_cast<UINT>(activeVertexCapacity *
-				                      sizeof(Common::DebugOverlay::Vertex));
-			}
-		};
-		auto hasActiveDebugResources = [&]() -> bool
-		{
-			return (activeRootSignature != nullptr) &&
-			       (activeOpaquePipelineState != nullptr) &&
-			       (activeAlphaPipelineState != nullptr) &&
-			       (activeVertexBuffer != nullptr) &&
-			       (activeVertexCapacity != 0U) &&
-			       (activeVertexBufferView.SizeInBytes != 0U) &&
-			       (activeVertexBufferView.StrideInBytes != 0U);
-		};
-		auto buildDebugResourceMissingReason = [&]() -> std::wstring
-		{
-			if (activeRootSignature == nullptr)
-			{
-				return L"root-null";
-			}
-			if (activeOpaquePipelineState == nullptr)
-			{
-				return L"opaque-null";
-			}
-			if (activeAlphaPipelineState == nullptr)
-			{
-				return L"alpha-null";
-			}
-			if (activeVertexBuffer == nullptr)
-			{
-				return L"vb-null";
-			}
-			if (activeVertexCapacity == 0U)
-			{
-				return L"capacity-zero";
-			}
-			if (activeVertexBufferView.SizeInBytes == 0U)
-			{
-				return L"vb-size-zero";
-			}
-			if (activeVertexBufferView.StrideInBytes == 0U)
-			{
-				return L"vb-stride-zero";
-			}
-			return L"unknown";
-		};
-		refreshMemberDebugResources();
-		repairActiveDebugResources();
-		if (!hasActiveDebugResources())
-		{
-			bool fallbackUsable = true;
-			Common::DebugOverlay::PipelineInitializationPhase failedPhase =
-			    Common::DebugOverlay::PipelineInitializationPhase::None;
-			HRESULT failedResult = S_OK;
-			if (!Common::DebugOverlay::InitializePipeline(
-			        m_d3d12Device.Get(),
-			        ResolveRtvFormat(m_colorSwapchainFormat),
-			        DepthBufferFormat,
-			        &fallbackRootSignature,
-			        &fallbackOpaquePipelineState,
-			        &failedPhase,
-			        &failedResult,
-			        Common::DebugOverlay::PipelineBlendMode::Opaque,
-			        Common::DebugOverlay::PipelineDepthWriteMode::Enabled,
-			        false,
-			        (std::max)(1U, m_projectionSampleCount)))
-			{
-				m_lastProjectionLayerStatus =
-				    L"pipeline-fallback-failed-" +
-				    BuildPipelineInitPhaseToken(failedPhase) +
-				    L"-" +
-				    BuildHresultHex(failedResult);
-				m_sessionName = L"Session(unavailable): " +
-				                BuildDebugPipelineInitializationErrorMessage(
-				                    failedPhase,
-				                    failedResult);
-				activeRootSignature = nullptr;
-				activeOpaquePipelineState = nullptr;
-				activeAlphaPipelineState = nullptr;
-				activeVertexBuffer = nullptr;
-				activeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
-				activeVertexCapacity = 0U;
-				fallbackUsable = false;
-			}
-			if (fallbackUsable &&
-			    ((fallbackRootSignature.Get() == nullptr) ||
-			     (fallbackOpaquePipelineState.Get() == nullptr)))
-			{
-				m_lastProjectionLayerStatus = L"pipeline-fallback-empty";
-				m_sessionName = L"Session(unavailable): XR fallback pipeline resources missing";
-				activeRootSignature = nullptr;
-				activeOpaquePipelineState = nullptr;
-				activeAlphaPipelineState = nullptr;
-				activeVertexBuffer = nullptr;
-				activeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
-				activeVertexCapacity = 0U;
-				fallbackUsable = false;
-			}
-
-			if (fallbackUsable)
-			{
-				m_debugRootSignature = fallbackRootSignature;
-				m_debugPipelineState = fallbackOpaquePipelineState;
-				if (m_debugAlphaPipelineState.Get() == nullptr)
-				{
-					m_debugAlphaPipelineState = m_debugPipelineState;
-				}
-
-				failedPhase = Common::DebugOverlay::PipelineInitializationPhase::None;
-				failedResult = S_OK;
-				if (!Common::DebugOverlay::InitializePipeline(
-				        m_d3d12Device.Get(),
-				        ResolveRtvFormat(m_colorSwapchainFormat),
-				        DepthBufferFormat,
-				        &fallbackRootSignature,
-				        &fallbackAlphaPipelineState,
-				        &failedPhase,
-				        &failedResult,
-				        Common::DebugOverlay::PipelineBlendMode::AlphaBlend,
-				        Common::DebugOverlay::PipelineDepthWriteMode::Disabled,
-				        true,
-				        (std::max)(1U, m_projectionSampleCount)))
-				{
-					OutputDebugStringW(
-					    L"[OpenXR] alpha fallback pipeline init failed; using opaque pipeline.\n");
-					fallbackAlphaPipelineState = fallbackOpaquePipelineState;
-				}
-
-				if (fallbackAlphaPipelineState.Get() == nullptr)
-				{
-					fallbackAlphaPipelineState = fallbackOpaquePipelineState;
-				}
-				m_debugAlphaPipelineState = fallbackAlphaPipelineState;
-			}
-
-			if (fallbackUsable)
-			{
-				Common::DebugOverlay::VertexBufferInitializationPhase vertexFailedPhase =
-				    Common::DebugOverlay::VertexBufferInitializationPhase::None;
-				HRESULT vertexFailedResult = S_OK;
-				if (!Common::DebugOverlay::InitializeVertexBuffer(
-				        m_d3d12Device.Get(),
-				        MaxDebugVertices,
-				        &fallbackVertexBuffer,
-				        &activeVertexBufferView,
-				        &activeVertexCapacity,
-				        &vertexFailedPhase,
-				        &vertexFailedResult))
-				{
-					m_lastProjectionLayerStatus =
-					    L"vertex-fallback-failed-" +
-					    BuildVertexInitPhaseToken(vertexFailedPhase) +
-					    L"-" +
-					    BuildHresultHex(vertexFailedResult);
-					m_sessionName = L"Session(unavailable): " +
-					                BuildDebugVertexBufferInitializationErrorMessage(
-					                    vertexFailedPhase,
-					                    vertexFailedResult);
-					activeRootSignature = nullptr;
-					activeOpaquePipelineState = nullptr;
-					activeAlphaPipelineState = nullptr;
-					activeVertexBuffer = nullptr;
-					activeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
-					activeVertexCapacity = 0U;
-					fallbackUsable = false;
-				}
-				else
-				{
-					m_debugVertexBuffer = fallbackVertexBuffer;
-					m_debugVertexBufferView = activeVertexBufferView;
-					m_debugVertexCapacity = activeVertexCapacity;
-				}
-			}
-
-			if (fallbackUsable)
-			{
-				refreshMemberDebugResources();
-				repairActiveDebugResources();
-				activeRootSignature = fallbackRootSignature.Get();
-				activeOpaquePipelineState = fallbackOpaquePipelineState.Get();
-				activeAlphaPipelineState = fallbackAlphaPipelineState.Get();
-				activeVertexBuffer = fallbackVertexBuffer.Get();
-				if ((activeAlphaPipelineState == nullptr) &&
-				    (activeOpaquePipelineState != nullptr))
-				{
-					activeAlphaPipelineState = activeOpaquePipelineState;
-				}
-				if ((activeRootSignature == nullptr) ||
-				    (activeOpaquePipelineState == nullptr) ||
-				    (activeAlphaPipelineState == nullptr))
-				{
-					m_lastProjectionLayerStatus = L"fallback-assign-null";
-					m_sessionName = L"Session(unavailable): XR fallback pipeline assignment failed";
-					activeRootSignature = nullptr;
-					activeOpaquePipelineState = nullptr;
-					activeAlphaPipelineState = nullptr;
-					activeVertexBuffer = nullptr;
-					activeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
-					activeVertexCapacity = 0U;
-					fallbackUsable = false;
-				}
-			}
-
-			if (fallbackUsable)
-			{
-				m_lastProjectionLayerStatus = L"debug-fallback-ok";
-			}
-			else
-			{
-				const bool hasDetailedFailure =
-				    (m_lastProjectionLayerStatus.rfind(L"pipeline-fallback-failed", 0) == 0) ||
-				    (m_lastProjectionLayerStatus.rfind(L"vertex-fallback-failed", 0) == 0) ||
-				    (m_lastProjectionLayerStatus.rfind(L"fallback-assign-null", 0) == 0);
-				if (!hasDetailedFailure)
-				{
-					m_lastProjectionLayerStatus =
-					    L"debug-fallback-missing-" + buildDebugResourceMissingReason();
-				}
-			}
+			m_lastProjectionLayerStatus = L"view-resources-missing";
+			closeCommandListOnFailure();
+			return false;
 		}
-		else
-		{
-			m_lastProjectionLayerStatus = L"debug-ready";
-		}
-
 		const LONG width = swapchainContext.width;
 		const LONG height = swapchainContext.height;
 		if ((width <= 0) || (height <= 0))
@@ -7094,218 +6227,16 @@ namespace BaseballSimulatorVR::Xr
 			closeCommandListOnFailure();
 			return false;
 		}
-		static const std::vector<Physics::Vector3> EmptyTrajectory{};
-		const std::vector<Physics::Vector3>& trajectoryForOverlay =
-		    m_overlayVisibility.showTrajectory
-		        ? m_ballTrajectory
-		        : EmptyTrajectory;
 
-		const bool debugDrawUsable = hasActiveDebugResources();
-		if (!debugDrawUsable)
-		{
-			const std::wstring fallbackStatus = m_lastProjectionLayerStatus;
-			const std::wstring missingReason = buildDebugResourceMissingReason();
-			bool drewDynamicOverlay = false;
-			auto drawRect = [&](LONG left,
-			                    LONG top,
-			                    LONG right,
-			                    LONG bottom,
-			                    const float* const color) -> void
-			{
-				const LONG clampedLeft = (std::max)(0L, left);
-				const LONG clampedTop = (std::max)(0L, top);
-				const LONG clampedRight = (std::min)(width, right);
-				const LONG clampedBottom = (std::min)(height, bottom);
-				if ((clampedLeft >= clampedRight) || (clampedTop >= clampedBottom))
-				{
-					return;
-				}
-
-				const D3D12_RECT rect{
-					clampedLeft,
-					clampedTop,
-					clampedRight,
-					clampedBottom
-				};
-				m_xrCommandList->ClearRenderTargetView(rtvHandle, color, 1, &rect);
-			};
-
-			auto drawFallbackMarker = [&](const ScreenPoint& point,
-			                              const LONG halfSize,
-			                              const float* const color) -> void
-			{
-				const LONG centerX = static_cast<LONG>(std::llround(point.x));
-				const LONG centerY = static_cast<LONG>(std::llround(point.y));
-				drawRect(
-				    centerX - halfSize,
-				    centerY - halfSize,
-				    centerX + halfSize + 1,
-				    centerY + halfSize + 1,
-				    color);
-				drewDynamicOverlay = true;
-			};
-			auto drawFallbackLine = [&](const ScreenPoint& startPoint,
-			                            const ScreenPoint& endPoint,
-			                            const LONG halfSize,
-			                            const float* const color) -> void
-			{
-				const double dx = endPoint.x - startPoint.x;
-				const double dy = endPoint.y - startPoint.y;
-				const double length = std::sqrt((dx * dx) + (dy * dy));
-				const int stepCount = (std::max)(1,
-				                                 static_cast<int>(std::ceil(length / 8.0)));
-				for (int stepIndex = 0; stepIndex <= stepCount; ++stepIndex)
-				{
-					const double blend = static_cast<double>(stepIndex) /
-					                     static_cast<double>(stepCount);
-					const ScreenPoint point{
-						startPoint.x + (dx * blend),
-						startPoint.y + (dy * blend),
-						startPoint.depth + static_cast<float>((endPoint.depth - startPoint.depth) * blend)
-					};
-					drawFallbackMarker(point, halfSize, color);
-				}
-			};
-
-			const Common::ViewProjectionState projectionState =
-			    BuildProjectionStateFromView(view);
-			Common::EmitProjectedDebugWorldOverlay(
-			    projectionState,
-			    width,
-			    height,
-			    trajectoryForOverlay,
-			    m_latestBallState,
-			    [&](const ScreenPoint& screenPoint, const LONG halfSize, const float* color) -> void
-			    {
-				    drawFallbackMarker(screenPoint, halfSize, color);
-			    },
-			    [&](const ScreenPoint& startPoint,
-			        const ScreenPoint& endPoint,
-			        const LONG halfSize,
-			        const float* color) -> void
-			    {
-				    drawFallbackLine(startPoint, endPoint, halfSize, color);
-			    },
-			    m_overlayVisibility.showTrajectory,
-			    m_overlayVisibility.showFloorMesh,
-			    m_overlayVisibility.showStrikeZone);
-			Common::EmitProjectedZonePassCircleOverlay(
-			    projectionState,
-			    width,
-			    height,
-			    m_duelZonePassMarker,
-			    [&](const ScreenPoint& startPoint,
-			        const ScreenPoint& endPoint,
-			        const LONG halfSize,
-			        const float* color) -> void
-			    {
-				    drawFallbackLine(startPoint, endPoint, halfSize, color);
-			    });
-			Common::EmitProjectedBatCylinderOverlay(
-			    projectionState,
-			    width,
-			    height,
-			    m_batOverlayState,
-			    [&](const ScreenPoint& startPoint,
-			        const ScreenPoint& endPoint,
-			        const LONG halfSize,
-			        const float* color) -> void
-			    {
-				    drawFallbackLine(startPoint, endPoint, halfSize, color);
-			    });
-
-			if (m_hasResultPanelLaser)
-			{
-				ScreenPoint laserStart{};
-				ScreenPoint laserEnd{};
-				if (Common::TryProjectWorldToScreen(
-				        m_resultPanelLaserOrigin,
-				        projectionState,
-				        width,
-				        height,
-				        &laserStart,
-				        false) &&
-				    Common::TryProjectWorldToScreen(
-				        m_resultPanelLaserTarget,
-				        projectionState,
-				        width,
-				        height,
-				        &laserEnd,
-				        false))
-				{
-					laserStart.depth = Common::DebugWorldLayout::UiLaserOverlayDepth;
-					laserEnd.depth = Common::DebugWorldLayout::UiLaserOverlayDepth;
-					drawFallbackLine(
-					    laserStart,
-					    laserEnd,
-					    Common::DebugWorldStyle::UiLaserHalfSizePixels,
-					    Common::DebugWorldStyle::UiLaserColor.data());
-					drawFallbackMarker(
-					    laserEnd,
-					    Common::DebugWorldStyle::PlateMarkerHalfSizePixels + 1,
-					    Common::DebugWorldStyle::UiLaserHitColor.data());
-				}
-			}
-
-			if (!drewDynamicOverlay)
-			{
-				const LONG centerX = width / 2;
-				const LONG centerY = height / 2;
-				const LONG armLength = (std::max)(8L, (std::min)(width, height) / 10L);
-				const LONG lineHalfThickness = 2L;
-				const LONG markerHalfSize = 8L;
-				drawRect(
-				    centerX - armLength,
-				    centerY - lineHalfThickness,
-				    centerX + armLength + 1,
-				    centerY + lineHalfThickness + 1,
-				    Common::DebugWorldStyle::ZoneColor.data());
-				drawRect(
-				    centerX - lineHalfThickness,
-				    centerY - armLength,
-				    centerX + lineHalfThickness + 1,
-				    centerY + armLength + 1,
-				    Common::DebugWorldStyle::ZoneColor.data());
-				drawRect(
-				    centerX - markerHalfSize,
-				    centerY - markerHalfSize,
-				    centerX + markerHalfSize + 1,
-				    centerY + markerHalfSize + 1,
-				    Common::DebugWorldStyle::PlateColor.data());
-			}
-
-			if (drewDynamicOverlay)
-			{
-				m_lastProjectionLayerStatus = L"rect-world-fallback";
-			}
-			else if ((fallbackStatus.rfind(L"pipeline-fallback", 0) == 0) ||
-			         (fallbackStatus.rfind(L"vertex-fallback", 0) == 0) ||
-			         (fallbackStatus.rfind(L"debug-fallback-missing", 0) == 0) ||
-			         (fallbackStatus.rfind(L"fallback-assign", 0) == 0))
-			{
-				m_lastProjectionLayerStatus = L"rect-" + fallbackStatus;
-			}
-			else
-			{
-				m_lastProjectionLayerStatus = L"rect-fallback-" + missingReason;
-			}
-		}
-
-		if (debugDrawUsable)
 		{
 			const Common::ViewProjectionState projectionState = BuildProjectionStateFromView(view);
+			std::vector<Common::UiText::AtlasVertex> atlasVertices;
+			Common::UiText::AtlasDrawContext textContext{m_uiTextAtlas,m_uiTextLayouts,atlasVertices};
 			std::vector<Common::DebugOverlay::Vertex> opaqueVertices{};
 			std::vector<Common::DebugOverlay::Vertex> alphaVertices{};
 			opaqueVertices.reserve(8192);
 			alphaVertices.reserve(1024);
-			const std::size_t vertexCapacity = static_cast<std::size_t>(activeVertexCapacity);
 			bool hasVisibleCoverage = false;
-
-			auto hasCapacity = [&](const std::size_t additionalVertices) -> bool
-			{
-				return ((opaqueVertices.size() + alphaVertices.size() + additionalVertices) <=
-				        vertexCapacity);
-			};
 
 			auto selectVertexBucket =
 			    [&](const float* const color) -> std::vector<Common::DebugOverlay::Vertex>*
@@ -7320,10 +6251,6 @@ namespace BaseballSimulatorVR::Xr
 
 			auto appendMarker = [&](const ScreenPoint& centerPoint, const LONG halfSize, const float* color) -> void
 			{
-				if (!hasCapacity(6))
-				{
-					return;
-				}
 				auto* const vertices = selectVertexBucket(color);
 				Common::DebugOverlay::AppendMarkerQuad(
 				    vertices,
@@ -7352,10 +6279,6 @@ namespace BaseballSimulatorVR::Xr
 			                      const LONG halfSize,
 			                      const float* color) -> void
 			{
-				if (!hasCapacity(6))
-				{
-					return;
-				}
 				auto* const vertices = selectVertexBucket(color);
 				Common::DebugOverlay::AppendThickScreenLine(
 				    vertices,
@@ -7384,10 +6307,9 @@ namespace BaseballSimulatorVR::Xr
 			                          const ScreenPoint& p2,
 			                          const float* color) -> void
 			{
-				if (!hasCapacity(3))
-				{
-					return;
-				}
+				if(textContext.currentGroup!=0) {
+				    Common::UiText::AppendUntexturedTriangle(textContext,p0,p1,p2,color,width,height);
+				} else {
 				auto* const vertices = selectVertexBucket(color);
 
 				Common::DebugOverlay::AppendScreenTriangle(
@@ -7398,6 +6320,7 @@ namespace BaseballSimulatorVR::Xr
 				    color,
 				    width,
 				    height);
+				}
 				const double triangleMinX = (std::min)(p0.x, (std::min)(p1.x, p2.x));
 				const double triangleMaxX = (std::max)(p0.x, (std::max)(p1.x, p2.x));
 				const double triangleMinY = (std::min)(p0.y, (std::min)(p1.y, p2.y));
@@ -7410,6 +6333,8 @@ namespace BaseballSimulatorVR::Xr
 					hasVisibleCoverage = true;
 				}
 			};
+
+			Common::UiText::EmitProjectedFieldPresentation(m_fieldPresentation,projectionState,width,height,textContext,appendTriangle);
 
 			if (m_overlayVisibility.showFloorMesh)
 			{
@@ -7426,11 +6351,11 @@ namespace BaseballSimulatorVR::Xr
 				    });
 			}
 
-			Common::EmitProjectedDebugWorldOverlay(
+			Common::EmitProjectedPhaseDebugWorldOverlay(
 			    projectionState,
 			    width,
 			    height,
-			    trajectoryForOverlay,
+			    m_trajectoryTrails, m_overlayVisibility,
 			    m_latestBallState,
 			    [&](const ScreenPoint& screenPoint, const LONG halfSize, const float* color) -> void
 			    {
@@ -7480,11 +6405,13 @@ namespace BaseballSimulatorVR::Xr
 				    appendTriangle(p0, p1, p2, color);
 			    });
 
-			Common::EmitProjectedBallAndTrajectoryMeshOverlay(
+			if (m_fieldPresentation.ballVisible)
+			{
+			Common::EmitProjectedPhaseBallAndTrajectoryMeshOverlay(
 			    projectionState,
 			    width,
 			    height,
-			    trajectoryForOverlay,
+			    m_trajectoryTrails, m_overlayVisibility,
 			    m_latestBallState,
 			    [&](const ScreenPoint& p0,
 			        const ScreenPoint& p1,
@@ -7496,11 +6423,8 @@ namespace BaseballSimulatorVR::Xr
 			    std::clamp(
 			        m_renderQuality.trailOpacityScale,
 			        0.0F,
-			        1.5F),
-			    std::clamp(
-			        1.0F - m_trajectoryFadeScale,
-			        0.0F,
-			        1.0F));
+			        1.5F));
+			}
 
 			if (m_showMainControlPanel || m_showPitchControlPanel ||
 			    m_showMetricsPanel || m_showBattingMetricsPanel)
@@ -7617,8 +6541,8 @@ namespace BaseballSimulatorVR::Xr
 					        const float* color) -> void
 					    {
 						    appendTriangle(p0, p1, p2, color);
-					    });
-					const std::array<std::wstring, 6> mainPanelLabels{
+					    },textContext);
+					const std::array<std::wstring, 8> mainPanelLabels{
 						L"\u8ecc\u9053", // trajectory
 						L"\u5bfe\u6226", // duel
 						L"\u30c6\u30a3\u30fc",
@@ -7630,7 +6554,9 @@ namespace BaseballSimulatorVR::Xr
 						    : L"\u6295\u7403\u6307\u6a19 \u958b\u304f",
 						m_showBattingMetricsPanel
 						    ? L"\u6253\u7403\u6307\u6a19 \u6551\u6e08"
-						    : L"\u6253\u7403\u6307\u6a19 \u958b\u304f"
+						    : L"\u6253\u7403\u6307\u6a19 \u958b\u304f",
+						m_overlayVisibility.showPitchTrajectory ? L"投球跡 隠" : L"投球跡 表",
+						m_overlayVisibility.showBattedTrajectory ? L"打球跡 隠" : L"打球跡 表"
 					};
 					EmitProjectedOrientedPanelTextOverlay(
 					    projectionState,
@@ -7651,7 +6577,7 @@ namespace BaseballSimulatorVR::Xr
 					        const float* color) -> void
 					    {
 						    appendTriangle(p0, p1, p2, color);
-					    });
+					    },textContext);
 				}
 
 				if (m_showPitchControlPanel)
@@ -7689,7 +6615,7 @@ namespace BaseballSimulatorVR::Xr
 					        const float* color) -> void
 					    {
 						    appendTriangle(p0, p1, p2, color);
-					    });
+					    },textContext);
 					const std::array<float, 4> pitchTitleBarColor =
 					    (m_subPanelDragTarget == SubPanelDragTarget::Pitch)
 					        ? Common::DebugWorldStyle::MainControlPanelPresetRowColor
@@ -7708,7 +6634,7 @@ namespace BaseballSimulatorVR::Xr
 					        const float* color) -> void
 					    {
 						    appendTriangle(p0, p1, p2, color);
-					    });
+					    },textContext);
 					const double pitchCameraSide = Physics::Dot(
 					    projectionState.position - pitchPanelLayout.center,
 					    pitchPanelLayout.forwardAxis);
@@ -7742,7 +6668,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 					}
 
 					if (m_pitchPanelMinimized)
@@ -7773,7 +6699,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 					}
 					else
 					{
@@ -7852,6 +6778,9 @@ namespace BaseballSimulatorVR::Xr
 						std::wstring settingsFileLabel =
 						    ExtractPitchSettingsDisplayName(
 						        m_uiTelemetry.pitchSettingsFileName);
+						pitchPanelLabels[static_cast<std::size_t>(PitchTypeNameCellIndex)] =
+						    m_fieldPresentation.statistics.pitchMetricsVisible
+						        ? m_fieldPresentation.statistics.pitchName : L"--";
 						if (settingsFileLabel.empty() ||
 						    (m_uiTelemetry.pitchSettingsFileCount <= 0))
 						{
@@ -7884,7 +6813,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 
 						UiPanelLocalRect sliderTrackRect{};
 						UiPanelLocalRect sliderHitRect{};
@@ -7938,7 +6867,7 @@ namespace BaseballSimulatorVR::Xr
 							        const float* color) -> void
 							    {
 								    appendTriangle(p0, p1, p2, color);
-							    });
+							    },textContext);
 
 							UiPanelLocalRect sliderFillRect = sliderTrackRect;
 							sliderFillRect.right = sliderTrackRect.left +
@@ -7961,7 +6890,7 @@ namespace BaseballSimulatorVR::Xr
 								        const float* color) -> void
 								    {
 									    appendTriangle(p0, p1, p2, color);
-								    });
+								    },textContext);
 							}
 
 							const double trackWidth =
@@ -7995,7 +6924,7 @@ namespace BaseballSimulatorVR::Xr
 							        const float* color) -> void
 							    {
 								    appendTriangle(p0, p1, p2, color);
-							    });
+							    },textContext);
 
 							std::wostringstream sliderValueLabel{};
 							sliderValueLabel << std::fixed << std::setprecision(0);
@@ -8045,7 +6974,7 @@ namespace BaseballSimulatorVR::Xr
 							        const float* color) -> void
 							    {
 								    appendTriangle(p0, p1, p2, color);
-							    });
+							    },textContext);
 							EmitProjectedOrientedPanelTextInRect(
 							    projectionState,
 							    width,
@@ -8065,7 +6994,7 @@ namespace BaseballSimulatorVR::Xr
 							        const float* color) -> void
 							    {
 								    appendTriangle(p0, p1, p2, color);
-							    });
+							    },textContext);
 							EmitProjectedOrientedPanelTextInRect(
 							    projectionState,
 							    width,
@@ -8085,7 +7014,7 @@ namespace BaseballSimulatorVR::Xr
 							        const float* color) -> void
 							    {
 								    appendTriangle(p0, p1, p2, color);
-							    });
+							    },textContext);
 						}
 					}
 				}
@@ -8094,14 +7023,10 @@ namespace BaseballSimulatorVR::Xr
 				{
 					const DerivedFlightMetrics derivedMetrics =
 					    BuildDerivedFlightMetrics(
-					        m_ballTrajectory,
+					        m_trajectoryTrails.Pitch().Points(),
 					        m_uiTelemetry.pitchDistanceMeters);
-					const double liveBallSpeedMetersPerSecond =
-					    Physics::Length(m_latestBallState.velocity);
 					const double pitchMetricsSpeedMetersPerSecond =
-					    (m_uiTelemetry.pitchMetricsSpeedMetersPerSecond > 1e-6)
-					        ? m_uiTelemetry.pitchMetricsSpeedMetersPerSecond
-					        : liveBallSpeedMetersPerSecond;
+					    m_fieldPresentation.statistics.pitchSpeedMetersPerSecond;
 					const double pitchMetricsSpeedKilometersPerHour =
 					    pitchMetricsSpeedMetersPerSecond * 3.6;
 					const Physics::Vector3 horizontalSpinAxis{
@@ -8140,10 +7065,10 @@ namespace BaseballSimulatorVR::Xr
 						                : L"\u30be\u30fc\u30f3 OUT";
 					}
 
-					const std::wstring trajectoryToggleLabel =
-					    m_overlayVisibility.showTrajectory
-					        ? L"\u8ecc\u8de1 \u96a0"
-					        : L"\u8ecc\u8de1 \u8868";
+					const std::wstring pitchTrajectoryToggleLabel =
+					    m_overlayVisibility.showPitchTrajectory ? L"投球跡 隠" : L"投球跡 表";
+					const std::wstring battedTrajectoryToggleLabel =
+					    m_overlayVisibility.showBattedTrajectory ? L"打球跡 隠" : L"打球跡 表";
 					const std::wstring zoneToggleLabel =
 					    m_overlayVisibility.showStrikeZone
 					        ? L"\u30be\u30fc\u30f3 \u96a0"
@@ -8233,13 +7158,13 @@ namespace BaseballSimulatorVR::Xr
 					}
 					std::wostringstream pitchTypeSpeedLine{};
 					pitchTypeSpeedLine << std::fixed << std::setprecision(0);
-					pitchTypeSpeedLine << L"\u7403\u7a2e " << m_uiTelemetry.presetName
+					pitchTypeSpeedLine << L"\u7403\u7a2e " << m_fieldPresentation.statistics.pitchName
 					                   << L" / \u7403\u901f "
 					                   << pitchMetricsSpeedKilometersPerHour
 					                   << L"km/h";
 					std::wostringstream spinAxisLine{};
 					spinAxisLine << std::fixed << std::setprecision(0);
-					spinAxisLine << L"\u56de\u8ee2 " << m_latestBallState.spinRpm
+					spinAxisLine << L"\u56de\u8ee2 " << m_fieldPresentation.statistics.pitchSpinRpm
 					             << L"rpm / \u8ef8V " << spinAxisTiltDegrees
 					             << L"\u00b0 H " << spinAxisDirectionDegrees << L"\u00b0";
 					const std::wstring pitchBreakLine =
@@ -8264,10 +7189,10 @@ namespace BaseballSimulatorVR::Xr
 						battedSpeedLine = battedSpeedStream.str();
 					}
 					const std::array<std::wstring, 4> pitchingMetricRows{
-						pitchTypeSpeedLine.str(),
-						spinAxisLine.str(),
-						pitchBreakLine,
-						pitchZoneLine
+						m_fieldPresentation.statistics.pitchMetricsVisible ? pitchTypeSpeedLine.str() : L"球種 -- / 球速 --",
+						m_fieldPresentation.statistics.pitchMetricsVisible ? spinAxisLine.str() : L"回転 -- / 軸 --",
+						m_fieldPresentation.statistics.pitchMetricsVisible ? pitchBreakLine : L"縦 -- / 横 --",
+						m_fieldPresentation.statistics.pitchMetricsVisible ? pitchZoneLine : L"ゾーン --"
 					};
 					const std::array<std::wstring, 4> battingMetricRows{
 						battedSpeedLine,
@@ -8314,7 +7239,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 						const std::array<float, 4> metricsTitleBarColor =
 						    (m_subPanelDragTarget == SubPanelDragTarget::Metrics)
 						        ? Common::DebugWorldStyle::MainControlPanelPresetRowColor
@@ -8333,7 +7258,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 						const std::array<std::wstring, 5> metricsTitleLabels{
 							L"\u6295\u7403\u6307\u6a19",
 							L"",
@@ -8360,7 +7285,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 
 						if (!m_metricsPanelMinimized)
 						{
@@ -8422,7 +7347,7 @@ namespace BaseballSimulatorVR::Xr
 										        const float* color) -> void
 										    {
 											    appendTriangle(p0, p1, p2, color);
-										    });
+										    },textContext);
 										UiPanelLocalRect rowTextRect = rowRect;
 										rowTextRect.left += 0.0045;
 										rowTextRect.right -= 0.0030;
@@ -8445,12 +7370,12 @@ namespace BaseballSimulatorVR::Xr
 										        const float* color) -> void
 										    {
 											    appendTriangle(p0, p1, p2, color);
-										    });
+										    },textContext);
 									}
 								}
 
 								const std::array<std::wstring, MetricsControlButtonCount> metricsButtonLabels{
-									trajectoryToggleLabel,
+									pitchTrajectoryToggleLabel,
 									zoneToggleLabel,
 									moundToggleLabel,
 									duelPreviewToggleLabel,
@@ -8460,7 +7385,8 @@ namespace BaseballSimulatorVR::Xr
 									batYawDownLabel,
 									batYawUpLabel,
 									L"\u4f4d\u7f6eR",
-									L"ZoneR"
+									L"ZoneR",
+									battedTrajectoryToggleLabel
 								};
 								for (std::size_t buttonIndex = 0;
 								     buttonIndex < metricsControlButtonRects.size();
@@ -8468,7 +7394,9 @@ namespace BaseballSimulatorVR::Xr
 								{
 									const bool isActiveButton =
 									    ((buttonIndex == 0U) &&
-									     m_overlayVisibility.showTrajectory) ||
+									     m_overlayVisibility.showPitchTrajectory) ||
+									    ((buttonIndex == 11U) &&
+									     m_overlayVisibility.showBattedTrajectory) ||
 									    ((buttonIndex == 1U) &&
 									     m_overlayVisibility.showStrikeZone) ||
 									    ((buttonIndex == 2U) &&
@@ -8503,7 +7431,7 @@ namespace BaseballSimulatorVR::Xr
 									        const float* color) -> void
 									    {
 										    appendTriangle(p0, p1, p2, color);
-									    });
+									    },textContext);
 									EmitProjectedOrientedPanelTextInRect(
 									    projectionState,
 									    width,
@@ -8523,7 +7451,7 @@ namespace BaseballSimulatorVR::Xr
 									        const float* color) -> void
 									    {
 										    appendTriangle(p0, p1, p2, color);
-									    });
+									    },textContext);
 								}
 							}
 						}
@@ -8567,7 +7495,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 						const std::array<float, 4> battingMetricsTitleBarColor =
 						    (m_subPanelDragTarget == SubPanelDragTarget::BattingMetrics)
 						        ? Common::DebugWorldStyle::MainControlPanelPresetRowColor
@@ -8586,7 +7514,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 						const std::array<std::wstring, 5> battingTitleLabels{
 							L"\u6253\u7403\u6307\u6a19",
 							L"",
@@ -8613,7 +7541,7 @@ namespace BaseballSimulatorVR::Xr
 						        const float* color) -> void
 						    {
 							    appendTriangle(p0, p1, p2, color);
-						    });
+						    },textContext);
 						if (!m_battingMetricsPanelMinimized)
 						{
 							UiPanelInnerLayout innerLayout{};
@@ -8683,7 +7611,7 @@ namespace BaseballSimulatorVR::Xr
 										        const float* color) -> void
 										    {
 											    appendTriangle(p0, p1, p2, color);
-										    });
+										    },textContext);
 										UiPanelLocalRect rowTextRect = rowRect;
 										rowTextRect.left += 0.0045;
 										rowTextRect.right -= 0.0030;
@@ -8706,7 +7634,7 @@ namespace BaseballSimulatorVR::Xr
 										        const float* color) -> void
 										    {
 											    appendTriangle(p0, p1, p2, color);
-										    });
+										    },textContext);
 									}
 								}
 							}
@@ -8750,7 +7678,8 @@ namespace BaseballSimulatorVR::Xr
 
 			if (!hasVisibleCoverage)
 			{
-				for (const Physics::Vector3& trailPoint : trajectoryForOverlay)
+				m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryTrail& trail) {
+for (const Physics::Vector3& trailPoint : trail.Points())
 				{
 					const ScreenPoint screenPoint =
 					    Common::ProjectLegacyWorldToScreen(trailPoint, width, height);
@@ -8759,13 +7688,14 @@ namespace BaseballSimulatorVR::Xr
 					    Common::DebugWorldStyle::TrailHalfSizePixels,
 					    Common::DebugWorldStyle::TrailColor.data());
 				}
+});
 
 				const ScreenPoint ballScreenPoint =
 				    Common::ProjectLegacyWorldToScreen(
 				        m_latestBallState.position,
 				        width,
 				        height);
-				appendMarker(
+				if (m_fieldPresentation.ballVisible) appendMarker(
 				    ballScreenPoint,
 				    Common::DebugWorldStyle::BallHalfSizePixels,
 				    Common::DebugWorldStyle::BallColor.data());
@@ -8828,152 +7758,47 @@ namespace BaseballSimulatorVR::Xr
 				    hasVisibleCoverage ? L"center-fallback" : L"overlay-empty";
 			}
 
-			const UINT opaqueVertexCount = static_cast<UINT>(opaqueVertices.size());
-			const UINT alphaVertexCount = static_cast<UINT>(alphaVertices.size());
-			if ((opaqueVertexCount > 0U) || (alphaVertexCount > 0U))
-			{
-				bool overlayDrawReady = true;
-				std::vector<Common::DebugOverlay::Vertex> combinedVertices{};
-				combinedVertices.reserve(
-				    static_cast<std::size_t>(opaqueVertexCount) +
-				    static_cast<std::size_t>(alphaVertexCount));
-				combinedVertices.insert(
-				    combinedVertices.end(),
-				    opaqueVertices.begin(),
-				    opaqueVertices.end());
-				combinedVertices.insert(
-				    combinedVertices.end(),
-				    alphaVertices.begin(),
-				    alphaVertices.end());
-
-				Common::DebugOverlay::VertexUploadPhase failedPhase =
-				    Common::DebugOverlay::VertexUploadPhase::None;
-				HRESULT failedResult = S_OK;
-				if (!Common::DebugOverlay::UploadVertices(
-				        activeVertexBuffer,
-				        combinedVertices,
-				        &failedPhase,
-				        &failedResult))
-				{
-					overlayDrawReady = false;
-					m_lastProjectionLayerStatus = L"upload-failed";
-					m_sessionName = L"Session(unavailable): " +
-					                BuildDebugVertexUploadErrorMessage(
-					                    failedPhase,
-					                    failedResult);
-				}
-
-				Common::DebugOverlay::DrawCommandValidationPhase failedDrawPhase =
-				    Common::DebugOverlay::DrawCommandValidationPhase::None;
-				const bool opaqueDrawArgsValid =
-				    (m_xrCommandList.Get() != nullptr) &&
-				    (width > 0) &&
-				    (height > 0) &&
-				    (activeRootSignature != nullptr) &&
-				    (activeOpaquePipelineState != nullptr) &&
-				    (activeVertexBufferView.SizeInBytes != 0U) &&
-				    (activeVertexBufferView.StrideInBytes != 0U) &&
-				    (opaqueVertexCount > 0U);
-				if (overlayDrawReady &&
-				    (opaqueVertexCount > 0U) &&
-				    (!opaqueDrawArgsValid ||
-				     !Common::DebugOverlay::IssueDrawCommands(
-				         m_xrCommandList.Get(),
-				         width,
-				         height,
-				         activeRootSignature,
-				         activeOpaquePipelineState,
-				         activeVertexBufferView,
-				         opaqueVertexCount,
-				         0U,
-				         &failedDrawPhase)))
-				{
-					if (!opaqueDrawArgsValid)
-					{
-						if (activeRootSignature == nullptr)
-						{
-							m_lastProjectionLayerStatus = L"opaque-root-null";
-						}
-						else if (activeOpaquePipelineState == nullptr)
-						{
-							m_lastProjectionLayerStatus = L"opaque-pso-null";
-						}
-						else if ((activeVertexBufferView.SizeInBytes == 0U) ||
-						         (activeVertexBufferView.StrideInBytes == 0U))
-						{
-							m_lastProjectionLayerStatus = L"opaque-vbview-null";
-						}
-						else
-						{
-							m_lastProjectionLayerStatus = L"opaque-args-invalid";
-						}
-					}
-					else if (failedDrawPhase == Common::DebugOverlay::DrawCommandValidationPhase::VertexRange)
-					{
-						m_lastProjectionLayerStatus = L"opaque-draw-range";
-					}
-					else
-					{
-						m_lastProjectionLayerStatus = L"opaque-draw-args";
-					}
-					m_sessionName = L"Session(unavailable): XR debug draw arguments invalid";
-					overlayDrawReady = false;
-				}
-
-				const bool alphaDrawArgsValid =
-				    (m_xrCommandList.Get() != nullptr) &&
-				    (width > 0) &&
-				    (height > 0) &&
-				    (activeRootSignature != nullptr) &&
-				    (activeAlphaPipelineState != nullptr) &&
-				    (activeVertexBufferView.SizeInBytes != 0U) &&
-				    (activeVertexBufferView.StrideInBytes != 0U) &&
-				    (alphaVertexCount > 0U);
-				if (overlayDrawReady &&
-				    (alphaVertexCount > 0U) &&
-				    (!alphaDrawArgsValid ||
-				     !Common::DebugOverlay::IssueDrawCommands(
-				         m_xrCommandList.Get(),
-				         width,
-				         height,
-				         activeRootSignature,
-				         activeAlphaPipelineState,
-				         activeVertexBufferView,
-				         alphaVertexCount,
-				         opaqueVertexCount,
-				         &failedDrawPhase)))
-				{
-					if (!alphaDrawArgsValid)
-					{
-						if (activeRootSignature == nullptr)
-						{
-							m_lastProjectionLayerStatus = L"alpha-root-null";
-						}
-						else if (activeAlphaPipelineState == nullptr)
-						{
-							m_lastProjectionLayerStatus = L"alpha-pso-null";
-						}
-						else if ((activeVertexBufferView.SizeInBytes == 0U) ||
-						         (activeVertexBufferView.StrideInBytes == 0U))
-						{
-							m_lastProjectionLayerStatus = L"alpha-vbview-null";
-						}
-						else
-						{
-							m_lastProjectionLayerStatus = L"alpha-args-invalid";
-						}
-					}
-					else if (failedDrawPhase == Common::DebugOverlay::DrawCommandValidationPhase::VertexRange)
-					{
-						m_lastProjectionLayerStatus = L"alpha-draw-range";
-					}
-					else
-					{
-						m_lastProjectionLayerStatus = L"alpha-draw-args";
-					}
-					m_sessionName = L"Session(unavailable): XR debug draw arguments invalid";
-					overlayDrawReady = false;
-				}
+			const std::size_t requiredVertices=opaqueVertices.size();
+			constexpr std::size_t maximumVertices=(std::numeric_limits<UINT>::max)()/sizeof(Common::DebugOverlay::Vertex);
+			if(requiredVertices>maximumVertices) {
+			    m_lastProjectionLayerStatus=L"vertex-count-exceeds-d3d12-buffer-limit";
+			    closeCommandListOnFailure();
+			    return false;
+			}
+			if(requiredVertices>activeVertexCapacity) {
+			    std::size_t capacity=(std::max)(static_cast<std::size_t>(activeVertexCapacity),static_cast<std::size_t>(MaxDebugVertices));
+			    while(capacity<requiredVertices) capacity=(std::min)(capacity*2,maximumVertices);
+			    Microsoft::WRL::ComPtr<ID3D12Resource> grownBuffer;
+			    D3D12_VERTEX_BUFFER_VIEW grownView{};
+			    UINT grownCapacity{};
+			    if(!Common::DebugOverlay::InitializeVertexBuffer(m_d3d12Device.Get(),static_cast<UINT>(capacity),
+			        &grownBuffer,&grownView,&grownCapacity)) {
+			        m_lastProjectionLayerStatus=L"ui-vertex-buffer-growth-failed";
+			        closeCommandListOnFailure();
+			        return false;
+			    }
+			    swapchainContext.frame.vertices=std::move(grownBuffer);
+			    swapchainContext.frame.vertexView=grownView;
+			    swapchainContext.frame.vertexCapacity=grownCapacity;
+			    activeVertexBuffer=swapchainContext.frame.vertices.Get();
+			    activeVertexBufferView=grownView;
+			    activeVertexCapacity=grownCapacity;
+			}
+			for(const auto& vertex:alphaVertices) {
+			    const Common::ScreenPoint point{(vertex.position[0]+1.0)*.5*(width-1),
+			        (1.0-vertex.position[1])*.5*(height-1),vertex.position[2]};
+			    constexpr float white=1.5F/Common::UiText::GlyphAtlas::Width;
+			    atlasVertices.push_back(Common::UiText::BuildAtlasVertex(point,white,white,vertex.color,width,height));
+			}
+			Common::UiText::SortAtlasTrianglesBackToFront(atlasVertices);
+			if(!opaqueVertices.empty() &&
+			    (!Common::DebugOverlay::UploadVertices(activeVertexBuffer,opaqueVertices) ||
+			     !Common::DebugOverlay::IssueDrawCommands(swapchainContext.frame.commands.Get(),width,height,activeRootSignature,
+			         activeOpaquePipelineState,activeVertexBufferView,static_cast<UINT>(opaqueVertices.size())))) {
+			    m_lastProjectionLayerStatus=L"opaque-overlay-draw-failed";closeCommandListOnFailure();return false;
+			}
+			if(!swapchainContext.frame.text.UploadAndDraw(swapchainContext.frame.commands.Get(),m_uiTextAtlas,atlasVertices,width,height)) {
+			    m_lastProjectionLayerStatus=L"ui-atlas-draw-failed";closeCommandListOnFailure();return false;
 			}
 		}
 
@@ -8993,11 +7818,11 @@ namespace BaseballSimulatorVR::Xr
 			    D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
 			swapchainToResolveSourceBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			m_xrCommandList->ResourceBarrier(
+			swapchainContext.frame.commands->ResourceBarrier(
 			    1,
 			    &swapchainToResolveSourceBarrier);
 
-			m_xrCommandList->ResolveSubresource(
+			swapchainContext.frame.commands->ResolveSubresource(
 			    sceneColorTexture,
 			    0,
 			    renderTargetTexture,
@@ -9017,7 +7842,7 @@ namespace BaseballSimulatorVR::Xr
 			    D3D12_RESOURCE_STATE_RENDER_TARGET;
 			swapchainBackToRenderBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			m_xrCommandList->ResourceBarrier(
+			swapchainContext.frame.commands->ResourceBarrier(
 			    1,
 			    &swapchainBackToRenderBarrier);
 		}
@@ -9036,7 +7861,7 @@ namespace BaseballSimulatorVR::Xr
 			    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 			sceneToShaderBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			m_xrCommandList->ResourceBarrier(1, &sceneToShaderBarrier);
+			swapchainContext.frame.commands->ResourceBarrier(1, &sceneToShaderBarrier);
 		}
 
 		bool usedFxaaPass = false;
@@ -9067,21 +7892,21 @@ namespace BaseballSimulatorVR::Xr
 			ID3D12DescriptorHeap* const descriptorHeaps[]{
 				swapchainContext.sceneSrvHeap.Get()
 			};
-			m_xrCommandList->SetDescriptorHeaps(
+			swapchainContext.frame.commands->SetDescriptorHeaps(
 			    static_cast<UINT>(std::size(descriptorHeaps)),
 			    descriptorHeaps);
-			m_xrCommandList->RSSetViewports(1, &viewport);
-			m_xrCommandList->RSSetScissorRects(1, &scissorRect);
-			m_xrCommandList->OMSetRenderTargets(
+			swapchainContext.frame.commands->RSSetViewports(1, &viewport);
+			swapchainContext.frame.commands->RSSetScissorRects(1, &scissorRect);
+			swapchainContext.frame.commands->OMSetRenderTargets(
 			    1,
 			    &swapchainRtvHandle,
 			    FALSE,
 			    nullptr);
-			m_xrCommandList->SetGraphicsRootSignature(
+			swapchainContext.frame.commands->SetGraphicsRootSignature(
 			    m_fxaaRootSignature.Get());
-			m_xrCommandList->SetPipelineState(
+			swapchainContext.frame.commands->SetPipelineState(
 			    m_fxaaPipelineState.Get());
-			m_xrCommandList->IASetPrimitiveTopology(
+			swapchainContext.frame.commands->IASetPrimitiveTopology(
 			    D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 			const float fxaaParameters[Common::FxaaParameterCount]{
 				1.0F / static_cast<float>((std::max)(1, swapchainContext.width)),
@@ -9090,15 +7915,15 @@ namespace BaseballSimulatorVR::Xr
 				m_renderQuality.fxaaEdgeThresholdMin,
 				m_renderQuality.fxaaBlendFactor
 			};
-			m_xrCommandList->SetGraphicsRootDescriptorTable(
+			swapchainContext.frame.commands->SetGraphicsRootDescriptorTable(
 			    0,
 			    sceneSrvGpuHandle);
-			m_xrCommandList->SetGraphicsRoot32BitConstants(
+			swapchainContext.frame.commands->SetGraphicsRoot32BitConstants(
 			    1,
 			    Common::FxaaParameterCount,
 			    fxaaParameters,
 			    0);
-			m_xrCommandList->DrawInstanced(3, 1, 0, 0);
+			swapchainContext.frame.commands->DrawInstanced(3, 1, 0, 0);
 			usedFxaaPass = true;
 			m_xrPostProcessStatus = L"fxaa";
 		}
@@ -9137,11 +7962,11 @@ namespace BaseballSimulatorVR::Xr
 				    D3D12_RESOURCE_STATE_COPY_SOURCE;
 				sceneToCopySourceBarrier.Transition.Subresource =
 				    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				m_xrCommandList->ResourceBarrier(
+				swapchainContext.frame.commands->ResourceBarrier(
 				    static_cast<UINT>(std::size(toCopyBarriers)),
 				    toCopyBarriers);
 
-				m_xrCommandList->CopyResource(
+				swapchainContext.frame.commands->CopyResource(
 				    renderTargetTexture,
 				    sceneColorTexture);
 
@@ -9175,7 +8000,7 @@ namespace BaseballSimulatorVR::Xr
 				    D3D12_RESOURCE_STATE_RENDER_TARGET;
 				swapchainFromCopyDestBarrier.Transition.Subresource =
 				    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				m_xrCommandList->ResourceBarrier(
+				swapchainContext.frame.commands->ResourceBarrier(
 				    static_cast<UINT>(std::size(fromCopyBarriers)),
 				    fromCopyBarriers);
 
@@ -9192,71 +8017,17 @@ namespace BaseballSimulatorVR::Xr
 			m_xrPostProcessStatus = L"direct";
 		}
 
-		D3D12_RESOURCE_BARRIER toCommonBarrier{};
-		toCommonBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		toCommonBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		toCommonBarrier.Transition.pResource = renderTargetTexture;
-		toCommonBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		toCommonBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-		toCommonBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		m_xrCommandList->ResourceBarrier(1, &toCommonBarrier);
-
-		const HRESULT closeResult = m_xrCommandList->Close();
-		if (FAILED(closeResult))
+		// xrReleaseSwapchainImage requires RENDER_TARGET availability on
+		// the bound queue; all resolve/copy paths restore that state above.
+		const HRESULT submit = swapchainContext.frame.Submit(m_d3d12Queue.Get(),
+		    m_xrFence.Get(), m_xrFenceValue++);
+		if (FAILED(submit))
 		{
-			m_lastProjectionLayerStatus = L"command-close-failed";
-			m_sessionName = L"Session(unavailable): " +
-			                BuildD3d12ErrorMessage(L"ID3D12GraphicsCommandList::Close", closeResult);
+			m_projectionRenderingFailed = true;
+			m_lastProjectionLayerStatus = L"view-submit-failed";
+			m_sessionName = L"Session(unavailable): " + BuildD3d12ErrorMessage(L"XR view Submit", submit);
 			return false;
 		}
-
-		if (!ExecuteAndWaitXrCommandList())
-		{
-			m_lastProjectionLayerStatus = L"execute-failed";
-			return false;
-		}
-
-		return true;
-	}
-
-	bool NullXrSystem::ExecuteAndWaitXrCommandList()
-	{
-		if ((m_xrFence == nullptr) || (m_xrFenceEvent == nullptr) || (m_d3d12Queue == nullptr))
-		{
-			m_sessionName = L"Session(unavailable): XR fence resources missing";
-			return false;
-		}
-
-		ID3D12CommandList* commandLists[] = { m_xrCommandList.Get() };
-		m_d3d12Queue->ExecuteCommandLists(static_cast<UINT>(std::size(commandLists)), commandLists);
-
-		const HRESULT signalResult = m_d3d12Queue->Signal(m_xrFence.Get(), m_xrFenceValue);
-		if (FAILED(signalResult))
-		{
-			m_sessionName = L"Session(unavailable): " +
-			                BuildD3d12ErrorMessage(L"ID3D12CommandQueue::Signal", signalResult);
-			return false;
-		}
-
-		if (m_xrFence->GetCompletedValue() < m_xrFenceValue)
-		{
-			const HRESULT eventResult = m_xrFence->SetEventOnCompletion(m_xrFenceValue, m_xrFenceEvent);
-			if (FAILED(eventResult))
-			{
-				m_sessionName = L"Session(unavailable): " +
-				                BuildD3d12ErrorMessage(L"ID3D12Fence::SetEventOnCompletion", eventResult);
-				return false;
-			}
-
-			const DWORD waitResult = WaitForSingleObject(m_xrFenceEvent, INFINITE);
-			if (waitResult != WAIT_OBJECT_0)
-			{
-				m_sessionName = L"Session(unavailable): WaitForSingleObject failed";
-				return false;
-			}
-		}
-
-		++m_xrFenceValue;
 		return true;
 	}
 
@@ -9307,10 +8078,7 @@ namespace BaseballSimulatorVR::Xr
 		m_xrGetD3d12GraphicsRequirementsKhr = nullptr;
 		m_colorSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 		m_projectionSampleCount = 1U;
-		m_lastBallFlightTimeSeconds = 0.0;
-		m_ballTrajectory.clear();
-		m_lastTrajectoryAdvanceTime = std::chrono::steady_clock::time_point{};
-		m_trajectoryFadeScale = 1.0F;
+		m_trajectoryTrails.Clear();
 		m_leftEyeViewState = Common::ViewProjectionState{};
 		m_lastPredictedDisplayTime = 0;
 		m_lastFrameSummary = L"frame(pending)";
@@ -9351,6 +8119,7 @@ namespace BaseballSimulatorVR::Xr
 
 	void NullXrSystem::UpdateSessionName()
 	{
+		if(m_projectionRenderingFailed)return;
 		if (m_instanceHandle == XR_NULL_HANDLE)
 		{
 			if ((m_sessionName.find(L"failed(") == std::wstring::npos) &&
@@ -9393,13 +8162,13 @@ namespace BaseballSimulatorVR::Xr
 		{
 			m_sessionName = L"Session: " + BuildSessionStateString(m_sessionState) +
 			                (m_usesDedicatedGraphicsDevice ? L" (presenting:dedi, space:" : L" (presenting:shared, space:") +
-			                referenceSpaceName + L")";
+			                referenceSpaceName + L", UI:coverage-AA)";
 		}
 		else
 		{
 			m_sessionName = L"Session: " + BuildSessionStateString(m_sessionState) +
 			                (m_usesDedicatedGraphicsDevice ? L" (bound:dedi, space:" : L" (bound:shared, space:") +
-			                referenceSpaceName + L")";
+			                referenceSpaceName + L", UI:coverage-AA)";
 		}
 
 		if (!m_projectionSwapchains.empty())

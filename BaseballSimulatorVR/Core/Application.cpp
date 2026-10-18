@@ -4,6 +4,10 @@
 #include "../Common/DebugWorldProjection.hpp"
 #include "../Common/RuntimeLimits.hpp"
 #include "../Common/ZoneMaskUtilities.hpp"
+#include "../Common/BatPoseUtilities.hpp"
+#include "../Common/PitcherPresentation.hpp"
+#include "../Physics/BatBallCollision.hpp"
+#include "../Physics/SweptBatCollision.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,6 +16,7 @@
 #include <filesystem>
 #include <shlobj.h>
 #include <iomanip>
+#include <numbers>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -22,6 +27,16 @@ namespace BaseballSimulatorVR::Core
 {
 	namespace
 	{
+		[[nodiscard]] double ComputeFastestPresetArmSpeedScale(
+		    const std::vector<Data::PitchProfileEntry>& profiles,
+		    const Baseball::PitchParameters& rootParameters)
+		{
+			double fastestSpeed = profiles.empty() ? std::abs(rootParameters.initialVelocity.z) : 0.0;
+			for (const auto& profile : profiles)
+				fastestSpeed = (std::max)(fastestSpeed, std::abs(profile.pitchParameters.initialVelocity.z));
+			return Common::PitcherArmSpeedScale(fastestSpeed);
+		}
+
 		constexpr std::wstring_view WindowClassName = L"BaseballSimulatorVR.WindowClass";
 		constexpr std::wstring_view DefaultWindowTitle = L"BaseballSimulatorVR";
 		constexpr auto FixedSimulationStep = std::chrono::duration<double>(1.0 / 1000.0);
@@ -81,7 +96,7 @@ namespace BaseballSimulatorVR::Core
 		    Common::DebugWorldLayout::StrikeZoneWidthMeters;
 		constexpr double MinimumStrikeZoneBottomMeters = 0.20;
 		constexpr double MaximumStrikeZoneBottomMeters = 1.50;
-		constexpr double MinimumStrikeZoneHeightMeters = 0.40;
+		constexpr double MinimumStrikeZoneHeightMeters = 0.20;
 		constexpr double MaximumStrikeZoneHeightMeters = 1.60;
 		constexpr double MinimumStrikeZoneWidthMeters = 0.20;
 		constexpr double MaximumStrikeZoneWidthMeters = 0.80;
@@ -97,17 +112,7 @@ namespace BaseballSimulatorVR::Core
 		constexpr double MaximumBatYawOffsetDegrees = 35.0;
 		constexpr double BatAngleOffsetStepDegrees = 2.5;
 		constexpr double BatYawOffsetStepDegrees = 2.5;
-		constexpr double BatStartForwardOffsetMeters = 0.08;
 		constexpr double BatCollisionSuppressDurationSeconds = 0.04;
-		constexpr double MaximumBattedBallSpeedMetersPerSecond = 120.0;
-		constexpr double MinimumTeeLaunchSpeedMetersPerSecond = 15.0;
-		constexpr double MaximumTeeLaunchSpeedMetersPerSecond = 62.0;
-		constexpr double TeeLaunchSpeedFromBatSpeedMultiplier = 2.15;
-		constexpr double TeeLaunchSpeedFromBatSpeedBias = 15.5;
-		constexpr double DuelForwardAssistSwingThresholdMetersPerSecond = 0.35;
-		constexpr double DuelForwardAssistBaseSpeedMetersPerSecond = 5.5;
-		constexpr double DuelForwardAssistFromSwingScale = 0.80;
-		constexpr double DuelForwardAssistMaximumSpeedMetersPerSecond = 30.0;
 		constexpr double GroundPlaneHeightMeters = 0.0;
 		constexpr double GroundContactHeightMeters =
 		    GroundPlaneHeightMeters + Common::DebugWorldStyle::BallMeshRadiusMeters;
@@ -851,44 +856,26 @@ namespace BaseballSimulatorVR::Core
 			return std::abs(angleRadians) <= fanShape.halfAngleRadians;
 		}
 
-		[[nodiscard]] Physics::Vector3 RotateVectorAroundAxis(
-		    const Physics::Vector3& vector,
-		    const Physics::Vector3& axis,
-		    const double angleRadians) noexcept
-		{
-			const Physics::Vector3 normalizedAxis =
-			    Physics::NormalizeOrZero(axis);
-			if (Physics::Length(normalizedAxis) <= 1e-6)
-			{
-				return vector;
-			}
-
-			const double cosine = std::cos(angleRadians);
-			const double sine = std::sin(angleRadians);
-			return (vector * cosine) +
-			       (Physics::Cross(normalizedAxis, vector) * sine) +
-			       (normalizedAxis * Physics::Dot(normalizedAxis, vector) *
-			        (1.0 - cosine));
-		}
-
 		[[nodiscard]] bool DidBallCrossGroundFromAbove(
 		    const Physics::BallState& previousState,
-		    const Physics::BallState& currentState) noexcept
+		    const Physics::BallState& currentState,
+		    const double groundContactHeight) noexcept
 		{
-			return (previousState.position.y > GroundContactHeightMeters) &&
-			       (currentState.position.y <= GroundContactHeightMeters);
+			return (previousState.position.y > groundContactHeight) &&
+			       (currentState.position.y <= groundContactHeight);
 		}
 
 		[[nodiscard]] Physics::Vector3 ResolveGroundCrossPoint(
 		    const Physics::BallState& previousState,
-		    const Physics::BallState& currentState) noexcept
+		    const Physics::BallState& currentState,
+		    const double groundContactHeight) noexcept
 		{
 			const double denominator =
 			    currentState.position.y - previousState.position.y;
 			double blend = 0.0;
 			if (std::abs(denominator) > 1e-6)
 			{
-				blend = (GroundContactHeightMeters - previousState.position.y) /
+				blend = (groundContactHeight - previousState.position.y) /
 				        denominator;
 			}
 			blend = std::clamp(blend, 0.0, 1.0);
@@ -898,18 +885,19 @@ namespace BaseballSimulatorVR::Core
 
 		void ApplyGroundCollisionResponse(
 		    Physics::BallState* const ballState,
-		    const double frameDeltaSeconds) noexcept
+		    const double frameDeltaSeconds,
+		    const double groundContactHeight) noexcept
 		{
 			if (ballState == nullptr)
 			{
 				return;
 			}
-			if (ballState->position.y > GroundContactHeightMeters)
+			if (ballState->position.y > groundContactHeight)
 			{
 				return;
 			}
 
-			ballState->position.y = GroundContactHeightMeters;
+			ballState->position.y = groundContactHeight;
 			if (ballState->velocity.y < GroundBounceVelocityThreshold)
 			{
 				ballState->velocity.y =
@@ -926,112 +914,6 @@ namespace BaseballSimulatorVR::Core
 			    1.0);
 			ballState->velocity.x *= rollingDamping;
 			ballState->velocity.z *= rollingDamping;
-		}
-
-		[[nodiscard]] bool ResolveClosestPointsOnSegments(
-		    const Physics::Vector3& segmentStartA,
-		    const Physics::Vector3& segmentEndA,
-		    const Physics::Vector3& segmentStartB,
-		    const Physics::Vector3& segmentEndB,
-		    Physics::Vector3* const closestPointOnSegmentA,
-		    Physics::Vector3* const closestPointOnSegmentB)
-		{
-			if ((closestPointOnSegmentA == nullptr) ||
-			    (closestPointOnSegmentB == nullptr))
-			{
-				return false;
-			}
-
-			constexpr double epsilon = 1e-9;
-			const Physics::Vector3 segmentDirectionA =
-			    segmentEndA - segmentStartA;
-			const Physics::Vector3 segmentDirectionB =
-			    segmentEndB - segmentStartB;
-			const Physics::Vector3 betweenStarts =
-			    segmentStartA - segmentStartB;
-			const double segmentALengthSquared =
-			    Physics::Dot(segmentDirectionA, segmentDirectionA);
-			const double segmentBLengthSquared =
-			    Physics::Dot(segmentDirectionB, segmentDirectionB);
-			const double segmentDot =
-			    Physics::Dot(segmentDirectionA, segmentDirectionB);
-			const double segmentAStartDot =
-			    Physics::Dot(segmentDirectionA, betweenStarts);
-			const double segmentBStartDot =
-			    Physics::Dot(segmentDirectionB, betweenStarts);
-			double segmentRatioA = 0.0;
-			double segmentRatioB = 0.0;
-
-			if ((segmentALengthSquared <= epsilon) &&
-			    (segmentBLengthSquared <= epsilon))
-			{
-				*closestPointOnSegmentA = segmentStartA;
-				*closestPointOnSegmentB = segmentStartB;
-				return true;
-			}
-
-			if (segmentALengthSquared <= epsilon)
-			{
-				segmentRatioA = 0.0;
-				segmentRatioB = std::clamp(
-				    segmentBStartDot / segmentBLengthSquared,
-				    0.0,
-				    1.0);
-			}
-			else if (segmentBLengthSquared <= epsilon)
-			{
-				segmentRatioB = 0.0;
-				segmentRatioA = std::clamp(
-				    -segmentAStartDot / segmentALengthSquared,
-				    0.0,
-				    1.0);
-			}
-			else
-			{
-				const double denominator =
-				    (segmentALengthSquared * segmentBLengthSquared) -
-				    (segmentDot * segmentDot);
-				if (std::abs(denominator) > epsilon)
-				{
-					segmentRatioA = std::clamp(
-					    ((segmentDot * segmentBStartDot) -
-					     (segmentAStartDot * segmentBLengthSquared)) /
-					        denominator,
-					    0.0,
-					    1.0);
-				}
-				else
-				{
-					segmentRatioA = 0.0;
-				}
-
-				segmentRatioB =
-				    ((segmentDot * segmentRatioA) + segmentBStartDot) /
-				    segmentBLengthSquared;
-				if (segmentRatioB < 0.0)
-				{
-					segmentRatioB = 0.0;
-					segmentRatioA = std::clamp(
-					    -segmentAStartDot / segmentALengthSquared,
-					    0.0,
-					    1.0);
-				}
-				else if (segmentRatioB > 1.0)
-				{
-					segmentRatioB = 1.0;
-					segmentRatioA = std::clamp(
-					    (segmentDot - segmentAStartDot) /
-					        segmentALengthSquared,
-					    0.0,
-					    1.0);
-				}
-			}
-
-			*closestPointOnSegmentA =
-			    segmentStartA + (segmentDirectionA * segmentRatioA);
-			*closestPointOnSegmentB =
-			    segmentStartB + (segmentDirectionB * segmentRatioB);
-			return true;
 		}
 
 		[[nodiscard]] double BuildWorldDepthOffsetMeters(
@@ -1365,7 +1247,7 @@ namespace BaseballSimulatorVR::Core
 		m_environmentSettings.windShearFactor = 0.08;
 		m_environmentSettings.batRadiusMeters = 0.035;
 		m_environmentSettings.batLengthMeters = 0.84;
-		m_environmentSettings.batBallRestitution = 0.50;
+		m_environmentSettings.batBallRestitution = 0.45;
 		m_environmentSettings.batAngleOffsetDegrees = 0.0;
 		m_environmentSettings.batYawOffsetDegrees = 0.0;
 		m_environmentSettings.groundFanRadiusMeters = 100.0;
@@ -1384,6 +1266,7 @@ namespace BaseballSimulatorVR::Core
 		EnsureDefaultPitchProfiles();
 		m_activePitchProfileIndex = 0;
 		m_randomPitchProfileEnabled = true;
+		m_pitcherArmSpeedScale = ComputeFastestPresetArmSpeedScale(m_pitchProfiles, m_activePitchParameters);
 	}
 
 	void Application::EnsureDefaultPitchProfiles()
@@ -1644,6 +1527,7 @@ namespace BaseballSimulatorVR::Core
 				playbackTimeScale = 1.0;
 			}
 			simulationAccumulator += frameSeconds * playbackTimeScale;
+			m_lastSimulationDeltaSeconds = (frameSeconds * playbackTimeScale).count();
 			titleAccumulator += frameSeconds;
 			m_frameStatistics.AddFrameSample(frameSeconds);
 
@@ -1655,7 +1539,10 @@ namespace BaseballSimulatorVR::Core
 				if (isSimulationTickAllowedInMode &&
 				    !IsWaitingForNextDuelPitch())
 				{
-					m_pitchSimulationService.Tick(FixedSimulationStep);
+					const auto flightStep = m_operationMode == OperationMode::BattingDuel
+					    ? m_pitchDeliveryController.Advance(FixedSimulationStep)
+					    : FixedSimulationStep;
+					m_pitchSimulationService.Tick(flightStep);
 				}
 				simulationAccumulator -= FixedSimulationStep;
 			}
@@ -1664,22 +1551,7 @@ namespace BaseballSimulatorVR::Core
 			m_xrSystem->PollInput();
 			HandleXrUiCommands();
 
-			if (!m_hasStrikeZoneAutoCalibrated)
-			{
-				const Common::ViewProjectionState eyeState =
-				    m_xrSystem->GetLeftEyeViewState();
-				const double estimatedPlayerHeight =
-				    Common::EstimatePlayerHeightFromEyeHeight(
-				        eyeState.position.y);
-				if (eyeState.isValid &&
-				    (estimatedPlayerHeight >= 1.00) &&
-				    (estimatedPlayerHeight <= 2.50))
-				{
-					m_hasStrikeZoneAutoCalibrated =
-					    CalibrateStrikeZoneFromPlayerHeight(
-					        L"auto_calibrate_startup");
-				}
-			}
+			UpdateStrikeZoneCalibration();
 
 			RefreshBatPoseFromXrInput();
 
@@ -1719,6 +1591,9 @@ namespace BaseballSimulatorVR::Core
 				    m_environmentSettings.moundHeightOffsetMeters;
 			}
 			m_xrSystem->SetUiTelemetry(BuildXrUiTelemetry());
+			const Common::FieldPresentationState fieldPresentation = BuildFieldPresentationState();
+			m_xrSystem->SetFieldPresentationState(fieldPresentation);
+			m_renderBackend->SetFieldPresentationState(fieldPresentation);
 			m_xrSystem->SetBallState(currentBallState);
 			m_xrSystem->SetDuelZonePassMarker(markerForRendering);
 			m_xrSystem->SetBatOverlayState(m_batOverlayState);
@@ -1831,6 +1706,40 @@ namespace BaseballSimulatorVR::Core
 		    L"preset_apply");
 	}
 
+	void Application::ResetPitchSimulation()
+	{
+		// Reset the ball and controller collision history together.
+		m_batPoseState = {};
+		m_previousBatPoseState = {};
+		m_batCollisionSuppressRemainingSeconds = 0.0;
+		m_currentPitchPresentationName = BuildXrUiTelemetry().presetName;
+		m_pitchSimulationService.Reset(m_activePitchParameters);
+		if (m_operationMode == OperationMode::TeeBatting)
+		{
+			m_isTeeBallInFlight = false;
+			m_hasTeeBattedBallBounced = false;
+			m_teePostBounceElapsedSeconds = 0.0;
+			m_hasPreviousTeeBallState = false;
+			m_teeBattedMetrics = {};
+			m_pitchSimulationService.SetBallState(BuildTeeBallState());
+			m_forceTrajectoryResetOnNextFrame = true;
+			return;
+		}
+		if (m_operationMode != OperationMode::BattingDuel) return;
+		m_pitchDeliveryController.Reset();
+		m_duelZonePassMarker.reset();
+		m_duelPitchPredictedZonePassPoint = SimulateZonePassPointAtDepth(
+		    m_activePitchParameters, m_environmentSettings.pitchDistanceMeters);
+		m_isWaitingForNextDuelPitch = false;
+		m_duelPitchCooldownRemainingSeconds = 0.0;
+		m_duelPitchElapsedSeconds = 0.0;
+		m_duelPostBounceElapsedSeconds = 0.0;
+		m_hasPreviousDuelBallState = false;
+		m_hasCurrentDuelPitchPassedZone = false;
+		m_hasDuelBallBeenBatted = false;
+		m_hasDuelBattedBallBounced = false;
+		m_duelBattedMetrics = {};
+	}
 	void Application::ApplyPitchParameterChanges(
 	    const bool preserveDirectionalVelocityForCurrentPitch)
 	{
@@ -1883,7 +1792,7 @@ namespace BaseballSimulatorVR::Core
 			};
 		}
 
-		m_pitchSimulationService.Reset(m_activePitchParameters);
+		ResetPitchSimulation();
 
 		std::wostringstream pitchLog{};
 		pitchLog << std::fixed << std::setprecision(2);
@@ -1915,6 +1824,32 @@ namespace BaseballSimulatorVR::Core
 
 	void Application::HandleKeyDown(WPARAM keyCode)
 	{
+		if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+		{
+			switch (keyCode)
+			{
+				case 'E':
+					ExportCurrentSessionCsv();
+					return;
+				case 'H':
+					BeginStrikeZoneCalibration(L"key_ctrl_h");
+					return;
+				case VK_LEFT:
+					SelectPitchSettingsFileByOffset(-1, L"key_ctrl_left");
+					return;
+				case VK_RIGHT:
+					SelectPitchSettingsFileByOffset(1, L"key_ctrl_right");
+					return;
+				case VK_UP:
+					SelectPitchProfileByOffset(-1, L"key_ctrl_up");
+					return;
+				case VK_DOWN:
+					SelectPitchProfileByOffset(1, L"key_ctrl_down");
+					return;
+				default:
+					break;
+			}
+		}
 		switch (keyCode)
 		{
 			case VK_F1:
@@ -1975,7 +1910,10 @@ namespace BaseballSimulatorVR::Core
 				AdjustPitchDistance(PitchDistanceStepMeters);
 				break;
 			case '1':
-				ToggleTrajectoryVisibility();
+				TogglePitchTrajectoryVisibility();
+				break;
+			case '4':
+				ToggleBattedTrajectoryVisibility();
 				break;
 			case '2':
 				ToggleStrikeZoneVisibility();
@@ -2165,8 +2103,11 @@ namespace BaseballSimulatorVR::Core
 			case Xr::UiCommandType::SetPresetChangeup:
 				ApplyPreset(Data::PitchPresetType::Changeup);
 				break;
-			case Xr::UiCommandType::ToggleTrajectoryVisibility:
-				ToggleTrajectoryVisibility();
+			case Xr::UiCommandType::TogglePitchTrajectoryVisibility:
+				TogglePitchTrajectoryVisibility();
+				break;
+			case Xr::UiCommandType::ToggleBattedTrajectoryVisibility:
+				ToggleBattedTrajectoryVisibility();
 				break;
 			case Xr::UiCommandType::ToggleStrikeZoneVisibility:
 				ToggleStrikeZoneVisibility();
@@ -2265,10 +2206,7 @@ namespace BaseballSimulatorVR::Core
 				break;
 			}
 			case Xr::UiCommandType::RecalibrateStrikeZone:
-				if (CalibrateStrikeZoneFromPlayerHeight(L"xr_recalibrate"))
-				{
-					m_hasStrikeZoneAutoCalibrated = true;
-				}
+				BeginStrikeZoneCalibration(L"xr_recalibrate");
 				break;
 			default:
 				break;
@@ -2444,13 +2382,15 @@ namespace BaseballSimulatorVR::Core
 			if (currentBallState.position.z >=
 			    (replayDepthThreshold - 1e-3))
 			{
-				m_pitchSimulationService.Reset(m_activePitchParameters);
+				ResetPitchSimulation();
 				m_forceTrajectoryResetOnNextFrame = true;
 				m_duelZonePassMarker.reset();
 				m_hasPreviousDuelBallState = false;
 			}
 		}
 		m_playbackPaused = !m_playbackPaused;
+		m_batPoseState = {};
+		m_previousBatPoseState = {};
 		std::wstring playbackNote = L"playback_state=";
 		playbackNote += m_playbackPaused ? L"paused" : L"running";
 		if (!note.empty())
@@ -2474,6 +2414,7 @@ namespace BaseballSimulatorVR::Core
 		settings.pitchProfiles = m_pitchProfiles;
 		settings.activePitchProfileIndex = m_activePitchProfileIndex;
 		settings.randomPitchProfileEnabled = m_randomPitchProfileEnabled;
+		settings.pitcherThrowsLeftHanded = m_pitcherThrowsLeftHanded;
 		const std::filesystem::path pitchSettingsFilePath =
 		    !m_activePitchSettingsFilePath.empty()
 		        ? ResolveInputFilePath(m_activePitchSettingsFilePath)
@@ -2502,6 +2443,17 @@ namespace BaseballSimulatorVR::Core
 		std::wstring saveLog =
 		    L"[PitchConfig] pitch settings saved to " + m_activePitchSettingsFilePath + L"\n";
 		OutputDebugStringW(saveLog.c_str());
+	}
+
+	void Application::ExportCurrentSessionCsv()
+	{
+		const std::filesystem::path filePath = ResolveUserDataPath(L"SessionHistory.current.csv");
+		const Data::OperationResult result = m_sessionLogRepository.ExportCurrentSessionCsv(filePath);
+		const std::wstring message = result
+		    ? L"Current session exported to:\n" + filePath.wstring()
+		    : L"Failed to export current session:\n" + result.errorMessage;
+		MessageBoxW(m_windowHandle, message.c_str(), L"Session CSV export",
+		            MB_OK | (result ? MB_ICONINFORMATION : MB_ICONERROR));
 	}
 
 	void Application::RefreshPitchSettingsFileList()
@@ -2619,6 +2571,7 @@ namespace BaseballSimulatorVR::Core
 		}
 
 		m_activePitchParameters = loadedSettings->pitchParameters;
+		m_pitcherThrowsLeftHanded = loadedSettings->pitcherThrowsLeftHanded;
 		if (!loadedSettings->environmentSettingsFile.empty())
 		{
 			m_environmentSettingsFilePath =
@@ -2659,6 +2612,7 @@ namespace BaseballSimulatorVR::Core
 		    static_cast<int>(m_pitchProfiles.size()) - 1);
 		m_randomPitchProfileEnabled =
 		    loadedSettings->randomPitchProfileEnabled;
+		m_pitcherArmSpeedScale = ComputeFastestPresetArmSpeedScale(m_pitchProfiles, loadedSettings->pitchParameters);
 		if ((m_activePitchProfileIndex >= 0) &&
 		    (m_activePitchProfileIndex < static_cast<int>(m_pitchProfiles.size())))
 		{
@@ -2832,8 +2786,8 @@ namespace BaseballSimulatorVR::Core
 		settings.playbackSpeedPercent = m_playbackSpeedPercent;
 		settings.duelPitchPreviewEnabled = m_duelPitchPreviewEnabled;
 		settings.batUseRightHand = m_batUseRightHand;
-		settings.pitchTrajectoryVisible = m_pitchTrajectoryVisible;
-		settings.battedTrajectoryVisible = m_battedTrajectoryVisible;
+		settings.pitchTrajectoryVisible = m_overlayVisibility.showPitchTrajectory;
+		settings.battedTrajectoryVisible = m_overlayVisibility.showBattedTrajectory;
 		const std::uint32_t normalizedZoneMask =
 		    NormalizeDuelZoneMask(m_duelTargetZoneMask);
 		settings.duelTargetZoneMask = normalizedZoneMask;
@@ -2888,13 +2842,13 @@ namespace BaseballSimulatorVR::Core
 		    MaximumPlaybackSpeedPercent);
 		m_duelPitchPreviewEnabled = loadedSettings->duelPitchPreviewEnabled;
 		m_batUseRightHand = loadedSettings->batUseRightHand;
-		m_pitchTrajectoryVisible = loadedSettings->pitchTrajectoryVisible;
-		m_battedTrajectoryVisible = loadedSettings->battedTrajectoryVisible;
-		SyncOverlayTrajectoryVisibilityForCurrentMode();
+		m_overlayVisibility.showPitchTrajectory = loadedSettings->pitchTrajectoryVisible;
+		m_overlayVisibility.showBattedTrajectory = loadedSettings->battedTrajectoryVisible;
+		m_xrSystem->SetOverlayVisibility(m_overlayVisibility);
+		m_renderBackend->SetOverlayVisibility(m_overlayVisibility);
 		m_batPoseState = BatPoseState{};
 		m_previousBatPoseState = BatPoseState{};
 		m_batOverlayState.reset();
-		m_hasLastBatSampleOrigin = false;
 		m_lastBatSampleUsedRightHand = m_batUseRightHand;
 		m_duelTargetZoneMask = NormalizeDuelZoneMask(
 		    loadedSettings->duelTargetZoneMask);
@@ -2921,8 +2875,8 @@ namespace BaseballSimulatorVR::Core
 		playLog << L", playback=" << m_playbackSpeedPercent;
 		playLog << L", preview=" << (m_duelPitchPreviewEnabled ? L"on" : L"off");
 		playLog << L", batHand=" << (m_batUseRightHand ? L"right" : L"left");
-		playLog << L", pitchTraj=" << (m_pitchTrajectoryVisible ? L"on" : L"off");
-		playLog << L", battedTraj=" << (m_battedTrajectoryVisible ? L"on" : L"off");
+		playLog << L", pitchTraj=" << (m_overlayVisibility.showPitchTrajectory ? L"on" : L"off");
+		playLog << L", battedTraj=" << (m_overlayVisibility.showBattedTrajectory ? L"on" : L"off");
 		playLog << L", zones=" << BuildDuelZoneSelectionLabel(m_duelTargetZoneMask);
 		playLog << L"\n";
 		OutputDebugStringW(playLog.str().c_str());
@@ -2981,8 +2935,17 @@ namespace BaseballSimulatorVR::Core
 	bool Application::EnsureRequiredUserSettingsFiles(
 	    std::wstring& errorMessage) const
 	{
-		static constexpr std::array<std::wstring_view, 3> RequiredSettingFileNames{
+		static constexpr std::array<std::wstring_view, 12> RequiredSettingFileNames{
 			PitchSettingsJsonFileName,
+			L"PitchSettings.Yamamoto.json",
+			L"PitchSettings.Difficulty.Easy.RHP.json",
+			L"PitchSettings.Difficulty.Easy.LHP.json",
+			L"PitchSettings.Difficulty.Normal.RHP.json",
+			L"PitchSettings.Difficulty.Normal.LHP.json",
+			L"PitchSettings.Difficulty.Hard.RHP.json",
+			L"PitchSettings.Difficulty.Hard.LHP.json",
+			L"PitchSettings.Difficulty.Expert.RHP.json",
+			L"PitchSettings.Difficulty.Expert.LHP.json",
 			DefaultEnvironmentSettingsJsonFileName,
 			PlaySettingsJsonFileName
 		};
@@ -3130,36 +3093,10 @@ namespace BaseballSimulatorVR::Core
 		    L"key_score_adjust");
 	}
 
-	bool Application::GetTrajectoryVisibilityForCurrentMode() const noexcept
-	{
-		return (m_operationMode == OperationMode::PitchTrajectory)
-		           ? m_pitchTrajectoryVisible
-		           : m_battedTrajectoryVisible;
-	}
-
-	void Application::SetTrajectoryVisibilityForCurrentMode(const bool visible)
-	{
-		if (m_operationMode == OperationMode::PitchTrajectory)
-		{
-			m_pitchTrajectoryVisible = visible;
-		}
-		else
-		{
-			m_battedTrajectoryVisible = visible;
-		}
-	}
-
-	void Application::SyncOverlayTrajectoryVisibilityForCurrentMode()
-	{
-		m_overlayVisibility.showTrajectory =
-		    GetTrajectoryVisibilityForCurrentMode();
-		m_xrSystem->SetOverlayVisibility(m_overlayVisibility);
-		m_renderBackend->SetOverlayVisibility(m_overlayVisibility);
-	}
-
 	void Application::ApplyOverlayVisibilityChanges(std::wstring_view note)
 	{
-		SyncOverlayTrajectoryVisibilityForCurrentMode();
+		m_xrSystem->SetOverlayVisibility(m_overlayVisibility);
+		m_renderBackend->SetOverlayVisibility(m_overlayVisibility);
 
 		std::wstring noteText = std::wstring{ note };
 		if (noteText.empty())
@@ -3168,7 +3105,8 @@ namespace BaseballSimulatorVR::Core
 		}
 
 		std::wostringstream overlayLog{};
-		overlayLog << L"[OverlayConfig] trajectory=" << (m_overlayVisibility.showTrajectory ? L"On" : L"Off");
+		overlayLog << L"[OverlayConfig] pitchTrajectory=" << (m_overlayVisibility.showPitchTrajectory ? L"On" : L"Off");
+		overlayLog << L", battedTrajectory=" << (m_overlayVisibility.showBattedTrajectory ? L"On" : L"Off");
 		overlayLog << L", zone=" << (m_overlayVisibility.showStrikeZone ? L"On" : L"Off");
 		overlayLog << L", floor=" << (m_overlayVisibility.showFloorMesh ? L"On" : L"Off");
 		overlayLog << L", note=" << noteText << L"\n";
@@ -3178,14 +3116,17 @@ namespace BaseballSimulatorVR::Core
 		UpdateWindowTitle();
 	}
 
-	void Application::ToggleTrajectoryVisibility()
+	void Application::TogglePitchTrajectoryVisibility()
 	{
-		const bool nextVisibility = !GetTrajectoryVisibilityForCurrentMode();
-		SetTrajectoryVisibilityForCurrentMode(nextVisibility);
-		ApplyOverlayVisibilityChanges(
-		    (m_operationMode == OperationMode::PitchTrajectory)
-		        ? std::wstring_view{ L"toggle_pitch_trajectory" }
-		        : std::wstring_view{ L"toggle_batted_trajectory" });
+		m_overlayVisibility.showPitchTrajectory = !m_overlayVisibility.showPitchTrajectory;
+		ApplyOverlayVisibilityChanges(L"toggle_pitch_trajectory");
+		SavePlaySettingsToJson();
+	}
+
+	void Application::ToggleBattedTrajectoryVisibility()
+	{
+		m_overlayVisibility.showBattedTrajectory = !m_overlayVisibility.showBattedTrajectory;
+		ApplyOverlayVisibilityChanges(L"toggle_batted_trajectory");
 		SavePlaySettingsToJson();
 	}
 
@@ -3286,6 +3227,9 @@ namespace BaseballSimulatorVR::Core
 	    const std::wstring_view note,
 	    const bool persistToJson)
 	{
+		// Changing bat geometry or its world origin is not physical swing motion.
+		m_batPoseState = {};
+		m_previousBatPoseState = {};
 		m_environmentSettings.pitchDistanceMeters = std::clamp(
 		    m_environmentSettings.pitchDistanceMeters,
 		    MinimumPitchDistanceMeters,
@@ -3384,7 +3328,7 @@ namespace BaseballSimulatorVR::Core
 		    m_environmentSettings.enableHeightDependentWind;
 		m_activePitchParameters.windShearFactor =
 		    m_environmentSettings.windShearFactor;
-		m_pitchSimulationService.Reset(m_activePitchParameters);
+		ResetPitchSimulation();
 		if (m_batOverlayState.has_value())
 		{
 			m_batOverlayState->radiusMeters =
@@ -3468,52 +3412,29 @@ namespace BaseballSimulatorVR::Core
 		ApplyEnvironmentSettingsChanges(L"toggle_mound_offset");
 	}
 
-	bool Application::CalibrateStrikeZoneFromPlayerHeight(
-	    const std::wstring_view note)
+	void Application::BeginStrikeZoneCalibration(const std::wstring_view note)
 	{
-		const Common::ViewProjectionState eyeViewState =
-		    m_xrSystem->GetLeftEyeViewState();
-		double playerHeightMeters = 0.0;
-		if (eyeViewState.isValid && (eyeViewState.position.y > 0.10))
-		{
-			playerHeightMeters =
-			    Common::EstimatePlayerHeightFromEyeHeight(
-			        eyeViewState.position.y);
-		}
-
-		if (playerHeightMeters < 1.00 || playerHeightMeters > 2.50)
-		{
-			std::wostringstream logMessage{};
-			logMessage << std::fixed << std::setprecision(3);
-			logMessage << L"[StrikeZone] calibration skipped: estimated height="
-			           << playerHeightMeters
-			           << L"m (out of plausible range), note="
-			           << note << L"\n";
-			OutputDebugStringW(logMessage.str().c_str());
-			return false;
-		}
-
-		const Common::StrikeZoneFromHeight strikeZone =
-		    Common::ComputeStrikeZoneFromPlayerHeight(playerHeightMeters);
-		m_environmentSettings.strikeZoneBottomMeters =
-		    strikeZone.bottomMeters;
-		m_environmentSettings.strikeZoneHeightMeters =
-		    strikeZone.heightMeters;
-		ApplyEnvironmentSettingsChanges(
-		    note.empty() ? L"strike_zone_calibrate" : note);
-
-		std::wostringstream logMessage{};
-		logMessage << std::fixed << std::setprecision(3);
-		logMessage << L"[StrikeZone] calibrated: eyeY="
-		           << eyeViewState.position.y
-		           << L"m, playerHeight=" << playerHeightMeters
-		           << L"m, bottom=" << strikeZone.bottomMeters
-		           << L"m, height=" << strikeZone.heightMeters
-		           << L"m, note=" << note << L"\n";
-		OutputDebugStringW(logMessage.str().c_str());
-		return true;
+		m_strikeZoneCalibrator.Reset();
+		m_strikeZoneCalibrationNote = note;
+		OutputDebugStringW(L"[StrikeZone] calibration started: stand upright for three seconds.\n");
 	}
 
+	void Application::UpdateStrikeZoneCalibration()
+	{
+		if (m_strikeZoneCalibrator.IsComplete()) return;
+		const auto result = m_strikeZoneCalibrator.AddSample(m_xrSystem->GetFloorEyeHeightSample());
+		if (!result) return;
+		m_environmentSettings.strikeZoneBottomMeters = result->strikeZone.bottomMeters;
+		m_environmentSettings.strikeZoneHeightMeters = result->strikeZone.heightMeters;
+		ApplyEnvironmentSettingsChanges(m_strikeZoneCalibrationNote);
+		std::wostringstream log;
+		log << std::fixed << std::setprecision(3)
+		    << L"[StrikeZone] calibrated from tracked floor-relative eyes: eyeY=" << result->eyeHeightMeters
+		    << L", playerHeight=" << result->playerHeightMeters
+		    << L", bottom=" << result->strikeZone.bottomMeters
+		    << L", height=" << result->strikeZone.heightMeters << L"\n";
+		OutputDebugStringW(log.str().c_str());
+	}
 	void Application::AdjustPitchDistance(const double deltaMeters)
 	{
 		const double nextDistance = std::clamp(
@@ -3593,7 +3514,6 @@ namespace BaseballSimulatorVR::Core
 		m_batPoseState = BatPoseState{};
 		m_previousBatPoseState = BatPoseState{};
 		m_batOverlayState.reset();
-		m_hasLastBatSampleOrigin = false;
 		m_lastBatSampleUsedRightHand = m_batUseRightHand;
 
 		std::wstring batHandNote = L"bat_hand=";
@@ -3927,6 +3847,8 @@ namespace BaseballSimulatorVR::Core
 		    m_environmentSettings.batAngleOffsetDegrees;
 		telemetry.batYawOffsetDegrees =
 		    m_environmentSettings.batYawOffsetDegrees;
+		telemetry.batLengthMeters = m_environmentSettings.batLengthMeters;
+		telemetry.batRadiusMeters = m_environmentSettings.batRadiusMeters;
 		telemetry.pitchMetricsSpeedMetersPerSecond =
 		    (std::max)(0.0, m_pitchMetricsSpeedMetersPerSecond);
 		const BattedBallMetrics* metricsForTelemetry = nullptr;
@@ -3935,18 +3857,13 @@ namespace BaseballSimulatorVR::Core
 		    m_duelBattedMetrics.hasContact)
 		{
 			metricsForTelemetry = &m_duelBattedMetrics;
-			hasLiveBattedMetrics = true;
+			hasLiveBattedMetrics = !m_isWaitingForNextDuelPitch;
 		}
 		else if ((m_operationMode == OperationMode::TeeBatting) &&
 		         m_teeBattedMetrics.hasContact)
 		{
 			metricsForTelemetry = &m_teeBattedMetrics;
 			hasLiveBattedMetrics = true;
-		}
-		else if ((m_operationMode == OperationMode::TeeBatting) &&
-		         m_hasTeeLastBattedMetrics)
-		{
-			metricsForTelemetry = &m_teeLastBattedMetrics;
 		}
 		if (metricsForTelemetry != nullptr)
 		{
@@ -3964,456 +3881,193 @@ namespace BaseballSimulatorVR::Core
 		return telemetry;
 	}
 
-	void Application::RefreshBatPoseFromXrInput()
+	Common::FieldPresentationState Application::BuildFieldPresentationState() const
 	{
-		const bool isBattingMode =
-		    (m_operationMode == OperationMode::BattingDuel) ||
-		    (m_operationMode == OperationMode::TeeBatting);
-		if (!isBattingMode)
+		Common::FieldPresentationState state;
+		const bool duel = m_operationMode == OperationMode::BattingDuel;
+		const bool tee = m_operationMode == OperationMode::TeeBatting;
+		const auto& deliveredPitch = m_pitchSimulationService.GetPitchParameters();
+		state.pitcher.visible = duel;
+		state.pitcher.throwsLeftHanded = m_pitcherThrowsLeftHanded;
+		state.pitcher.armSpeedScale = m_pitcherArmSpeedScale;
+		state.pitcher.secondsFromRelease = m_isWaitingForNextDuelPitch
+		    ? -Simulation::PitchDeliveryController::WindupSeconds
+		    : m_pitchDeliveryController.GetSecondsFromRelease();
+		state.pitcher.moundHeightMeters = m_environmentSettings.moundHeightOffsetMeters;
+		state.pitcher.releasePositionWorld = ConvertSimulationToCollisionWorldPosition(
+		    { 0.0, deliveredPitch.releaseHeightMeters, 0.0 },
+		    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters);
+		state.ballVisible = !duel || (!m_isWaitingForNextDuelPitch && m_pitchDeliveryController.HasReleased());
+		const BattedBallMetrics* battedMetrics = tee ? &m_teeBattedMetrics
+		    : (duel ? &m_duelBattedMetrics : nullptr);
+		state.ballFlightPhase = tee
+		    ? (m_isTeeBallInFlight ? Common::BallFlightPhase::Batted : Common::BallFlightPhase::Stationary)
+		    : (duel && m_hasDuelBallBeenBatted ? Common::BallFlightPhase::Batted
+		        : (!duel || m_pitchDeliveryController.HasReleased()
+		            ? Common::BallFlightPhase::Pitch : Common::BallFlightPhase::Stationary));
+		if (battedMetrics != nullptr && battedMetrics->hasContact)
+			state.battedContactWorld = ConvertSimulationToCollisionWorldPosition(
+			    battedMetrics->contactPosition, m_environmentSettings.pitchDistanceMeters,
+			    m_environmentSettings.moundHeightOffsetMeters);
+		auto& statistics = state.statistics;
+		statistics.visible = true;
+		statistics.pitchMetricsVisible = !duel || m_duelPitchPreviewEnabled ||
+		    m_pitchDeliveryController.HasReleased();
+		if (statistics.pitchMetricsVisible)
 		{
-			m_batPoseState = BatPoseState{};
-			m_previousBatPoseState = BatPoseState{};
-			m_batOverlayState.reset();
-			m_hasLastBatSampleOrigin = false;
-			return;
+			statistics.pitchName = tee ? L"Tee" : m_currentPitchPresentationName;
+			statistics.pitchSpeedMetersPerSecond = tee ? 0.0 : Physics::Length(deliveredPitch.initialVelocity);
+			statistics.pitchSpinRpm = tee ? 0.0 : deliveredPitch.spinRpm;
 		}
-
-		const Xr::HandPoseState selectedHandPose =
-		    m_batUseRightHand ? m_xrSystem->GetRightHandPose()
-		                      : m_xrSystem->GetLeftHandPose();
-		Physics::Vector3 baseForward = Physics::NormalizeOrZero(
-		    selectedHandPose.forward);
-		if (!selectedHandPose.isValid ||
-		    (Physics::Length(baseForward) <= 1e-6))
+		statistics.hasBattedMetrics = battedMetrics != nullptr && battedMetrics->hasContact &&
+		    (!duel || m_pitchDeliveryController.HasReleased());
+		if (statistics.hasBattedMetrics)
 		{
-			m_batPoseState = BatPoseState{};
-			m_previousBatPoseState = BatPoseState{};
-			m_batOverlayState.reset();
-			m_hasLastBatSampleOrigin = false;
-			return;
+			statistics.battedMetricsLive = tee ? m_isTeeBallInFlight : !m_isWaitingForNextDuelPitch;
+			statistics.battedHasGroundContact = battedMetrics->hasFirstGroundContact;
+			statistics.battedLaunchSpeedMetersPerSecond = Physics::Length(battedMetrics->launchVelocity);
+			statistics.battedLaunchAngleDegrees = std::atan2(battedMetrics->launchVelocity.y,
+			    std::hypot(battedMetrics->launchVelocity.x, battedMetrics->launchVelocity.z)) *
+			    180.0 / 3.14159265358979323846;
+			statistics.battedDistanceMeters = battedMetrics->firstGroundDistanceMeters;
+			statistics.battedMaxHeightMeters = battedMetrics->maxHeightMeters;
 		}
-
-		Physics::Vector3 controllerUp = Physics::NormalizeOrZero(
-		    selectedHandPose.up);
-		if (Physics::Length(controllerUp) <= 1e-6)
-		{
-			controllerUp = Physics::Vector3{ 0.0, 1.0, 0.0 };
-		}
-		if (std::abs(Physics::Dot(baseForward, controllerUp)) >= 0.995)
-		{
-			Physics::Vector3 fallbackUp = Physics::NormalizeOrZero(
-			    Physics::Cross(
-			        baseForward,
-			        Physics::Vector3{ 0.0, 0.0, 1.0 }));
-			if (Physics::Length(fallbackUp) <= 1e-6)
-			{
-				fallbackUp = Physics::NormalizeOrZero(
-				    Physics::Cross(
-				        baseForward,
-				        Physics::Vector3{ 1.0, 0.0, 0.0 }));
-			}
-			if (Physics::Length(fallbackUp) > 1e-6)
-			{
-				controllerUp = Physics::NormalizeOrZero(
-				    Physics::Cross(fallbackUp, baseForward));
-			}
-		}
-
-		Physics::Vector3 axisDirectionWorld = baseForward;
-		constexpr double DegreesToRadians =
-		    3.14159265358979323846 / 180.0;
-		if (std::abs(m_environmentSettings.batYawOffsetDegrees) > 1e-6)
-		{
-			axisDirectionWorld = Physics::NormalizeOrZero(
-			    RotateVectorAroundAxis(
-			        axisDirectionWorld,
-			        controllerUp,
-			        m_environmentSettings.batYawOffsetDegrees *
-			            DegreesToRadians));
-			if (Physics::Length(axisDirectionWorld) <= 1e-6)
-			{
-				axisDirectionWorld = baseForward;
-			}
-		}
-
-		Physics::Vector3 localRightAxis = Physics::NormalizeOrZero(
-		    Physics::Cross(axisDirectionWorld, controllerUp));
-		if (Physics::Length(localRightAxis) <= 1e-6)
-		{
-			localRightAxis = Physics::NormalizeOrZero(
-			    Physics::Cross(
-			        axisDirectionWorld,
-			        Physics::Vector3{ 0.0, 1.0, 0.0 }));
-		}
-		if (Physics::Length(localRightAxis) <= 1e-6)
-		{
-			localRightAxis = Physics::NormalizeOrZero(
-			    Physics::Cross(
-			        axisDirectionWorld,
-			        Physics::Vector3{ 1.0, 0.0, 0.0 }));
-		}
-		if (std::abs(m_environmentSettings.batAngleOffsetDegrees) > 1e-6)
-		{
-			if (Physics::Length(localRightAxis) > 1e-6)
-			{
-				axisDirectionWorld = Physics::NormalizeOrZero(
-				    RotateVectorAroundAxis(
-				        axisDirectionWorld,
-				        localRightAxis,
-				        m_environmentSettings.batAngleOffsetDegrees *
-				            DegreesToRadians));
-			}
-		}
-		if (Physics::Length(axisDirectionWorld) <= 1e-6)
-		{
-			axisDirectionWorld = baseForward;
-		}
-
-		Physics::Vector3 linearVelocityWorld{};
-		const bool canEstimateVelocity =
-		    m_hasLastBatSampleOrigin &&
-		    (m_lastBatSampleUsedRightHand == m_batUseRightHand) &&
-		    (m_lastFrameDeltaSeconds > 1e-6);
-		if (canEstimateVelocity)
-		{
-			linearVelocityWorld =
-			    (selectedHandPose.position - m_lastBatSampleOriginWorld) /
-			    m_lastFrameDeltaSeconds;
-		}
-
-		m_previousBatPoseState =
-		    (m_batPoseState.isValid &&
-		     (m_lastBatSampleUsedRightHand == m_batUseRightHand))
-		        ? m_batPoseState
-		        : BatPoseState{};
-		m_batPoseState.isValid = true;
-		m_batPoseState.originWorld = selectedHandPose.position;
-		m_batPoseState.axisDirectionWorld = axisDirectionWorld;
-		m_batPoseState.upDirectionWorld = controllerUp;
-		m_batPoseState.linearVelocityWorld = linearVelocityWorld;
-		m_lastBatSampleOriginWorld = selectedHandPose.position;
-		m_hasLastBatSampleOrigin = true;
-		m_lastBatSampleUsedRightHand = m_batUseRightHand;
-
-		const double batLengthMeters = std::clamp(
-		    m_environmentSettings.batLengthMeters,
-		    MinimumBatLengthMeters,
-		    MaximumBatLengthMeters);
-		const double batRadiusMeters = std::clamp(
-		    m_environmentSettings.batRadiusMeters,
-		    MinimumBatRadiusMeters,
-		    MaximumBatRadiusMeters);
-		const Physics::Vector3 batStartWorld =
-		    selectedHandPose.position +
-		    (axisDirectionWorld * BatStartForwardOffsetMeters);
-		const Physics::Vector3 batEndWorld =
-		    selectedHandPose.position + (axisDirectionWorld * batLengthMeters);
-		m_batOverlayState = Common::BatOverlayState{
-			ConvertWorldToOverlaySimulationPosition(
-			    batStartWorld,
-			    m_environmentSettings.pitchDistanceMeters),
-			ConvertWorldToOverlaySimulationPosition(
-			    batEndWorld,
-			    m_environmentSettings.pitchDistanceMeters),
-			batRadiusMeters
-		};
+		return state;
 	}
 
+	void Application::RefreshBatPoseFromXrInput()
+	{
+		const bool isBattingMode = m_operationMode == OperationMode::BattingDuel ||
+		    m_operationMode == OperationMode::TeeBatting;
+		const Xr::HandPoseState hand = m_batUseRightHand
+		    ? m_xrSystem->GetRightHandPose() : m_xrSystem->GetLeftHandPose();
+		const auto orientation = Common::BuildBatOrientation(hand.forward, hand.up,
+		    m_environmentSettings.batAngleOffsetDegrees, m_environmentSettings.batYawOffsetDegrees);
+		const auto axis = orientation ? std::optional<Physics::Vector3>(orientation->axis) : std::nullopt;
+		const bool finitePosition = std::isfinite(hand.position.x) &&
+		    std::isfinite(hand.position.y) && std::isfinite(hand.position.z);
+		if (!isBattingMode || !hand.isValid || !axis || !finitePosition ||
+		    !std::isfinite(hand.sampleTimeSeconds))
+		{
+			m_batPoseState = {};
+			m_previousBatPoseState = {};
+			m_batOverlayState.reset();
+			return;
+		}
+		const bool sameSource = m_batPoseState.isValid &&
+		    m_lastBatSampleUsedRightHand == m_batUseRightHand &&
+		    m_batPoseState.referenceSpaceRevision == hand.referenceSpaceRevision;
+		// Reject duplicate or reversed sample times and clear the sweep interval.
+		if (sameSource && hand.sampleTimeSeconds <= m_batPoseState.sampleTimeSeconds)
+		{
+			m_previousBatPoseState = {};
+			return;
+		}
+		const bool sameHandAndSpace = sameSource &&
+		    hand.sampleTimeSeconds - m_batPoseState.sampleTimeSeconds <= 0.10 &&
+		    Physics::Dot(m_batPoseState.upDirectionWorld, orientation->up) > 0.5 &&
+		    Physics::Dot(m_batPoseState.axisDirectionWorld, *axis) > 0.5;
+		m_previousBatPoseState = sameHandAndSpace ? m_batPoseState : BatPoseState{};
+		m_batPoseState = { true, hand.position, *axis, hand.sampleTimeSeconds,
+		    hand.referenceSpaceRevision, orientation->up };
+		m_lastBatSampleUsedRightHand = m_batUseRightHand;
+		const double length = m_environmentSettings.batLengthMeters;
+		m_batOverlayState = Common::BatOverlayState{
+			ConvertWorldToOverlaySimulationPosition(hand.position + *axis * Common::BatHandleStartOffsetMeters,
+			    m_environmentSettings.pitchDistanceMeters),
+			ConvertWorldToOverlaySimulationPosition(hand.position + *axis * length,
+			    m_environmentSettings.pitchDistanceMeters),
+			m_environmentSettings.batRadiusMeters
+		};
+	}
 	bool Application::TryApplyBatCollision(Physics::BallState* const ballState)
 	{
-		if ((ballState == nullptr) || !m_batPoseState.isValid)
-		{
+		if (ballState == nullptr || m_playbackPaused || !m_batPoseState.isValid ||
+		    !m_previousBatPoseState.isValid || m_batCollisionSuppressRemainingSeconds > 1e-6)
 			return false;
-		}
-
-		if (m_batCollisionSuppressRemainingSeconds > 1e-6)
-		{
+		const double sampleSeconds = m_batPoseState.sampleTimeSeconds - m_previousBatPoseState.sampleTimeSeconds;
+		if (!(sampleSeconds > 0.0) || sampleSeconds > 0.10 ||
+		    m_batPoseState.referenceSpaceRevision != m_previousBatPoseState.referenceSpaceRevision)
 			return false;
-		}
-
-		const double batRadiusMeters = std::clamp(
-		    m_environmentSettings.batRadiusMeters,
-		    MinimumBatRadiusMeters,
-		    MaximumBatRadiusMeters);
-		const double batLengthMeters = std::clamp(
-		    m_environmentSettings.batLengthMeters,
-		    MinimumBatLengthMeters,
-		    MaximumBatLengthMeters);
-		const double restitution = std::clamp(
-		    m_environmentSettings.batBallRestitution,
-		    MinimumBatBallRestitution,
-		    MaximumBatBallRestitution);
-		if ((batRadiusMeters <= 1e-6) || (batLengthMeters <= 1e-6))
+		const bool hasPreviousBall = m_operationMode == OperationMode::BattingDuel
+		    ? m_hasPreviousDuelBallState : m_hasPreviousTeeBallState;
+		if (!hasPreviousBall) return false;
+		const auto& previousBall = m_operationMode == OperationMode::BattingDuel
+		    ? m_previousDuelBallState : m_previousTeeBallState;
+		const auto worldPosition = [&](const Physics::Vector3& position)
 		{
-			return false;
-		}
-
-		const Physics::Vector3 currentBatAxisDirection = Physics::NormalizeOrZero(
-		    m_batPoseState.axisDirectionWorld);
-		if (Physics::Length(currentBatAxisDirection) <= 1e-6)
-		{
-			return false;
-		}
-
-		const Physics::Vector3 ballWorldPosition =
-		    ConvertSimulationToCollisionWorldPosition(
-		        ballState->position,
-		        m_environmentSettings.pitchDistanceMeters,
-		        m_environmentSettings.moundHeightOffsetMeters);
-		const double collisionSampleDeltaSeconds = (std::max)(m_lastFrameDeltaSeconds,
-		                                                      FixedSimulationStep.count());
-		Physics::Vector3 previousBallWorldPosition{};
-		bool hasPreviousBallWorldPosition = false;
-		if ((m_operationMode == OperationMode::BattingDuel) &&
-		    m_hasPreviousDuelBallState)
-		{
-			previousBallWorldPosition = ConvertSimulationToCollisionWorldPosition(
-			    m_previousDuelBallState.position,
-			    m_environmentSettings.pitchDistanceMeters,
-			    m_environmentSettings.moundHeightOffsetMeters);
-			hasPreviousBallWorldPosition = true;
-		}
-		else if ((m_operationMode == OperationMode::TeeBatting) &&
-		         m_hasPreviousTeeBallState)
-		{
-			previousBallWorldPosition = ConvertSimulationToCollisionWorldPosition(
-			    m_previousTeeBallState.position,
-			    m_environmentSettings.pitchDistanceMeters,
-			    m_environmentSettings.moundHeightOffsetMeters);
-			hasPreviousBallWorldPosition = true;
-		}
-		if (!hasPreviousBallWorldPosition)
-		{
-			previousBallWorldPosition =
-			    ballWorldPosition - (ballState->velocity * collisionSampleDeltaSeconds);
-		}
-		Physics::Vector3 nearestPointOnBallPath{};
-		Physics::Vector3 nearestPointOnBat{};
-		Physics::Vector3 closestBatAxisDirection = currentBatAxisDirection;
-		Physics::Vector3 closestBatUpDirection = Physics::NormalizeOrZero(
-		    m_batPoseState.upDirectionWorld);
-		Physics::Vector3 closestBatLinearVelocity =
-		    m_batPoseState.linearVelocityWorld;
-		double distanceSquared = 0.0;
-		bool hasClosestPoints = false;
-		auto considerBatSegment = [&](const BatPoseState& batPoseState) -> void
-		{
-			if (!batPoseState.isValid)
-			{
-				return;
-			}
-			const Physics::Vector3 candidateBatAxisDirection =
-			    Physics::NormalizeOrZero(batPoseState.axisDirectionWorld);
-			if (Physics::Length(candidateBatAxisDirection) <= 1e-6)
-			{
-				return;
-			}
-
-			const Physics::Vector3 candidateBatStartWorld =
-			    batPoseState.originWorld +
-			    (candidateBatAxisDirection * BatStartForwardOffsetMeters);
-			const Physics::Vector3 candidateBatEndWorld =
-			    batPoseState.originWorld +
-			    (candidateBatAxisDirection * batLengthMeters);
-			Physics::Vector3 candidateNearestPointOnBallPath{};
-			Physics::Vector3 candidateNearestPointOnBat{};
-			if (!ResolveClosestPointsOnSegments(
-			        previousBallWorldPosition,
-			        ballWorldPosition,
-			        candidateBatStartWorld,
-			        candidateBatEndWorld,
-			        &candidateNearestPointOnBallPath,
-			        &candidateNearestPointOnBat))
-			{
-				return;
-			}
-
-			const double candidateDistanceSquared = Physics::LengthSquared(
-			    candidateNearestPointOnBallPath - candidateNearestPointOnBat);
-			if (!hasClosestPoints || (candidateDistanceSquared < distanceSquared))
-			{
-				hasClosestPoints = true;
-				distanceSquared = candidateDistanceSquared;
-				nearestPointOnBallPath = candidateNearestPointOnBallPath;
-				nearestPointOnBat = candidateNearestPointOnBat;
-				closestBatAxisDirection = candidateBatAxisDirection;
-				closestBatUpDirection = Physics::NormalizeOrZero(
-				    batPoseState.upDirectionWorld);
-				closestBatLinearVelocity = batPoseState.linearVelocityWorld;
-			}
+			return ConvertSimulationToCollisionWorldPosition(position,
+			    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters);
 		};
-		considerBatSegment(m_batPoseState);
-		considerBatSegment(m_previousBatPoseState);
-		if (!hasClosestPoints)
+		const auto segment = [&](const BatPoseState& pose)
 		{
-			return false;
-		}
-
-		const Physics::Vector3 fromBatToBall =
-		    nearestPointOnBallPath - nearestPointOnBat;
-		const double collisionRadiusMeters =
-		    batRadiusMeters + Common::DebugWorldStyle::BallMeshRadiusMeters;
-		const double collisionRadiusSquared =
-		    collisionRadiusMeters * collisionRadiusMeters;
-		if (distanceSquared > collisionRadiusSquared)
-		{
-			return false;
-		}
-
-		Physics::Vector3 collisionNormal = Physics::NormalizeOrZero(fromBatToBall);
-		Physics::Vector3 batUpDirection = closestBatUpDirection;
-		if (Physics::Length(batUpDirection) <= 1e-6)
-		{
-			batUpDirection = Physics::Vector3{ 0.0, 1.0, 0.0 };
-		}
-		const Physics::Vector3 ballPathVelocity =
-		    (ballWorldPosition - previousBallWorldPosition) /
-		    collisionSampleDeltaSeconds;
-		Physics::Vector3 relativeVelocity =
-		    ballPathVelocity - closestBatLinearVelocity;
-		if (Physics::Length(collisionNormal) <= 1e-6)
-		{
-			collisionNormal = Physics::NormalizeOrZero(
-			    -relativeVelocity);
-		}
-		if (Physics::Length(collisionNormal) <= 1e-6)
-		{
-			collisionNormal = Physics::NormalizeOrZero(
-			    Physics::Cross(
-			        closestBatAxisDirection,
-			        batUpDirection));
-		}
-		if (Physics::Length(collisionNormal) <= 1e-6)
-		{
-			collisionNormal = Physics::Vector3{ 1.0, 0.0, 0.0 };
-		}
-		if (Physics::Dot(relativeVelocity, collisionNormal) > 0.0)
-		{
-			collisionNormal = -collisionNormal;
-		}
-
-		const double distanceMeters = std::sqrt((std::max)(distanceSquared, 0.0));
-		const double penetrationMeters = collisionRadiusMeters - distanceMeters;
-		Physics::Vector3 correctedBallWorldPosition = ballWorldPosition;
-		if (penetrationMeters > 0.0)
-		{
-			correctedBallWorldPosition =
-			    nearestPointOnBat +
-			    (collisionNormal * (collisionRadiusMeters + 1e-4));
-		}
-
-		double relativeNormalSpeed = Physics::Dot(
-		    relativeVelocity,
-		    collisionNormal);
-		const double batSpeedMetersPerSecond = Physics::Length(
-		    closestBatLinearVelocity);
-		if ((relativeNormalSpeed >= -0.05) &&
-		    (penetrationMeters <= 1e-4) &&
-		    (batSpeedMetersPerSecond <= 0.25))
-		{
-			return false;
-		}
-
-		if (relativeNormalSpeed < 0.0)
-		{
-			ballState->velocity -=
-			    ((1.0 + restitution) * relativeNormalSpeed) *
-			    collisionNormal;
-		}
-		Physics::Vector3 carryAxisDirection = closestBatAxisDirection;
-		if (Physics::Dot(carryAxisDirection, closestBatLinearVelocity) < 0.0)
-		{
-			carryAxisDirection = -carryAxisDirection;
-		}
-		const Physics::Vector3 batCarryVelocity =
-		    (closestBatLinearVelocity * 0.85) +
-		    (carryAxisDirection * 4.5);
-		ballState->velocity += batCarryVelocity;
-		if (m_operationMode == OperationMode::BattingDuel)
-		{
-			const Physics::Vector3 fairTerritoryForwardDirection{ 0.0, 0.0, -1.0 };
-			const double forwardSwingSpeed = (std::max)(0.0,
-			                                            Physics::Dot(
-			                                                closestBatLinearVelocity,
-			                                                fairTerritoryForwardDirection));
-			if (forwardSwingSpeed >= DuelForwardAssistSwingThresholdMetersPerSecond)
-			{
-				const double minimumForwardSpeed = std::clamp(
-				    DuelForwardAssistBaseSpeedMetersPerSecond +
-				        (forwardSwingSpeed * DuelForwardAssistFromSwingScale),
-				    DuelForwardAssistBaseSpeedMetersPerSecond,
-				    DuelForwardAssistMaximumSpeedMetersPerSecond);
-				const double currentForwardSpeed = Physics::Dot(
-				    ballState->velocity,
-				    fairTerritoryForwardDirection);
-				if (currentForwardSpeed < minimumForwardSpeed)
-				{
-					ballState->velocity +=
-					    fairTerritoryForwardDirection *
-					    (minimumForwardSpeed - currentForwardSpeed);
-				}
-			}
-		}
-		if (m_operationMode == OperationMode::TeeBatting)
-		{
-			const double teeLaunchSpeed =
-			    Physics::Length(ballState->velocity);
-			const double teeLaunchSpeedFloor = std::clamp(
-			    TeeLaunchSpeedFromBatSpeedBias +
-			        (batSpeedMetersPerSecond * TeeLaunchSpeedFromBatSpeedMultiplier),
-			    MinimumTeeLaunchSpeedMetersPerSecond,
-			    MaximumTeeLaunchSpeedMetersPerSecond);
-			if (teeLaunchSpeed < teeLaunchSpeedFloor)
-			{
-				Physics::Vector3 teeLaunchDirection =
-				    Physics::NormalizeOrZero(ballState->velocity);
-				if (Physics::Length(teeLaunchDirection) <= 1e-6)
-				{
-					teeLaunchDirection = Physics::NormalizeOrZero(
-					    (collisionNormal * 0.65) +
-					    (closestBatAxisDirection * 0.85));
-				}
-				if (Physics::Length(teeLaunchDirection) > 1e-6)
-				{
-					ballState->velocity =
-					    teeLaunchDirection *
-					    teeLaunchSpeedFloor;
-				}
-			}
-		}
-		const double nextBallSpeed = Physics::Length(ballState->velocity);
-		if (nextBallSpeed > MaximumBattedBallSpeedMetersPerSecond)
-		{
-			ballState->velocity =
-			    (ballState->velocity / nextBallSpeed) *
-			    MaximumBattedBallSpeedMetersPerSecond;
-		}
-		ballState->position = ConvertCollisionWorldToSimulationPosition(
-		    correctedBallWorldPosition,
-		    m_environmentSettings.pitchDistanceMeters,
-		    m_environmentSettings.moundHeightOffsetMeters);
-		m_pitchSimulationService.SetBallState(*ballState);
-		m_batCollisionSuppressRemainingSeconds =
-		    BatCollisionSuppressDurationSeconds;
+			return Physics::BatSegment{
+				pose.originWorld + pose.axisDirectionWorld * Common::BatHandleStartOffsetMeters,
+				pose.originWorld + pose.axisDirectionWorld * m_environmentSettings.batLengthMeters
+			};
+		};
+		const double combinedRadius = m_environmentSettings.batRadiusMeters + Common::DebugWorldStyle::BallMeshRadiusMeters;
+		const auto contact = Physics::FindSweptBatContact(worldPosition(previousBall.position),
+		    worldPosition(ballState->position), segment(m_previousBatPoseState), segment(m_batPoseState),
+		    combinedRadius, sampleSeconds);
+		if (!contact) return false;
+		const auto frameAngularVelocity = Common::ComputeBatAngularVelocity(
+		    { m_previousBatPoseState.axisDirectionWorld, m_previousBatPoseState.upDirectionWorld },
+		    { m_batPoseState.axisDirectionWorld, m_batPoseState.upDirectionWorld }, sampleSeconds);
+		if (!frameAngularVelocity) return false;
+		const auto surfaceAngularVelocity = contact->batAngularVelocity + contact->batAxis *
+		    Physics::Dot(*frameAngularVelocity, contact->batAxis);
+		Physics::BatBallCollisionInput input;
+		input.ballVelocityWorld = ballState->velocity;
+		input.ballAngularVelocityWorld = ballState->spinAxis *
+		    (ballState->spinRpm * 2.0 * std::numbers::pi / 60.0);
+		input.batContactVelocityWorld = contact->batContactVelocity +
+		    Physics::Cross(surfaceAngularVelocity,
+		        contact->normal * m_environmentSettings.batRadiusMeters);
+		input.collisionNormal = contact->normal;
+		input.batAxisDirectionWorld = contact->batAxis;
+		input.contactDistanceFromHandleMeters = Common::BatHandleStartOffsetMeters + contact->batFraction *
+		    (m_environmentSettings.batLengthMeters - Common::BatHandleStartOffsetMeters);
+		input.batLengthMeters = m_environmentSettings.batLengthMeters;
+		input.batRadiusMeters = m_environmentSettings.batRadiusMeters;
+		input.restitutionAtReferenceSpeed = m_environmentSettings.batBallRestitution;
+		const auto response = Physics::ResolveBatBallCollision(input);
+		if (!response.hasImpulse) return false;
+		const Physics::Vector3 contactPosition = ConvertCollisionWorldToSimulationPosition(
+		    contact->batPosition + contact->normal * (combinedRadius + 1e-4),
+		    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters);
+		const double flightDeltaSeconds = (std::max)(0.0, ballState->flightTimeSeconds - previousBall.flightTimeSeconds);
+		Physics::BallState contactState = *ballState;
+		contactState.position = contactPosition;
+		contactState.velocity = response.ballVelocityWorld;
+		contactState.aerodynamicsModel = Physics::BallAerodynamicsModel::BattedBall;
+		contactState.spinAxis = Physics::NormalizeOrZero(response.ballAngularVelocityWorld);
+		contactState.spinRpm = Physics::Length(response.ballAngularVelocityWorld) *
+		    60.0 / (2.0 * std::numbers::pi);
+		contactState.flightTimeSeconds = previousBall.flightTimeSeconds + flightDeltaSeconds * contact->frameFraction;
+		m_pitchSimulationService.SetBallState(contactState);
+		const double remainingSeconds = (m_operationMode == OperationMode::TeeBatting && !m_isTeeBallInFlight)
+		    ? m_lastSimulationDeltaSeconds * (1.0 - contact->frameFraction)
+		    : flightDeltaSeconds * (1.0 - contact->frameFraction);
+		m_pitchSimulationService.Tick(std::chrono::duration<double>(remainingSeconds));
+		*ballState = m_pitchSimulationService.GetBallState();
+		m_batCollisionSuppressRemainingSeconds = BatCollisionSuppressDurationSeconds;
 		BattedBallMetrics& activeMetrics =
 		    (m_operationMode == OperationMode::TeeBatting)
 		        ? m_teeBattedMetrics
 		        : m_duelBattedMetrics;
 		activeMetrics = BattedBallMetrics{};
 		activeMetrics.hasContact = true;
-		activeMetrics.contactPosition = ballState->position;
-		activeMetrics.launchVelocity = ballState->velocity;
+		activeMetrics.contactPosition = contactPosition;
+		activeMetrics.launchVelocity = response.ballVelocityWorld;
 		activeMetrics.maxHeightMeters =
-		    ballState->position.y + m_environmentSettings.moundHeightOffsetMeters;
+		    (std::max)(contactPosition.y, ballState->position.y) +
+		    m_environmentSettings.moundHeightOffsetMeters;
 		if (m_operationMode == OperationMode::BattingDuel)
 		{
 			m_duelZonePassMarker.reset();
 			m_duelPitchPredictedZonePassPoint.reset();
 			m_hasCurrentDuelPitchPassedZone = true;
-		}
-		else if (m_operationMode == OperationMode::TeeBatting)
-		{
-			m_hasTeeLastBattedMetrics = false;
 		}
 
 		std::wostringstream collisionNote{};
@@ -4425,6 +4079,15 @@ namespace BaseballSimulatorVR::Core
 		collisionNote << L",hand="
 		              << (m_batUseRightHand ? L"right" : L"left");
 		collisionNote << L",speed=" << Physics::Length(ballState->velocity);
+		collisionNote << L",launch_speed=" << Physics::Length(response.ballVelocityWorld)
+		              << L",bat_contact_speed=" << Physics::Length(input.batContactVelocityWorld)
+		              << L",closing_normal_speed=" << -Physics::Dot(
+		                  input.ballVelocityWorld - input.batContactVelocityWorld, input.collisionNormal)
+		              << L",spin_rpm=" << contactState.spinRpm
+		              << L",normal_cor=" << response.restitution
+		              << L",friction_limited=" << response.tangentialRestitutionLimitedByFriction
+		              << L",energy_limited=" << response.tangentialRestitutionLimitedByEnergy
+		              << L",contact_from_handle=" << input.contactDistanceFromHandleMeters;
 		(void)LogPitchEvent(L"bat_contact", collisionNote.str());
 		return true;
 	}
@@ -4668,7 +4331,6 @@ namespace BaseballSimulatorVR::Core
 		}
 
 		m_operationMode = mode;
-		SyncOverlayTrajectoryVisibilityForCurrentMode();
 		m_forceTrajectoryResetOnNextFrame = true;
 		m_playbackPaused = false;
 		m_isWaitingForNextDuelPitch = false;
@@ -4685,8 +4347,6 @@ namespace BaseballSimulatorVR::Core
 		m_hasTeeBattedBallBounced = false;
 		m_teePostBounceElapsedSeconds = 0.0;
 		m_teeBattedMetrics = BattedBallMetrics{};
-		m_teeLastBattedMetrics = BattedBallMetrics{};
-		m_hasTeeLastBattedMetrics = false;
 		m_hasPreviousTeeBallState = false;
 		switch (m_operationMode)
 		{
@@ -4699,7 +4359,6 @@ namespace BaseballSimulatorVR::Core
 				m_batPoseState = BatPoseState{};
 				m_previousBatPoseState = BatPoseState{};
 				m_batOverlayState.reset();
-				m_hasLastBatSampleOrigin = false;
 				RefreshPitchTrajectoryFromZoneSelection(L"mode_enter");
 				break;
 			case OperationMode::BattingDuel:
@@ -4848,9 +4507,6 @@ namespace BaseballSimulatorVR::Core
 			    MaximumVerticalSpeed);
 		}
 		m_duelZonePassMarker.reset();
-		m_duelPitchPredictedZonePassPoint = SimulateZonePassPointAtDepth(
-		    m_activePitchParameters,
-		    m_environmentSettings.pitchDistanceMeters);
 		m_duelPitchElapsedSeconds = 0.0;
 		m_hasCurrentDuelPitchPassedZone = false;
 		m_isWaitingForNextDuelPitch = false;
@@ -4921,6 +4577,7 @@ namespace BaseballSimulatorVR::Core
 		}
 		m_batCollisionSuppressRemainingSeconds = (std::max)(0.0,
 		                                                    m_batCollisionSuppressRemainingSeconds - m_lastFrameDeltaSeconds);
+		const double groundContactHeight = GroundContactHeightMeters - m_environmentSettings.moundHeightOffsetMeters;
 		const GroundFanShape groundFanShape = BuildGroundFanShape(
 		    m_environmentSettings.strikeZoneWidthMeters,
 		    m_environmentSettings.groundFanRadiusMeters);
@@ -4952,23 +4609,15 @@ namespace BaseballSimulatorVR::Core
 		{
 			if ((metrics == nullptr) || !metrics->hasContact ||
 			    metrics->hasFirstGroundContact || !hasPreviousState ||
-			    !DidBallCrossGroundFromAbove(previousState, *ballState))
+			    !DidBallCrossGroundFromAbove(previousState, *ballState, groundContactHeight))
 			{
 				return false;
 			}
 
 			const Physics::Vector3 groundCrossPosition =
-			    ResolveGroundCrossPoint(previousState, *ballState);
-			const Physics::Vector3 groundCrossWorldPosition =
-			    ConvertSimulationToCollisionWorldPosition(
-			        groundCrossPosition,
-			        m_environmentSettings.pitchDistanceMeters,
-			        m_environmentSettings.moundHeightOffsetMeters);
-			if (!IsWorldPointInsideGroundFan(groundCrossWorldPosition, groundFanShape))
-			{
-				return false;
-			}
-
+			    ResolveGroundCrossPoint(previousState, *ballState, groundContactHeight);
+			// Carry ends at the first physical ground-plane crossing, including
+			// beyond the rendered fan. Field bounds only govern bounce response.
 			metrics->hasFirstGroundContact = true;
 			const Physics::Vector3 contactDelta =
 			    groundCrossPosition - metrics->contactPosition;
@@ -4979,7 +4628,7 @@ namespace BaseballSimulatorVR::Core
 		};
 		auto isBallBelowGroundOutsideFan = [&](const Physics::BallState& state) -> bool
 		{
-			if (state.position.y > GroundContactHeightMeters)
+			if (state.position.y > groundContactHeight)
 			{
 				return false;
 			}
@@ -4996,10 +4645,10 @@ namespace BaseballSimulatorVR::Core
 		{
 			Physics::Vector3 collisionCheckPosition = ballState->position;
 			if (hasPreviousState &&
-			    DidBallCrossGroundFromAbove(previousState, *ballState))
+			    DidBallCrossGroundFromAbove(previousState, *ballState, groundContactHeight))
 			{
 				collisionCheckPosition =
-				    ResolveGroundCrossPoint(previousState, *ballState);
+				    ResolveGroundCrossPoint(previousState, *ballState, groundContactHeight);
 			}
 			const Physics::Vector3 collisionCheckWorldPosition =
 			    ConvertSimulationToCollisionWorldPosition(
@@ -5012,7 +4661,7 @@ namespace BaseballSimulatorVR::Core
 			{
 				return;
 			}
-			ApplyGroundCollisionResponse(ballState, m_lastFrameDeltaSeconds);
+			ApplyGroundCollisionResponse(ballState, m_lastSimulationDeltaSeconds, groundContactHeight);
 			m_pitchSimulationService.SetBallState(*ballState);
 		};
 
@@ -5039,31 +4688,41 @@ namespace BaseballSimulatorVR::Core
 					m_hasTeeBattedBallBounced = false;
 					m_teePostBounceElapsedSeconds = 0.0;
 					updateBattedMetricsLiveState(&m_teeBattedMetrics);
+					Physics::BallState contactState = *ballState;
+					contactState.position = m_teeBattedMetrics.contactPosition;
+					m_hasTeeBattedBallBounced = registerGroundContactForMetrics(
+					    &m_teeBattedMetrics, contactState, true);
 					applyGroundCollisionIfNeeded(
-					    m_previousTeeBallState,
-					    m_hasPreviousTeeBallState);
+					    contactState, true);
 					m_hasPreviousTeeBallState = true;
 					m_previousTeeBallState = *ballState;
 				}
 				else
 				{
-					m_hasPreviousTeeBallState = false;
+					m_previousTeeBallState = *ballState;
+					m_hasPreviousTeeBallState = true;
 				}
 				applyPendingTrajectoryReset(ballState);
 				return;
 			}
-			if (TryApplyBatCollision(ballState))
+			const bool collidedWithBat = TryApplyBatCollision(ballState);
+			if (collidedWithBat)
 			{
 				m_isTeeBallInFlight = true;
 				m_hasTeeBattedBallBounced = false;
 				m_teePostBounceElapsedSeconds = 0.0;
 			}
+			Physics::BallState groundPreviousState = m_previousTeeBallState;
+			if (collidedWithBat)
+			{
+				groundPreviousState.position = m_teeBattedMetrics.contactPosition;
+			}
 			updateBattedMetricsLiveState(&m_teeBattedMetrics);
 			if (!m_hasTeeBattedBallBounced &&
 			    registerGroundContactForMetrics(
 			        &m_teeBattedMetrics,
-			        m_previousTeeBallState,
-			        m_hasPreviousTeeBallState))
+			        groundPreviousState,
+			        m_hasPreviousTeeBallState || collidedWithBat))
 			{
 				m_hasTeeBattedBallBounced = true;
 				m_teePostBounceElapsedSeconds = 0.0;
@@ -5071,18 +4730,6 @@ namespace BaseballSimulatorVR::Core
 			if (m_teeBattedMetrics.hasContact &&
 			    isBallBelowGroundOutsideFan(*ballState))
 			{
-				if (!m_teeBattedMetrics.hasFirstGroundContact)
-				{
-					m_teeBattedMetrics.hasFirstGroundContact = true;
-					const Physics::Vector3 contactDelta =
-					    ballState->position -
-					    m_teeBattedMetrics.contactPosition;
-					m_teeBattedMetrics.firstGroundDistanceMeters = std::sqrt(
-					    (contactDelta.x * contactDelta.x) +
-					    (contactDelta.z * contactDelta.z));
-				}
-				m_teeLastBattedMetrics = m_teeBattedMetrics;
-				m_hasTeeLastBattedMetrics = true;
 				m_isTeeBallInFlight = false;
 				m_hasTeeBattedBallBounced = false;
 				m_teePostBounceElapsedSeconds = 0.0;
@@ -5103,11 +4750,11 @@ namespace BaseballSimulatorVR::Core
 				return;
 			}
 			applyGroundCollisionIfNeeded(
-			    m_previousTeeBallState,
-			    m_hasPreviousTeeBallState);
+			    groundPreviousState,
+			    m_hasPreviousTeeBallState || collidedWithBat);
 			if (m_hasTeeBattedBallBounced)
 			{
-				m_teePostBounceElapsedSeconds += m_lastFrameDeltaSeconds;
+				m_teePostBounceElapsedSeconds += m_lastSimulationDeltaSeconds;
 			}
 			m_previousTeeBallState = *ballState;
 			m_hasPreviousTeeBallState = true;
@@ -5117,11 +4764,6 @@ namespace BaseballSimulatorVR::Core
 			     PostBounceSimulationSeconds);
 			if (shouldRespawnTeeBall)
 			{
-				if (m_teeBattedMetrics.hasContact)
-				{
-					m_teeLastBattedMetrics = m_teeBattedMetrics;
-					m_hasTeeLastBattedMetrics = true;
-				}
 				m_isTeeBallInFlight = false;
 				m_hasTeeBattedBallBounced = false;
 				m_teePostBounceElapsedSeconds = 0.0;
@@ -5185,7 +4827,7 @@ namespace BaseballSimulatorVR::Core
 		if (m_isWaitingForNextDuelPitch)
 		{
 			m_duelPitchCooldownRemainingSeconds = (std::max)(0.0,
-			                                                 m_duelPitchCooldownRemainingSeconds - m_lastFrameDeltaSeconds);
+			                                                 m_duelPitchCooldownRemainingSeconds - m_lastSimulationDeltaSeconds);
 			if (m_duelPitchCooldownRemainingSeconds <= 1e-6)
 			{
 				StartRandomBattingDuelPitch(L"duel_cycle");
@@ -5201,11 +4843,19 @@ namespace BaseballSimulatorVR::Core
 			}
 		}
 
+		if (!m_pitchDeliveryController.HasReleased())
+		{
+			m_previousDuelBallState = *ballState;
+			m_hasPreviousDuelBallState = true;
+			applyPendingTrajectoryReset(ballState);
+			return;
+		}
+
 		const double duelZoneDepthMeters =
 		    m_environmentSettings.pitchDistanceMeters;
 		const double duelPitchEndDepthMeters = duelZoneDepthMeters * 1.10;
 		const Physics::BallState currentState = *ballState;
-		m_duelPitchElapsedSeconds += m_lastFrameDeltaSeconds;
+		m_duelPitchElapsedSeconds += m_lastSimulationDeltaSeconds;
 		if (!m_hasDuelBallBeenBatted && m_hasPreviousDuelBallState)
 		{
 			const double previousDepth = m_previousDuelBallState.position.z;
@@ -5238,8 +4888,10 @@ namespace BaseballSimulatorVR::Core
 		}
 
 		const bool collidedWithBat = TryApplyBatCollision(ballState);
+		Physics::BallState groundPreviousState = m_previousDuelBallState;
 		if (collidedWithBat)
 		{
+			groundPreviousState.position = m_duelBattedMetrics.contactPosition;
 			m_duelZonePassMarker.reset();
 			m_duelPitchPredictedZonePassPoint.reset();
 			m_hasCurrentDuelPitchPassedZone = true;
@@ -5251,8 +4903,8 @@ namespace BaseballSimulatorVR::Core
 		    !m_hasDuelBattedBallBounced &&
 		    registerGroundContactForMetrics(
 		        &m_duelBattedMetrics,
-		        m_previousDuelBallState,
-		        m_hasPreviousDuelBallState))
+		        groundPreviousState,
+		        m_hasPreviousDuelBallState || collidedWithBat))
 		{
 			m_hasDuelBattedBallBounced = true;
 			m_duelPostBounceElapsedSeconds = 0.0;
@@ -5261,15 +4913,6 @@ namespace BaseballSimulatorVR::Core
 		    m_duelBattedMetrics.hasContact &&
 		    isBallBelowGroundOutsideFan(*ballState))
 		{
-			if (!m_duelBattedMetrics.hasFirstGroundContact)
-			{
-				m_duelBattedMetrics.hasFirstGroundContact = true;
-				const Physics::Vector3 contactDelta =
-				    ballState->position - m_duelBattedMetrics.contactPosition;
-				m_duelBattedMetrics.firstGroundDistanceMeters = std::sqrt(
-				    (contactDelta.x * contactDelta.x) +
-				    (contactDelta.z * contactDelta.z));
-			}
 			m_isWaitingForNextDuelPitch = true;
 			m_duelPitchCooldownRemainingSeconds = m_duelPitchIntervalSeconds;
 			m_duelPitchElapsedSeconds = 0.0;
@@ -5284,13 +4927,13 @@ namespace BaseballSimulatorVR::Core
 		{
 			updateBattedMetricsLiveState(&m_duelBattedMetrics);
 			applyGroundCollisionIfNeeded(
-			    m_previousDuelBallState,
-			    m_hasPreviousDuelBallState);
+			    groundPreviousState,
+			    m_hasPreviousDuelBallState || collidedWithBat);
 		}
 		if (m_hasDuelBallBeenBatted &&
 		    m_hasDuelBattedBallBounced)
 		{
-			m_duelPostBounceElapsedSeconds += m_lastFrameDeltaSeconds;
+			m_duelPostBounceElapsedSeconds += m_lastSimulationDeltaSeconds;
 		}
 		const Physics::BallState stateForTracking = *ballState;
 		m_previousDuelBallState = stateForTracking;
@@ -5501,6 +5144,14 @@ namespace BaseballSimulatorVR::Core
 	{
 		switch (message)
 		{
+			case WM_DPICHANGED:
+			{
+				const auto& suggested = *reinterpret_cast<const RECT*>(lParam);
+				SetWindowPos(windowHandle, nullptr, suggested.left, suggested.top,
+				    suggested.right - suggested.left, suggested.bottom - suggested.top,
+				    SWP_NOZORDER | SWP_NOACTIVATE);
+				return 0;
+			}
 			case WM_KEYDOWN:
 			case WM_SYSKEYDOWN:
 				HandleKeyDown(wParam);
@@ -5529,9 +5180,14 @@ namespace BaseballSimulatorVR::Core
 						    L"  Numpad 8/2  : Tee ball Z offset (-/+)\n"
 						    L"  Numpad 9/3  : Tee ball Y offset (+/-)\n"
 						    L"  Numpad 5    : Reset tee ball position\n"
-						    L"  1/2/3       : Toggle trajectory(current mode) / zone / floor\n"
+						    L"  1 / 4       : Toggle pitched-ball / batted-ball trajectories independently\n"
+						    L"  2 / 3       : Toggle strike zone / floor\n"
 						    L"  Q           : Toggle duel pitch preview marker\n"
 						    L"  E           : Toggle bat hand (right / left)\n"
+						    L"  Ctrl+E      : Export current session to CSV\n"
+						    L"  Ctrl+H      : Recalibrate strike zone (stand still for 3s)\n"
+						    L"  Ctrl+Left/Right : Previous / next settings file\n"
+						    L"  Ctrl+Up/Down    : Previous / next pitch profile\n"
 						    L"  , / .       : Bat angle down / up\n"
 						    L"  ; / '       : Bat yaw left / right\n"
 						    L"  R           : Reset pitch\n"
@@ -5563,7 +5219,7 @@ namespace BaseballSimulatorVR::Core
 						    L"  Use laser hand + trigger to select.\n"
 						    L"  Main panel : mode / panel open (open-or-rescue)\n"
 						    L"  Pitch panel: 25-zone multi-select / <- pitch -> / <- settings file -> / play-pause / playback slider\n"
-						    L"  Metrics UI : pitching+batted sections + trajectory/zone/mound/preview/hand toggles",
+						    L"  Metrics UI : separate pitch/batted trajectory toggles + zone/mound/preview/hand toggles",
 						    L"About BaseballSimulatorVR",
 						    MB_OK | MB_ICONINFORMATION);
 						return 0;

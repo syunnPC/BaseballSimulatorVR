@@ -1,15 +1,15 @@
 #pragma once
 
-#include <algorithm>
-#include <cerrno>
-#include <cctype>
-#include <cstdint>
-#include <cstdlib>
+#include <charconv>
 #include <cmath>
-#include <limits>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace BaseballSimulatorVR::Common::JsonKeyValueParser
 {
@@ -20,574 +20,576 @@ namespace BaseballSimulatorVR::Common::JsonKeyValueParser
 		Valid
 	};
 
-	template <typename TValue>
-	struct KeyReadResult final
+	template <typename TValue> struct KeyReadResult final
 	{
 		KeyReadStatus status{ KeyReadStatus::Missing };
 		std::optional<TValue> value{};
 	};
 
-	[[nodiscard]] inline std::string TrimCopy(std::string value)
+	enum class ValueType
 	{
-		value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](const unsigned char character)
-		                                        { return !std::isspace(character); }));
-		value.erase(
-		    std::find_if(value.rbegin(), value.rend(), [](const unsigned char character)
-		                 { return !std::isspace(character); })
-		        .base(),
-		    value.end());
-		return value;
-	}
+		String,
+		Number,
+		Boolean,
+		Null,
+		Object,
+		Array
+	};
 
-	[[nodiscard]] inline std::optional<std::uint32_t> DecodeHexDigit(
-	    const char character)
+	// Raw spans refer to the input document; decoded strings own their contents.
+	struct JsonValue final
 	{
-		if ((character >= '0') && (character <= '9'))
-		{
-			return static_cast<std::uint32_t>(character - '0');
-		}
-		if ((character >= 'a') && (character <= 'f'))
-		{
-			return 10U + static_cast<std::uint32_t>(character - 'a');
-		}
-		if ((character >= 'A') && (character <= 'F'))
-		{
-			return 10U + static_cast<std::uint32_t>(character - 'A');
-		}
-		return std::nullopt;
-	}
+		ValueType type{ ValueType::Null };
+		std::string_view raw{};
+		std::string stringValue{};
+	};
 
-	inline void AppendUtf8CodePoint(
-	    std::string& output,
-	    const std::uint32_t codePoint)
+	namespace Detail
 	{
-		if (codePoint <= 0x7FU)
+		class Parser final
 		{
-			output.push_back(static_cast<char>(codePoint));
-			return;
-		}
-		if (codePoint <= 0x7FFU)
-		{
-			output.push_back(static_cast<char>(0xC0U | (codePoint >> 6U)));
-			output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-			return;
-		}
-		if (codePoint <= 0xFFFFU)
-		{
-			output.push_back(static_cast<char>(0xE0U | (codePoint >> 12U)));
-			output.push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3FU)));
-			output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-			return;
-		}
-
-		output.push_back(static_cast<char>(0xF0U | (codePoint >> 18U)));
-		output.push_back(static_cast<char>(0x80U | ((codePoint >> 12U) & 0x3FU)));
-		output.push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3FU)));
-		output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-	}
-
-	[[nodiscard]] inline std::optional<std::uint32_t> TryReadUnicodeEscape(
-	    const std::string& jsonText,
-	    std::size_t* const cursor)
-	{
-		if (cursor == nullptr)
-		{
-			return std::nullopt;
-		}
-
-		if ((*cursor + 4U) > jsonText.size())
-		{
-			return std::nullopt;
-		}
-
-		std::uint32_t codePoint = 0U;
-		for (std::size_t index = 0; index < 4U; ++index)
-		{
-			const std::optional<std::uint32_t> hexValue =
-			    DecodeHexDigit(jsonText[*cursor + index]);
-			if (!hexValue.has_value())
+		  public:
+			explicit Parser(const std::string_view text) : text_(text)
 			{
-				return std::nullopt;
-			}
-			codePoint = (codePoint << 4U) | *hexValue;
-		}
-		*cursor += 4U;
-
-		if ((codePoint < 0xD800U) || (codePoint > 0xDFFFU))
-		{
-			return codePoint;
-		}
-		if (codePoint > 0xDBFFU)
-		{
-			return std::nullopt;
-		}
-		if (((*cursor + 6U) > jsonText.size()) ||
-		    (jsonText[*cursor] != '\\') ||
-		    (jsonText[*cursor + 1U] != 'u'))
-		{
-			return std::nullopt;
-		}
-
-		*cursor += 2U;
-		std::uint32_t lowSurrogate = 0U;
-		for (std::size_t index = 0; index < 4U; ++index)
-		{
-			const std::optional<std::uint32_t> hexValue =
-			    DecodeHexDigit(jsonText[*cursor + index]);
-			if (!hexValue.has_value())
-			{
-				return std::nullopt;
-			}
-			lowSurrogate = (lowSurrogate << 4U) | *hexValue;
-		}
-		*cursor += 4U;
-		if ((lowSurrogate < 0xDC00U) || (lowSurrogate > 0xDFFFU))
-		{
-			return std::nullopt;
-		}
-
-		return 0x10000U +
-		       (((codePoint - 0xD800U) << 10U) |
-		        (lowSurrogate - 0xDC00U));
-	}
-
-	[[nodiscard]] inline std::optional<std::string> ParseJsonStringLiteral(
-	    const std::string& jsonText,
-	    const std::size_t quoteIndex)
-	{
-		if ((quoteIndex >= jsonText.size()) || (jsonText[quoteIndex] != '"'))
-		{
-			return std::nullopt;
-		}
-
-		std::string value{};
-		for (std::size_t cursor = quoteIndex + 1U;
-		     cursor < jsonText.size();
-		     ++cursor)
-		{
-			const char character = jsonText[cursor];
-			if (character == '"')
-			{
-				return value;
-			}
-			if (character != '\\')
-			{
-				value.push_back(character);
-				continue;
 			}
 
-			++cursor;
-			if (cursor >= jsonText.size())
+			[[nodiscard]] KeyReadResult<JsonValue> ReadMember(const std::string_view key)
 			{
-				return std::nullopt;
+				key_ = key;
+				SkipWhitespace();
+				if (!ReadObject(0U, true))
+					return { KeyReadStatus::Invalid, std::nullopt };
+				SkipWhitespace();
+				if (cursor_ != text_.size())
+					return { KeyReadStatus::Invalid, std::nullopt };
+				return std::move(member_);
 			}
 
-			switch (jsonText[cursor])
+			[[nodiscard]] bool ReadObjectArray(std::vector<std::string_view>& objects)
 			{
+				SkipWhitespace();
+				if (!Consume('['))
+					return false;
+				SkipWhitespace();
+				if (!Consume(']'))
+				{
+					do
+					{
+						SkipWhitespace();
+						const std::size_t begin = cursor_;
+						if (!ReadObject(0U, false))
+							return false;
+						objects.push_back(text_.substr(begin, cursor_ - begin));
+						SkipWhitespace();
+						if (Consume(']'))
+							break;
+						if (!Consume(','))
+							return false;
+					} while (true);
+				}
+				SkipWhitespace();
+				return cursor_ == text_.size();
+			}
+
+		  private:
+			// Bound recursive descent so settings cannot exhaust the stack.
+			static constexpr std::size_t MaximumDepth = 128U;
+			std::string_view text_;
+			std::size_t cursor_{ 0U };
+			std::string_view key_{};
+			KeyReadResult<JsonValue> member_{};
+
+			void SkipWhitespace()
+			{
+				while (cursor_ < text_.size())
+				{
+					const char c = text_[cursor_];
+					if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
+						break;
+					++cursor_;
+				}
+			}
+
+			[[nodiscard]] bool Consume(const char c)
+			{
+				if (cursor_ == text_.size() || text_[cursor_] != c)
+					return false;
+				++cursor_;
+				return true;
+			}
+
+			[[nodiscard]] bool ReadHex(std::uint32_t& value)
+			{
+				if (text_.size() - cursor_ < 4U)
+					return false;
+				value = 0U;
+				for (std::size_t i = 0U; i < 4U; ++i)
+				{
+					const char c = text_[cursor_++];
+					std::uint32_t digit = 0U;
+					if (c >= '0' && c <= '9')
+						digit = static_cast<std::uint32_t>(c - '0');
+					else if (c >= 'a' && c <= 'f')
+						digit = 10U + static_cast<std::uint32_t>(c - 'a');
+					else if (c >= 'A' && c <= 'F')
+						digit = 10U + static_cast<std::uint32_t>(c - 'A');
+					else
+						return false;
+					value = (value << 4U) | digit;
+				}
+				return true;
+			}
+
+			static void AppendCodePoint(std::string& output, const std::uint32_t point)
+			{
+				if (point <= 0x7FU)
+					output.push_back(static_cast<char>(point));
+				else
+				{
+					if (point <= 0x7FFU)
+						output.push_back(static_cast<char>(0xC0U | (point >> 6U)));
+					else
+					{
+						if (point <= 0xFFFFU)
+							output.push_back(static_cast<char>(0xE0U | (point >> 12U)));
+						else
+						{
+							output.push_back(static_cast<char>(0xF0U | (point >> 18U)));
+							output.push_back(static_cast<char>(0x80U | ((point >> 12U) & 0x3FU)));
+						}
+						output.push_back(static_cast<char>(0x80U | ((point >> 6U) & 0x3FU)));
+					}
+					output.push_back(static_cast<char>(0x80U | (point & 0x3FU)));
+				}
+			}
+
+			[[nodiscard]] bool ReadUtf8(std::string& output)
+			{
+				const std::size_t begin = cursor_;
+				const auto first = static_cast<unsigned char>(text_[cursor_++]);
+				std::size_t remaining = 0U;
+				std::uint32_t point = 0U;
+				std::uint32_t minimum = 0U;
+				if (first >= 0xC2U && first <= 0xDFU)
+				{
+					remaining = 1U;
+					point = first & 0x1FU;
+					minimum = 0x80U;
+				}
+				else if (first >= 0xE0U && first <= 0xEFU)
+				{
+					remaining = 2U;
+					point = first & 0x0FU;
+					minimum = 0x800U;
+				}
+				else if (first >= 0xF0U && first <= 0xF4U)
+				{
+					remaining = 3U;
+					point = first & 0x07U;
+					minimum = 0x10000U;
+				}
+				else
+					return false;
+				if (text_.size() - cursor_ < remaining)
+					return false;
+				for (std::size_t i = 0U; i < remaining; ++i)
+				{
+					const auto next = static_cast<unsigned char>(text_[cursor_++]);
+					if ((next & 0xC0U) != 0x80U)
+						return false;
+					point = (point << 6U) | (next & 0x3FU);
+				}
+				if (point < minimum || point > 0x10FFFFU || (point >= 0xD800U && point <= 0xDFFFU))
+					return false;
+				output.append(text_.substr(begin, cursor_ - begin));
+				return true;
+			}
+
+			[[nodiscard]] bool ReadString(std::string& output)
+			{
+				if (!Consume('"'))
+					return false;
+				while (cursor_ < text_.size())
+				{
+					const auto c = static_cast<unsigned char>(text_[cursor_]);
+					if (c >= 0x80U)
+					{
+						if (!ReadUtf8(output))
+							return false;
+						continue;
+					}
+					++cursor_;
+					if (c == '"')
+						return true;
+					if (c < 0x20U)
+						return false;
+					if (c != '\\')
+					{
+						output.push_back(static_cast<char>(c));
+						continue;
+					}
+					if (cursor_ == text_.size())
+						return false;
+					const char escape = text_[cursor_++];
+					switch (escape)
+					{
+					case '"':
+					case '\\':
+					case '/':
+						output.push_back(escape);
+						break;
+					case 'b':
+						output.push_back('\b');
+						break;
+					case 'f':
+						output.push_back('\f');
+						break;
+					case 'n':
+						output.push_back('\n');
+						break;
+					case 'r':
+						output.push_back('\r');
+						break;
+					case 't':
+						output.push_back('\t');
+						break;
+					case 'u':
+					{
+						std::uint32_t point = 0U;
+						if (!ReadHex(point))
+							return false;
+						if (point >= 0xD800U && point <= 0xDBFFU)
+						{
+							std::uint32_t low = 0U;
+							if (!Consume('\\') || !Consume('u') || !ReadHex(low) || low < 0xDC00U ||
+							    low > 0xDFFFU)
+								return false;
+							point = 0x10000U + ((point - 0xD800U) << 10U) + (low - 0xDC00U);
+						}
+						else if (point >= 0xDC00U && point <= 0xDFFFU)
+							return false;
+						AppendCodePoint(output, point);
+						break;
+					}
+					default:
+						return false;
+					}
+				}
+				return false;
+			}
+
+			[[nodiscard]] bool IsDigit() const
+			{
+				return cursor_ < text_.size() && text_[cursor_] >= '0' && text_[cursor_] <= '9';
+			}
+
+			[[nodiscard]] bool ReadNumber()
+			{
+				(void)Consume('-');
+				if (!Consume('0'))
+				{
+					if (!IsDigit())
+						return false;
+					while (IsDigit())
+						++cursor_;
+				}
+				if (Consume('.'))
+				{
+					if (!IsDigit())
+						return false;
+					while (IsDigit())
+						++cursor_;
+				}
+				if (Consume('e') || Consume('E'))
+				{
+					if (!Consume('+'))
+						(void)Consume('-');
+					if (!IsDigit())
+						return false;
+					while (IsDigit())
+						++cursor_;
+				}
+				return true;
+			}
+
+			[[nodiscard]] bool ReadLiteral(const std::string_view literal)
+			{
+				if (text_.substr(cursor_, literal.size()) != literal)
+					return false;
+				cursor_ += literal.size();
+				return true;
+			}
+
+			[[nodiscard]] bool ReadValue(const std::size_t depth, JsonValue& value)
+			{
+				SkipWhitespace();
+				if (cursor_ == text_.size() || depth >= MaximumDepth)
+					return false;
+				const std::size_t begin = cursor_;
+				switch (text_[cursor_])
+				{
 				case '"':
-				case '\\':
-				case '/':
-					value.push_back(jsonText[cursor]);
+					value.type = ValueType::String;
+					if (!ReadString(value.stringValue))
+						return false;
 					break;
-				case 'b':
-					value.push_back('\b');
+				case '{':
+					value.type = ValueType::Object;
+					if (!ReadObject(depth, false))
+						return false;
 					break;
-				case 'f':
-					value.push_back('\f');
-					break;
-				case 'n':
-					value.push_back('\n');
-					break;
-				case 'r':
-					value.push_back('\r');
+				case '[':
+					value.type = ValueType::Array;
+					if (!ReadArray(depth))
+						return false;
 					break;
 				case 't':
-					value.push_back('\t');
+				case 'f':
+					value.type = ValueType::Boolean;
+					if (!ReadLiteral(text_[cursor_] == 't' ? "true" : "false"))
+						return false;
 					break;
-				case 'u':
-				{
-					++cursor;
-					const std::optional<std::uint32_t> codePoint =
-					    TryReadUnicodeEscape(jsonText, &cursor);
-					if (!codePoint.has_value())
-					{
-						return std::nullopt;
-					}
-					AppendUtf8CodePoint(value, *codePoint);
-					--cursor;
+				case 'n':
+					value.type = ValueType::Null;
+					if (!ReadLiteral("null"))
+						return false;
+					break;
+				default:
+					value.type = ValueType::Number;
+					if (!ReadNumber())
+						return false;
 					break;
 				}
-				default:
-					return std::nullopt;
+				value.raw = text_.substr(begin, cursor_ - begin);
+				return true;
 			}
+
+			[[nodiscard]] bool ReadObject(const std::size_t depth, const bool lookup)
+			{
+				if (depth >= MaximumDepth || !Consume('{'))
+					return false;
+				SkipWhitespace();
+				if (Consume('}'))
+					return true;
+				std::unordered_set<std::string> keys{};
+				do
+				{
+					SkipWhitespace();
+					std::string name{};
+					if (!ReadString(name) || !keys.insert(name).second)
+						return false;
+					SkipWhitespace();
+					if (!Consume(':'))
+						return false;
+					JsonValue value{};
+					if (!ReadValue(depth + 1U, value))
+						return false;
+					if (lookup && name == key_)
+						member_ = { KeyReadStatus::Valid, std::move(value) };
+					SkipWhitespace();
+					if (Consume('}'))
+						return true;
+					if (!Consume(','))
+						return false;
+				} while (true);
+			}
+
+			[[nodiscard]] bool ReadArray(const std::size_t depth)
+			{
+				if (!Consume('['))
+					return false;
+				SkipWhitespace();
+				if (Consume(']'))
+					return true;
+				do
+				{
+					JsonValue value{};
+					if (!ReadValue(depth + 1U, value))
+						return false;
+					SkipWhitespace();
+					if (Consume(']'))
+						return true;
+					if (!Consume(','))
+						return false;
+				} while (true);
+			}
+		};
+
+		template <typename TValue, typename TConvert>
+		[[nodiscard]] KeyReadResult<TValue> ReadTyped(
+		    const std::string_view text,
+		    const std::string_view key,
+		    const ValueType type,
+		    TConvert convert)
+		{
+			const auto member = Parser(text).ReadMember(key);
+			if (member.status != KeyReadStatus::Valid)
+				return { member.status, std::nullopt };
+			if (member.value->type != type)
+				return { KeyReadStatus::Invalid, std::nullopt };
+			const std::optional<TValue> value = convert(*member.value);
+			return { value.has_value() ? KeyReadStatus::Valid : KeyReadStatus::Invalid, value };
 		}
 
-		return std::nullopt;
+		template <typename TValue>
+		[[nodiscard]] std::optional<TValue> ConvertNumber(const JsonValue& value)
+		{
+			TValue number{};
+			const auto result =
+			    std::from_chars(value.raw.data(), value.raw.data() + value.raw.size(), number);
+			if (result.ec != std::errc{} || result.ptr != value.raw.data() + value.raw.size())
+				return std::nullopt;
+			return number;
+		}
+
+		template <typename TValue>
+		[[nodiscard]] bool AssignResult(const KeyReadResult<TValue>& result, TValue& output)
+		{
+			if (result.status != KeyReadStatus::Valid)
+				return false;
+			output = *result.value;
+			return true;
+		}
+	} // namespace Detail
+
+	[[nodiscard]] inline KeyReadResult<JsonValue> ReadValueResult(
+	    const std::string_view text, const std::string_view key)
+	{
+		return Detail::Parser(text).ReadMember(key);
 	}
 
 	[[nodiscard]] inline std::optional<std::string> ExtractRawValue(
-	    const std::string& jsonText,
-	    const std::string_view key)
+	    const std::string& text, const std::string_view key)
 	{
-		const std::string keyToken = "\"" + std::string(key) + "\"";
-		const std::size_t keyPosition = jsonText.find(keyToken);
-		if (keyPosition == std::string::npos)
-		{
+		const auto result = ReadValueResult(text, key);
+		if (result.status != KeyReadStatus::Valid)
 			return std::nullopt;
-		}
-
-		const std::size_t colonPosition = jsonText.find(':', keyPosition + keyToken.size());
-		if (colonPosition == std::string::npos)
-		{
-			return std::nullopt;
-		}
-
-		std::size_t valueBegin = colonPosition + 1;
-		while ((valueBegin < jsonText.size()) &&
-		       std::isspace(static_cast<unsigned char>(jsonText[valueBegin])))
-		{
-			++valueBegin;
-		}
-		if (valueBegin >= jsonText.size())
-		{
-			return std::nullopt;
-		}
-
-		if (jsonText[valueBegin] == '"')
-		{
-			return ParseJsonStringLiteral(jsonText, valueBegin);
-		}
-
-		std::size_t valueEnd = valueBegin;
-		while ((valueEnd < jsonText.size()) && (jsonText[valueEnd] != ',') &&
-		       (jsonText[valueEnd] != '}'))
-		{
-			++valueEnd;
-		}
-		return TrimCopy(jsonText.substr(valueBegin, valueEnd - valueBegin));
+		return result.value->type == ValueType::String ? result.value->stringValue
+		                                               : std::string(result.value->raw);
 	}
 
-	[[nodiscard]] inline std::optional<double> ReadDouble(
-	    const std::string& jsonText,
-	    const std::string_view key)
+	[[nodiscard]] inline KeyReadResult<std::string> ReadStringResult(
+	    const std::string& text, const std::string_view key)
 	{
-		const std::optional<std::string> rawValue = ExtractRawValue(jsonText, key);
-		if (!rawValue.has_value())
-		{
-			return std::nullopt;
-		}
+		return Detail::ReadTyped<std::string>(
+		    text, key, ValueType::String,
+		    [](const JsonValue& value) -> std::optional<std::string> { return value.stringValue; });
+	}
 
-		char* parseEnd = nullptr;
-		errno = 0;
-		const double parsedValue = std::strtod(rawValue->c_str(), &parseEnd);
-		if ((parseEnd == rawValue->c_str()) ||
-		    ((parseEnd != nullptr) && (*parseEnd != '\0')) ||
-		    (errno == ERANGE) ||
-		    !std::isfinite(parsedValue))
-		{
-			return std::nullopt;
-		}
-
-		return parsedValue;
+	[[nodiscard]] inline KeyReadResult<std::vector<std::string_view>> ReadObjectArrayResult(
+	    const std::string& text, const std::string_view key)
+	{
+		return Detail::ReadTyped<std::vector<std::string_view>>(
+		    text, key, ValueType::Array,
+		    [](const JsonValue& value) -> std::optional<std::vector<std::string_view>>
+		    {
+			    std::vector<std::string_view> objects{};
+			    if (!Detail::Parser(value.raw).ReadObjectArray(objects))
+				    return std::nullopt;
+			    return objects;
+		    });
 	}
 
 	[[nodiscard]] inline KeyReadResult<double> ReadDoubleResult(
-	    const std::string& jsonText,
-	    const std::string_view key)
+	    const std::string& text, const std::string_view key)
 	{
-		if (!ExtractRawValue(jsonText, key).has_value())
-		{
-			return KeyReadResult<double>{};
-		}
-
-		const std::optional<double> parsedValue = ReadDouble(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return KeyReadResult<double>{
-				KeyReadStatus::Invalid,
-				std::nullopt
-			};
-		}
-
-		return KeyReadResult<double>{
-			KeyReadStatus::Valid,
-			parsedValue
-		};
-	}
-
-	[[nodiscard]] inline bool TryReadDouble(
-	    const std::string& jsonText,
-	    const std::string_view key,
-	    double& outputValue)
-	{
-		const std::optional<double> parsedValue = ReadDouble(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return false;
-		}
-		outputValue = *parsedValue;
-		return true;
-	}
-
-	[[nodiscard]] inline std::optional<int> ReadInt(
-	    const std::string& jsonText,
-	    const std::string_view key)
-	{
-		const std::optional<std::string> rawValue = ExtractRawValue(jsonText, key);
-		if (!rawValue.has_value())
-		{
-			return std::nullopt;
-		}
-
-		char* parseEnd = nullptr;
-		errno = 0;
-		const long parsedValue = std::strtol(rawValue->c_str(), &parseEnd, 10);
-		if ((parseEnd == rawValue->c_str()) ||
-		    ((parseEnd != nullptr) && (*parseEnd != '\0')) ||
-		    (errno == ERANGE) ||
-		    (parsedValue <
-		     static_cast<long>((std::numeric_limits<int>::min)())) ||
-		    (parsedValue >
-		     static_cast<long>((std::numeric_limits<int>::max)())))
-		{
-			return std::nullopt;
-		}
-
-		return static_cast<int>(parsedValue);
+		return Detail::ReadTyped<double>(
+		    text, key, ValueType::Number,
+		    [](const JsonValue& value) -> std::optional<double>
+		    {
+			    const auto number = Detail::ConvertNumber<double>(value);
+			    return number.has_value() && std::isfinite(*number) ? number : std::nullopt;
+		    });
 	}
 
 	[[nodiscard]] inline KeyReadResult<int> ReadIntResult(
-	    const std::string& jsonText,
-	    const std::string_view key)
+	    const std::string& text, const std::string_view key)
 	{
-		if (!ExtractRawValue(jsonText, key).has_value())
-		{
-			return KeyReadResult<int>{};
-		}
-
-		const std::optional<int> parsedValue = ReadInt(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return KeyReadResult<int>{
-				KeyReadStatus::Invalid,
-				std::nullopt
-			};
-		}
-
-		return KeyReadResult<int>{
-			KeyReadStatus::Valid,
-			parsedValue
-		};
-	}
-
-	[[nodiscard]] inline bool TryReadInt(
-	    const std::string& jsonText,
-	    const std::string_view key,
-	    int& outputValue)
-	{
-		const std::optional<int> parsedValue = ReadInt(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return false;
-		}
-		outputValue = *parsedValue;
-		return true;
-	}
-
-	[[nodiscard]] inline std::optional<std::uint32_t> ReadUnsignedInt(
-	    const std::string& jsonText,
-	    const std::string_view key)
-	{
-		const std::optional<std::string> rawValue = ExtractRawValue(jsonText, key);
-		if (!rawValue.has_value())
-		{
-			return std::nullopt;
-		}
-		if (!rawValue->empty() &&
-		    ((*rawValue)[0] == '-' || (*rawValue)[0] == '+'))
-		{
-			return std::nullopt;
-		}
-
-		char* parseEnd = nullptr;
-		errno = 0;
-		const unsigned long parsedValue = std::strtoul(rawValue->c_str(), &parseEnd, 10);
-		if ((parseEnd == rawValue->c_str()) ||
-		    ((parseEnd != nullptr) && (*parseEnd != '\0')) ||
-		    (errno == ERANGE) ||
-		    (parsedValue > (std::numeric_limits<std::uint32_t>::max)()))
-		{
-			return std::nullopt;
-		}
-
-		return static_cast<std::uint32_t>(parsedValue);
+		return Detail::ReadTyped<int>(text, key, ValueType::Number, Detail::ConvertNumber<int>);
 	}
 
 	[[nodiscard]] inline KeyReadResult<std::uint32_t> ReadUnsignedIntResult(
-	    const std::string& jsonText,
-	    const std::string_view key)
+	    const std::string& text, const std::string_view key)
 	{
-		if (!ExtractRawValue(jsonText, key).has_value())
-		{
-			return KeyReadResult<std::uint32_t>{};
-		}
-
-		const std::optional<std::uint32_t> parsedValue =
-		    ReadUnsignedInt(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return KeyReadResult<std::uint32_t>{
-				KeyReadStatus::Invalid,
-				std::nullopt
-			};
-		}
-
-		return KeyReadResult<std::uint32_t>{
-			KeyReadStatus::Valid,
-			parsedValue
-		};
-	}
-
-	[[nodiscard]] inline bool TryReadUnsignedInt(
-	    const std::string& jsonText,
-	    const std::string_view key,
-	    std::uint32_t& outputValue)
-	{
-		const std::optional<std::uint32_t> parsedValue =
-		    ReadUnsignedInt(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return false;
-		}
-		outputValue = *parsedValue;
-		return true;
-	}
-
-	[[nodiscard]] inline std::optional<int> ReadOptionalInt(
-	    const std::string& jsonText,
-	    const std::string_view key)
-	{
-		const std::optional<std::string> rawValue = ExtractRawValue(jsonText, key);
-		if (!rawValue.has_value() || (*rawValue == "null"))
-		{
-			return std::nullopt;
-		}
-		return ReadInt(jsonText, key);
-	}
-
-	[[nodiscard]] inline KeyReadResult<std::optional<int>> ReadOptionalIntResult(
-	    const std::string& jsonText,
-	    const std::string_view key)
-	{
-		const std::optional<std::string> rawValue = ExtractRawValue(jsonText, key);
-		if (!rawValue.has_value())
-		{
-			return KeyReadResult<std::optional<int>>{};
-		}
-
-		if (*rawValue == "null")
-		{
-			return KeyReadResult<std::optional<int>>{
-				KeyReadStatus::Valid,
-				std::optional<int>{}
-			};
-		}
-
-		const std::optional<int> parsedValue = ReadInt(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return KeyReadResult<std::optional<int>>{
-				KeyReadStatus::Invalid,
-				std::nullopt
-			};
-		}
-
-		return KeyReadResult<std::optional<int>>{
-			KeyReadStatus::Valid,
-			parsedValue
-		};
-	}
-
-	[[nodiscard]] inline bool TryReadOptionalInt(
-	    const std::string& jsonText,
-	    const std::string_view key,
-	    std::optional<int>& outputValue)
-	{
-		const std::optional<std::string> rawValue = ExtractRawValue(jsonText, key);
-		if (!rawValue.has_value())
-		{
-			return false;
-		}
-		if (*rawValue == "null")
-		{
-			outputValue.reset();
-			return true;
-		}
-
-		const std::optional<int> parsedValue = ReadInt(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return false;
-		}
-		outputValue = *parsedValue;
-		return true;
-	}
-
-	[[nodiscard]] inline std::optional<bool> ReadBool(
-	    const std::string& jsonText,
-	    const std::string_view key)
-	{
-		const std::optional<std::string> rawValue = ExtractRawValue(jsonText, key);
-		if (!rawValue.has_value())
-		{
-			return std::nullopt;
-		}
-		if (*rawValue == "true")
-		{
-			return true;
-		}
-		if (*rawValue == "false")
-		{
-			return false;
-		}
-		return std::nullopt;
+		return Detail::ReadTyped<std::uint32_t>(
+		    text, key, ValueType::Number, Detail::ConvertNumber<std::uint32_t>);
 	}
 
 	[[nodiscard]] inline KeyReadResult<bool> ReadBoolResult(
-	    const std::string& jsonText,
-	    const std::string_view key)
+	    const std::string& text, const std::string_view key)
 	{
-		if (!ExtractRawValue(jsonText, key).has_value())
-		{
-			return KeyReadResult<bool>{};
-		}
-
-		const std::optional<bool> parsedValue = ReadBool(jsonText, key);
-		if (!parsedValue.has_value())
-		{
-			return KeyReadResult<bool>{
-				KeyReadStatus::Invalid,
-				std::nullopt
-			};
-		}
-
-		return KeyReadResult<bool>{
-			KeyReadStatus::Valid,
-			parsedValue
-		};
+		return Detail::ReadTyped<bool>(
+		    text, key, ValueType::Boolean,
+		    [](const JsonValue& value) -> std::optional<bool> { return value.raw == "true"; });
 	}
 
-	[[nodiscard]] inline bool TryReadBool(
-	    const std::string& jsonText,
-	    const std::string_view key,
-	    bool& outputValue)
+	[[nodiscard]] inline KeyReadResult<std::optional<int>> ReadOptionalIntResult(
+	    const std::string& text, const std::string_view key)
 	{
-		const std::optional<bool> parsedValue = ReadBool(jsonText, key);
-		if (!parsedValue.has_value())
+		const auto member = ReadValueResult(text, key);
+		if (member.status != KeyReadStatus::Valid)
+			return { member.status, std::nullopt };
+		if (member.value->type == ValueType::Null)
 		{
-			return false;
+			return { KeyReadStatus::Valid,
+				     std::optional<std::optional<int>>(std::in_place, std::nullopt) };
 		}
-		outputValue = *parsedValue;
-		return true;
+		if (member.value->type != ValueType::Number)
+			return { KeyReadStatus::Invalid, std::nullopt };
+		const auto number = Detail::ConvertNumber<int>(*member.value);
+		if (!number.has_value())
+			return { KeyReadStatus::Invalid, std::nullopt };
+		return { KeyReadStatus::Valid, std::optional<std::optional<int>>(std::in_place, number) };
+	}
+
+	[[nodiscard]] inline std::optional<double> ReadDouble(
+	    const std::string& text, const std::string_view key)
+	{
+		return ReadDoubleResult(text, key).value;
+	}
+	[[nodiscard]] inline std::optional<int> ReadInt(
+	    const std::string& text, const std::string_view key)
+	{
+		return ReadIntResult(text, key).value;
+	}
+	[[nodiscard]] inline std::optional<std::uint32_t> ReadUnsignedInt(
+	    const std::string& text, const std::string_view key)
+	{
+		return ReadUnsignedIntResult(text, key).value;
+	}
+	[[nodiscard]] inline std::optional<bool> ReadBool(
+	    const std::string& text, const std::string_view key)
+	{
+		return ReadBoolResult(text, key).value;
+	}
+	[[nodiscard]] inline std::optional<int> ReadOptionalInt(
+	    const std::string& text, const std::string_view key)
+	{
+		return ReadOptionalIntResult(text, key).value.value_or(std::nullopt);
+	}
+	[[nodiscard]] inline bool TryReadDouble(
+	    const std::string& text, const std::string_view key, double& output)
+	{
+		return Detail::AssignResult(ReadDoubleResult(text, key), output);
+	}
+	[[nodiscard]] inline bool TryReadInt(
+	    const std::string& text, const std::string_view key, int& output)
+	{
+		return Detail::AssignResult(ReadIntResult(text, key), output);
+	}
+	[[nodiscard]] inline bool TryReadUnsignedInt(
+	    const std::string& text, const std::string_view key, std::uint32_t& output)
+	{
+		return Detail::AssignResult(ReadUnsignedIntResult(text, key), output);
+	}
+	[[nodiscard]] inline bool TryReadBool(
+	    const std::string& text, const std::string_view key, bool& output)
+	{
+		return Detail::AssignResult(ReadBoolResult(text, key), output);
+	}
+	[[nodiscard]] inline bool TryReadOptionalInt(
+	    const std::string& text, const std::string_view key, std::optional<int>& output)
+	{
+		return Detail::AssignResult(ReadOptionalIntResult(text, key), output);
 	}
 } // namespace BaseballSimulatorVR::Common::JsonKeyValueParser

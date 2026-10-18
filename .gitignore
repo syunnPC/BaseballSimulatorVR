@@ -1,9 +1,8 @@
-.clang-format
-
 # Visual Studio local state
 /.vs/
 *.user
 *.VC.db
+*.VC.db-*
 *.VC.opendb
 *.opendb
 *.suo
@@ -33,3 +32,6 @@
 SessionHistory.sqlite3
 SessionHistory.sqlite3-shm
 SessionHistory.sqlite3-wal
+SessionHistory.sqlite3-journal
+SessionHistory.*.csv
+SessionHistory.*.csv.*.tmp

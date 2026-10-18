@@ -4,7 +4,8 @@ namespace BaseballSimulatorVR::Common
 {
 	struct OverlayVisibilitySettings final
 	{
-		bool showTrajectory{ true };
+		bool showPitchTrajectory{ true };
+		bool showBattedTrajectory{ true };
 		bool showStrikeZone{ true };
 		bool showFloorMesh{ true };
 	};

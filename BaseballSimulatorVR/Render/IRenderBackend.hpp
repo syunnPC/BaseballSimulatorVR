@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Common/BatOverlayState.hpp"
+#include "../Common/FieldPresentationState.hpp"
 #include "../Common/GraphicsBinding.hpp"
 #include "../Common/OverlayVisibilitySettings.hpp"
 #include "../Common/RenderQualitySettings.hpp"
@@ -25,6 +26,7 @@ namespace BaseballSimulatorVR::Render
 		virtual void Shutdown() = 0;
 		[[nodiscard]] virtual std::wstring_view GetBackendName() const noexcept = 0;
 		[[nodiscard]] virtual Common::GraphicsBinding GetGraphicsBinding() const noexcept = 0;
+		virtual void SetFieldPresentationState(const Common::FieldPresentationState& state) = 0;
 		virtual void SetDesktopMirrorView(const Common::ViewProjectionState& mirrorViewState) = 0;
 		virtual void SetOverlayVisibility(const Common::OverlayVisibilitySettings& overlayVisibility) = 0;
 		virtual void SetRenderQuality(const Common::RenderQualitySettings& renderQuality) = 0;

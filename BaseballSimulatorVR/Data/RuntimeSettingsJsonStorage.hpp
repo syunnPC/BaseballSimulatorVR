@@ -23,7 +23,7 @@ namespace BaseballSimulatorVR::Data
 		double windShearFactor{ 0.08 };
 		double batRadiusMeters{ 0.035 };
 		double batLengthMeters{ 0.84 };
-		double batBallRestitution{ 0.50 };
+		double batBallRestitution{ 0.45 };
 		double batAngleOffsetDegrees{ 0.0 };
 		double batYawOffsetDegrees{ 0.0 };
 		double groundFanRadiusMeters{ 100.0 };

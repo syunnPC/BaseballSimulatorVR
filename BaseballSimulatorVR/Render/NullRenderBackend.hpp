@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IRenderBackend.hpp"
+#include "../Common/PhaseTrajectoryTrails.hpp"
 
 #include <deque>
 #include <optional>
@@ -22,6 +23,7 @@ namespace BaseballSimulatorVR::Render
 		void SetOverlayVisibility(const Common::OverlayVisibilitySettings& overlayVisibility) override;
 		void SetRenderQuality(const Common::RenderQualitySettings& renderQuality) override;
 		void SetDuelZonePassMarker(const std::optional<Physics::Vector3>& zonePassMarker) override;
+		void SetFieldPresentationState(const Common::FieldPresentationState& state) override;
 		void SetBatOverlayState(
 		    const std::optional<Common::BatOverlayState>& batOverlayState) override;
 
@@ -30,14 +32,12 @@ namespace BaseballSimulatorVR::Render
 		[[nodiscard]] static RECT BuildTopViewRect(const RECT& clientRect);
 		[[nodiscard]] static POINT ProjectSideViewPoint(const Physics::Vector3& position, const RECT& sideViewRect);
 		[[nodiscard]] static POINT ProjectTopViewPoint(const Physics::Vector3& position, const RECT& topViewRect);
-		[[nodiscard]] bool ShouldResetTrajectorySamples(const Physics::BallState& ballState) const noexcept;
-
-		void PushTrajectorySample(const Physics::Vector3& position);
 
 		bool m_isInitialized{ false };
 		HWND m_windowHandle{ nullptr };
-		std::deque<Physics::Vector3> m_trajectorySamples{};
-		double m_lastBallFlightTimeSeconds{ 0.0 };
+		Common::PhaseTrajectoryTrails m_trajectoryTrails{};
+		Common::ViewProjectionState m_mirrorViewState{};
+		Common::FieldPresentationState m_fieldPresentation{};
 		Common::OverlayVisibilitySettings m_overlayVisibility{};
 		Common::RenderQualitySettings m_renderQuality{};
 		std::optional<Physics::Vector3> m_duelZonePassMarker{};

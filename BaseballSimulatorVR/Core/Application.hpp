@@ -10,6 +10,8 @@
 #include "../Common/RenderQualitySettings.hpp"
 #include "../Render/IRenderBackend.hpp"
 #include "../Simulation/PitchSimulationService.hpp"
+#include "../Simulation/PitchDeliveryController.hpp"
+#include "../Common/StrikeZoneCalibration.hpp"
 #include "../UI/DesktopHudViewModel.hpp"
 #include "../XR/IXrSystem.hpp"
 #include "FrameStatistics.hpp"
@@ -38,6 +40,7 @@ namespace BaseballSimulatorVR::Core
 		[[nodiscard]] int Run(HINSTANCE instanceHandle, int commandShow);
 
 	  private:
+		friend struct ApplicationTestAccess;
 		enum class OperationMode
 		{
 			PitchTrajectory,
@@ -58,7 +61,7 @@ namespace BaseballSimulatorVR::Core
 			double windShearFactor{ 0.08 };
 			double batRadiusMeters{ 0.035 };
 			double batLengthMeters{ 0.84 };
-			double batBallRestitution{ 0.50 };
+			double batBallRestitution{ 0.45 };
 			double batAngleOffsetDegrees{ 0.0 };
 			double batYawOffsetDegrees{ 0.0 };
 			double groundFanRadiusMeters{ 100.0 };
@@ -69,6 +72,7 @@ namespace BaseballSimulatorVR::Core
 
 		[[nodiscard]] bool InitializeWindow(HINSTANCE instanceHandle, int commandShow);
 		void ApplyPreset(Data::PitchPresetType presetType);
+		void ResetPitchSimulation();
 		void ApplyPitchParameterChanges(
 		    bool preserveDirectionalVelocityForCurrentPitch = false);
 		void ApplyPitchParameterChangesAndLog(
@@ -93,6 +97,7 @@ namespace BaseballSimulatorVR::Core
 		void ResetPlaybackSpeedPercent();
 		void TogglePlaybackPause(std::wstring_view note = L"");
 		void SaveUserPresetToJson();
+		void ExportCurrentSessionCsv();
 		[[nodiscard]] bool LoadUserPresetFromJson();
 		[[nodiscard]] bool LoadUserPresetFromJsonFile(
 		    std::wstring_view filePath,
@@ -111,7 +116,8 @@ namespace BaseballSimulatorVR::Core
 		    std::wstring_view eventType,
 		    std::wstring_view note);
 		void ApplyOverlayVisibilityChanges(std::wstring_view note = L"");
-		void ToggleTrajectoryVisibility();
+		void TogglePitchTrajectoryVisibility();
+		void ToggleBattedTrajectoryVisibility();
 		void ToggleStrikeZoneVisibility();
 		void ToggleFloorMeshVisibility();
 		void ApplyRenderQualityChanges(std::wstring_view note = L"");
@@ -121,8 +127,10 @@ namespace BaseballSimulatorVR::Core
 		    std::wstring_view note = L"",
 		    bool persistToJson = true);
 		void ToggleMoundHeightOffset();
-		[[nodiscard]] bool CalibrateStrikeZoneFromPlayerHeight(
+		void BeginStrikeZoneCalibration(
 		    std::wstring_view note = L"");
+		void UpdateStrikeZoneCalibration();
+		[[nodiscard]] Common::FieldPresentationState BuildFieldPresentationState() const;
 		void AdjustPitchDistance(double deltaMeters);
 		void AdjustDuelPitchInterval(double deltaSeconds, std::wstring_view note = L"");
 		void ToggleDuelPitchPreview(std::wstring_view note = L"");
@@ -154,9 +162,6 @@ namespace BaseballSimulatorVR::Core
 		void AdjustTeeBallPosition(double deltaX, double deltaY, double deltaZ);
 		void ResetTeeBallPosition();
 		[[nodiscard]] Physics::BallState BuildTeeBallState() const;
-		[[nodiscard]] bool GetTrajectoryVisibilityForCurrentMode() const noexcept;
-		void SetTrajectoryVisibilityForCurrentMode(bool visible);
-		void SyncOverlayTrajectoryVisibilityForCurrentMode();
 		void EnsureDefaultPitchProfiles();
 		[[nodiscard]] bool InitializeStoragePaths(std::wstring& errorMessage);
 		[[nodiscard]] bool EnsureRequiredUserSettingsFiles(
@@ -179,8 +184,9 @@ namespace BaseballSimulatorVR::Core
 			bool isValid{ false };
 			Physics::Vector3 originWorld{};
 			Physics::Vector3 axisDirectionWorld{ 0.0, 0.0, 1.0 };
+			double sampleTimeSeconds{ 0.0 };
+			std::uint64_t referenceSpaceRevision{ 0 };
 			Physics::Vector3 upDirectionWorld{ 0.0, 1.0, 0.0 };
-			Physics::Vector3 linearVelocityWorld{};
 		};
 
 		struct BattedBallMetrics final
@@ -200,12 +206,12 @@ namespace BaseballSimulatorVR::Core
 		Data::RuntimeSettingsJsonStorage m_runtimeSettingsJsonStorage;
 		Data::SessionLogRepository m_sessionLogRepository;
 		Simulation::PitchSimulationService m_pitchSimulationService;
+		Simulation::PitchDeliveryController m_pitchDeliveryController;
 		UI::DesktopHudViewModel m_desktopHudViewModel;
 		FrameStatistics m_frameStatistics;
 		Baseball::PitchParameters m_activePitchParameters{};
+		std::wstring m_currentPitchPresentationName{};
 		Common::OverlayVisibilitySettings m_overlayVisibility{};
-		bool m_pitchTrajectoryVisible{ true };
-		bool m_battedTrajectoryVisible{ true };
 		Data::PitchPresetType m_activePresetType{ Data::PitchPresetType::Fastball };
 		std::vector<Data::PitchProfileEntry> m_pitchProfiles{};
 		int m_activePitchProfileIndex{ 0 };
@@ -216,6 +222,8 @@ namespace BaseballSimulatorVR::Core
 		};
 		std::wstring m_activePitchSettingsFilePath{};
 		bool m_randomPitchProfileEnabled{ true };
+		bool m_pitcherThrowsLeftHanded{ false };
+		double m_pitcherArmSpeedScale{ 1.0 };
 		bool m_isSessionLogAvailable{ false };
 		std::int64_t m_lastLoggedPitchEventId{ 0 };
 		std::wstring m_bundledContentDirectoryPath{};
@@ -251,23 +259,21 @@ namespace BaseballSimulatorVR::Core
 		BatPoseState m_batPoseState{};
 		BatPoseState m_previousBatPoseState{};
 		std::optional<Common::BatOverlayState> m_batOverlayState{};
-		Physics::Vector3 m_lastBatSampleOriginWorld{};
-		bool m_hasLastBatSampleOrigin{ false };
 		bool m_lastBatSampleUsedRightHand{ true };
 		double m_batCollisionSuppressRemainingSeconds{ 0.0 };
 		bool m_isTeeBallInFlight{ false };
 		bool m_hasTeeBattedBallBounced{ false };
 		double m_teePostBounceElapsedSeconds{ 0.0 };
 		BattedBallMetrics m_teeBattedMetrics{};
-		BattedBallMetrics m_teeLastBattedMetrics{};
-		bool m_hasTeeLastBattedMetrics{ false };
 		bool m_hasPreviousTeeBallState{ false };
 		Physics::BallState m_previousTeeBallState{};
 		Physics::Vector3 m_teeBallPosition{ 0.0, 1.0, 18.44 };
 		double m_pitchMetricsSpeedMetersPerSecond{ 0.0 };
 		double m_lastFrameDeltaSeconds{ 0.0 };
+		double m_lastSimulationDeltaSeconds{ 0.0 };
 		bool m_forceTrajectoryResetOnNextFrame{ false };
-		bool m_hasStrikeZoneAutoCalibrated{ false };
+		Common::StrikeZoneHeightCalibrator m_strikeZoneCalibrator;
+		std::wstring m_strikeZoneCalibrationNote{ L"auto_calibrate_startup" };
 		double m_trajectoryZoneBiasLateral{ 0.0 };
 		double m_trajectoryZoneBiasVertical{ 0.0 };
 

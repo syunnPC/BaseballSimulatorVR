@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../Common/BatOverlayState.hpp"
+#include "../Common/FieldPresentationState.hpp"
+#include "../Common/StrikeZoneCalibration.hpp"
 #include "../Common/GraphicsBinding.hpp"
 #include "../Common/OverlayVisibilitySettings.hpp"
 #include "../Common/RenderQualitySettings.hpp"
@@ -24,7 +26,8 @@ enum class UiCommandType {
   SetPresetSlider,
   SetPresetCurveball,
   SetPresetChangeup,
-  ToggleTrajectoryVisibility,
+  TogglePitchTrajectoryVisibility,
+  ToggleBattedTrajectoryVisibility,
   ToggleStrikeZoneVisibility,
   AdjustDuelIntervalDown,
   AdjustDuelIntervalUp,
@@ -86,6 +89,8 @@ struct UiTelemetry final {
   std::uint32_t duelTargetZoneMask{0U};
   bool duelPitchPreviewEnabled{true};
   bool batUseRightHand{true};
+  double batLengthMeters{0.84};
+  double batRadiusMeters{0.035};
   double batAngleOffsetDegrees{0.0};
   double batYawOffsetDegrees{0.0};
   double pitchMetricsSpeedMetersPerSecond{0.0};
@@ -99,6 +104,8 @@ struct UiTelemetry final {
 
 struct HandPoseState final {
   bool isValid{false};
+  double sampleTimeSeconds{0.0};
+  std::uint64_t referenceSpaceRevision{0};
   Physics::Vector3 position{};
   Physics::Vector3 forward{};
   Physics::Vector3 up{0.0, 1.0, 0.0};
@@ -120,6 +127,7 @@ public:
       const std::optional<Physics::Vector3> &zonePassMarker) = 0;
   virtual void SetBatOverlayState(
       const std::optional<Common::BatOverlayState> &batOverlayState) = 0;
+  virtual void SetFieldPresentationState(const Common::FieldPresentationState& state) = 0;
   virtual void SetUiTelemetry(const UiTelemetry &telemetry) = 0;
   virtual void PollInput() = 0;
   [[nodiscard]] virtual std::vector<UiCommand> ConsumePendingUiCommands() = 0;
@@ -128,6 +136,7 @@ public:
   [[nodiscard]] virtual std::wstring_view GetSessionName() const noexcept = 0;
   [[nodiscard]] virtual Common::ViewProjectionState
   GetLeftEyeViewState() const noexcept = 0;
+  [[nodiscard]] virtual Common::FloorEyeHeightSample GetFloorEyeHeightSample() const noexcept = 0;
   [[nodiscard]] virtual HandPoseState GetLeftHandPose() const noexcept = 0;
   [[nodiscard]] virtual HandPoseState GetRightHandPose() const noexcept = 0;
 };

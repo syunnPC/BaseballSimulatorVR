@@ -11,6 +11,8 @@
 #ifndef XR_USE_GRAPHICS_API_D3D12
 #define XR_USE_GRAPHICS_API_D3D12
 #endif
+#include "../Common/D3d12RenderFrame.hpp"
+#include "../Common/PhaseTrajectoryTrails.hpp"
 #include <Unknwn.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -34,6 +36,7 @@ namespace BaseballSimulatorVR::Xr
 		void SetOverlayVisibility(const Common::OverlayVisibilitySettings& overlayVisibility) override;
 		void SetRenderQuality(const Common::RenderQualitySettings& renderQuality) override;
 		void SetDuelZonePassMarker(const std::optional<Physics::Vector3>& zonePassMarker) override;
+		void SetFieldPresentationState(const Common::FieldPresentationState& state) override;
 		void SetBatOverlayState(
 		    const std::optional<Common::BatOverlayState>& batOverlayState) override;
 		void SetUiTelemetry(const UiTelemetry& telemetry) override;
@@ -43,6 +46,7 @@ namespace BaseballSimulatorVR::Xr
 		[[nodiscard]] std::wstring_view GetRuntimeName() const noexcept override;
 		[[nodiscard]] std::wstring_view GetSessionName() const noexcept override;
 		[[nodiscard]] Common::ViewProjectionState GetLeftEyeViewState() const noexcept override;
+		[[nodiscard]] Common::FloorEyeHeightSample GetFloorEyeHeightSample() const noexcept override;
 		[[nodiscard]] HandPoseState GetLeftHandPose() const noexcept override;
 		[[nodiscard]] HandPoseState GetRightHandPose() const noexcept override;
 
@@ -52,6 +56,7 @@ namespace BaseballSimulatorVR::Xr
 #if defined(_WIN64)
 		struct SwapchainContext final
 		{
+			Common::D3d12RenderFrame frame;
 			XrSwapchain swapchainHandle{ XR_NULL_HANDLE };
 			int32_t width{ 0 };
 			int32_t height{ 0 };
@@ -73,7 +78,6 @@ namespace BaseballSimulatorVR::Xr
 		[[nodiscard]] std::optional<DXGI_FORMAT> SelectSwapchainFormat() const;
 		[[nodiscard]] bool InitializeProjectionSwapchains();
 		[[nodiscard]] bool InitializeDebugPipeline();
-		[[nodiscard]] bool InitializeDebugVertexBuffer();
 		[[nodiscard]] bool InitializeFxaaPipeline();
 		[[nodiscard]] bool InitializeInputActions();
 		[[nodiscard]] bool UpdateReferenceSpace();
@@ -85,11 +89,10 @@ namespace BaseballSimulatorVR::Xr
 		[[nodiscard]] bool RenderProjectionLayer(XrTime predictedDisplayTime);
 		void AppendTrajectoryPoint(const Physics::BallState& ballState);
 		[[nodiscard]] bool ClearSwapchainImage(
-		    const SwapchainContext& swapchainContext,
+		    SwapchainContext& swapchainContext,
 		    uint32_t imageIndex,
 		    const float* clearColor,
 		    const XrView& view);
-		[[nodiscard]] bool ExecuteAndWaitXrCommandList();
 		void DestroyOpenXrInstance();
 		[[nodiscard]] static std::wstring BuildRuntimeDisplayNameFromInstance(XrInstance instanceHandle);
 		void UpdateSessionName();
@@ -99,9 +102,16 @@ namespace BaseballSimulatorVR::Xr
 		std::wstring m_runtimeName{ L"OpenXR(uninitialized)" };
 		std::wstring m_sessionName{ L"Session(unavailable)" };
 		Common::ViewProjectionState m_leftEyeViewState{};
+		Common::FloorEyeHeightSample m_floorEyeHeightSample{};
+		std::uint64_t m_floorReferenceRevision{1};
+		std::uint64_t m_handReferenceRevision{1};
+		Common::FieldPresentationState m_fieldPresentation{};
 		Common::OverlayVisibilitySettings m_overlayVisibility{};
 		Common::RenderQualitySettings m_renderQuality{};
 #if defined(_WIN64)
+		Common::UiText::GlyphAtlas m_uiTextAtlas;
+		Common::UiText::TextLayoutCache m_uiTextLayouts;
+		bool m_projectionRenderingFailed{false};
 		XrInstance m_instanceHandle{ XR_NULL_HANDLE };
 		XrSystemId m_systemId{ XR_NULL_SYSTEM_ID };
 		XrSession m_sessionHandle{ XR_NULL_HANDLE };
@@ -112,6 +122,7 @@ namespace BaseballSimulatorVR::Xr
 		bool m_usesDedicatedGraphicsDevice{ false };
 		bool m_isSessionRunning{ false };
 		XrTime m_lastPredictedDisplayTime{ 0 };
+		XrTime m_pendingReferenceChangeTime{ 0 };
 		std::wstring m_lastFrameSummary{ L"frame(pending)" };
 		std::wstring m_lastProjectionLayerStatus{ L"pending" };
 		PFN_xrGetD3D12GraphicsRequirementsKHR m_xrGetD3d12GraphicsRequirementsKhr{ nullptr };
@@ -229,22 +240,16 @@ namespace BaseballSimulatorVR::Xr
 
 		Microsoft::WRL::ComPtr<ID3D12Device> m_d3d12Device{};
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_d3d12Queue{};
-		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_xrCommandAllocator{};
-		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_xrCommandList{};
 		Microsoft::WRL::ComPtr<ID3D12Fence> m_xrFence{};
 		Microsoft::WRL::ComPtr<ID3D12RootSignature> m_debugRootSignature{};
 		Microsoft::WRL::ComPtr<ID3D12PipelineState> m_debugPipelineState{};
-		Microsoft::WRL::ComPtr<ID3D12PipelineState> m_debugAlphaPipelineState{};
 		Microsoft::WRL::ComPtr<ID3D12RootSignature> m_fxaaRootSignature{};
 		Microsoft::WRL::ComPtr<ID3D12PipelineState> m_fxaaPipelineState{};
-		Microsoft::WRL::ComPtr<ID3D12Resource> m_debugVertexBuffer{};
 		HANDLE m_xrFenceEvent{ nullptr };
 		UINT64 m_xrFenceValue{ 1 };
 		UINT m_rtvDescriptorSize{ 0 };
 		UINT m_dsvDescriptorSize{ 0 };
 		UINT m_srvDescriptorSize{ 0 };
-		D3D12_VERTEX_BUFFER_VIEW m_debugVertexBufferView{};
-		UINT m_debugVertexCapacity{ 0 };
 		bool m_isFxaaAvailable{ false };
 		std::wstring m_xrPostProcessStatus{ L"none" };
 
@@ -255,10 +260,7 @@ namespace BaseballSimulatorVR::Xr
 		XrCompositionLayerProjection m_projectionLayer{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
 
 		Physics::BallState m_latestBallState{};
-		double m_lastBallFlightTimeSeconds{ 0.0 };
-		std::vector<Physics::Vector3> m_ballTrajectory{};
-		std::chrono::steady_clock::time_point m_lastTrajectoryAdvanceTime{};
-		float m_trajectoryFadeScale{ 1.0F };
+		Common::PhaseTrajectoryTrails m_trajectoryTrails{};
 		std::optional<Physics::Vector3> m_duelZonePassMarker{};
 		std::optional<Common::BatOverlayState> m_batOverlayState{};
 		UiTelemetry m_uiTelemetry{};

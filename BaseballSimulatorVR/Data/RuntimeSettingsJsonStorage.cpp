@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <string>
 
@@ -64,7 +65,7 @@ namespace BaseballSimulatorVR::Data
 		    Physics::PitchIntegratorType& integratorType)
 		{
 			const std::optional<std::string> rawValue =
-			    Common::JsonKeyValueParser::ExtractRawValue(jsonText, key);
+			    Common::JsonKeyValueParser::ReadStringResult(jsonText, key).value;
 			if (!rawValue.has_value())
 			{
 				return false;
@@ -125,6 +126,7 @@ namespace BaseballSimulatorVR::Data
 			return false;
 		}
 
+		outputFile.imbue(std::locale::classic());
 		outputFile.setf(std::ios::fixed);
 		outputFile.precision(std::numeric_limits<double>::max_digits10);
 		outputFile << "{\n";
@@ -162,7 +164,7 @@ namespace BaseballSimulatorVR::Data
 		outputFile << "  \"batRadiusMeters\": " << settings.batRadiusMeters << ",\n";
 		outputFile << "  \"_comment_batLengthMeters\": \"Bat length [m]\",\n";
 		outputFile << "  \"batLengthMeters\": " << settings.batLengthMeters << ",\n";
-		outputFile << "  \"_comment_batBallRestitution\": \"Ball-bat restitution coefficient\",\n";
+		outputFile << "  \"_comment_batBallRestitution\": \"Normal wood bat-ball COR at 160 mph closing speed (speed-dependent, finite effective bat mass).\",\n";
 		outputFile << "  \"batBallRestitution\": " << settings.batBallRestitution << ",\n";
 		outputFile << "  \"_comment_batAngleOffsetDegrees\": \"Bat angle offset around local right axis [deg]\",\n";
 		outputFile << "  \"batAngleOffsetDegrees\": "
@@ -396,6 +398,7 @@ namespace BaseballSimulatorVR::Data
 			return false;
 		}
 
+		outputFile.imbue(std::locale::classic());
 		outputFile.setf(std::ios::fixed);
 		outputFile.precision(std::numeric_limits<double>::max_digits10);
 		const double clampedDuelPitchIntervalSeconds =
@@ -417,11 +420,11 @@ namespace BaseballSimulatorVR::Data
 		outputFile << "  \"batUseRightHand\": "
 		           << (settings.batUseRightHand ? "true" : "false")
 		           << ",\n";
-		outputFile << "  \"_comment_pitchTrajectoryVisible\": \"Show trajectory in PitchTrajectory mode\",\n";
+		outputFile << "  \"_comment_pitchTrajectoryVisible\": \"Show pitched-ball trajectory in every mode, independently of batted balls\",\n";
 		outputFile << "  \"pitchTrajectoryVisible\": "
 		           << (settings.pitchTrajectoryVisible ? "true" : "false")
 		           << ",\n";
-		outputFile << "  \"_comment_battedTrajectoryVisible\": \"Show trajectory in BattingDuel/Tee mode\",\n";
+		outputFile << "  \"_comment_battedTrajectoryVisible\": \"Show batted-ball trajectory in every mode, independently of pitches\",\n";
 		outputFile << "  \"battedTrajectoryVisible\": "
 		           << (settings.battedTrajectoryVisible ? "true" : "false")
 		           << ",\n";
@@ -431,7 +434,7 @@ namespace BaseballSimulatorVR::Data
 		    DuelTargetZoneCount);
 		outputFile << "  \"duelTargetZoneMask\": "
 		           << normalizedZoneMask << ",\n";
-		outputFile << "  \"_comment_duelTargetZoneIndex\": \"Legacy single-zone index for compatibility (null if none)\",\n";
+		outputFile << "  \"_comment_duelTargetZoneIndex\": \"Single-zone selection index (null if none)\",\n";
 		outputFile << "  \"duelTargetZoneIndex\": ";
 		std::optional<int> fallbackZoneIndex = NormalizeLegacyZoneIndex(
 		    settings.duelTargetZoneIndex);

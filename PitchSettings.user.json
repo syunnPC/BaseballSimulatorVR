@@ -1,4 +1,6 @@
 {
+  "_comment_pitcherThrowsLeftHanded": "Pitcher throws with the left hand when true; right hand when false.",
+  "pitcherThrowsLeftHanded": false,
   "_comment_initialSpeedMetersPerSecond": "Initial speed [m/s], direction fixed toward home plate.",
   "initialSpeedMetersPerSecond": 41.5,
   "_comment_releaseHeightMeters": "Pitch release height [m] before mound offset.",
