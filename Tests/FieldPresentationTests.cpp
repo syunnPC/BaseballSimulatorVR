@@ -3,8 +3,119 @@
 
 #include <cmath>
 
+namespace
+{
+    void CheckPitcherDeliveryForms()
+    {
+        using namespace BaseballSimulatorVR;
+        using Style = Common::PitcherDeliveryStyle;
+        struct Delivery { double height; Style style; bool toss{}; };
+        constexpr std::array deliveries{
+            Delivery{.1, Style::Submarine}, Delivery{.65, Style::Submarine},
+            Delivery{.651, Style::Sidearm}, Delivery{1.2, Style::Sidearm},
+            Delivery{1.5, Style::Sidearm}, Delivery{1.501, Style::Overhand},
+            Delivery{1.8, Style::Overhand}, Delivery{2.5, Style::Overhand},
+            Delivery{.82, Style::UnderhandToss, true}};
+        const auto finite = [](const auto& p)
+        { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); };
+        for (const auto& delivery : deliveries)
+        for (double tempo : {.25, .5, 1., 2.})
+        {
+            Common::PitcherPresentationState state;
+            state.visible = true;
+            state.moundHeightMeters = .18;
+            state.releasePositionWorld = {-.31, state.moundHeightMeters + delivery.height, -19.94};
+            state.armSpeedScale = tempo;
+            state.underhandToss = delivery.toss;
+            Tests::Check(Common::GetPitcherDeliveryStyle(state) == delivery.style,
+                "Release height selects submarine, sidearm or overhand, with toss overriding the thresholds");
+            Physics::Vector3 previousHand{};
+            for (int frame = 0; frame <= 240; ++frame)
+            {
+                state.secondsFromRelease = -1.2 + frame * (1.2 + .6 / tempo) / 240.;
+                const auto pose = Common::BuildPitcherPose(state);
+                Tests::Check(pose.scale >= 1. && pose.scale <= 1.2 &&
+                    (delivery.style == Style::Overhand || pose.scale == 1.),
+                    "Low deliveries retain adult body dimensions throughout the motion");
+                Tests::Check(finite(pose.pelvis) && finite(pose.chest) && finite(pose.head) &&
+                    finite(pose.rightElbow) && finite(pose.rightHand) && finite(pose.leftElbow) &&
+                    finite(pose.rightKnee) && finite(pose.leftKnee),
+                    "Every delivery has finite connected joints throughout windup, acceleration and follow-through");
+                Tests::Check(pose.leftFoot.y >= state.moundHeightMeters &&
+                    pose.rightFoot.y >= state.moundHeightMeters &&
+                    pose.pelvis.y >= state.moundHeightMeters + .3 &&
+                    pose.head.y >= state.moundHeightMeters + .6,
+                    "Low release comes from a grounded crouch and torso lean rather than moving the body underground");
+                Tests::Check(std::abs(Physics::Length(pose.chest - pose.pelvis) - .53 * pose.scale) < 1e-10,
+                    "Leaning and crouching preserve the adult torso length");
+                for (const auto& arm : {std::array{pose.rightShoulder, pose.rightElbow, pose.rightHand},
+                    std::array{pose.leftShoulder, pose.leftElbow, pose.leftHand}})
+                {
+                    Tests::Check(std::abs(Physics::Length(arm[1] - arm[0]) - Common::PitcherArmSegmentMeters * pose.scale) < 1e-10 &&
+                        std::abs(Physics::Length(arm[2] - arm[1]) - Common::PitcherArmSegmentMeters * pose.scale) < 1e-10,
+                        "Both upper arms and forearms keep physical segment lengths through the complete delivery");
+                }
+                if (frame > 0)
+                    Tests::Check(Physics::Length(pose.rightHand - previousHand) < .18,
+                        "Slow and fast deliveries move continuously through every animation phase");
+                previousHand = pose.rightHand;
+            }
+            for (double referenceTime : {-1.2, -.42, -.06, 0., .22, .6})
+            {
+                state.secondsFromRelease = referenceTime == -1.2 ? -1.2 : referenceTime / tempo;
+                const auto right = Common::BuildPitcherPose(state);
+                auto leftState = state;
+                leftState.throwsLeftHanded = true;
+                const auto left = Common::BuildPitcherPose(leftState);
+                const auto mirror = [&](Physics::Vector3 point)
+                { point.x = 2. * state.releasePositionWorld.x - point.x; return point; };
+                const std::array pairs{
+                    std::pair{right.pelvis, left.pelvis}, std::pair{right.chest, left.chest},
+                    std::pair{right.head, left.head}, std::pair{right.rightShoulder, left.leftShoulder},
+                    std::pair{right.rightElbow, left.leftElbow}, std::pair{right.rightHand, left.leftHand},
+                    std::pair{right.leftShoulder, left.rightShoulder}, std::pair{right.leftElbow, left.rightElbow},
+                    std::pair{right.leftHand, left.rightHand}, std::pair{right.rightHip, left.leftHip},
+                    std::pair{right.rightKnee, left.leftKnee}, std::pair{right.rightFoot, left.leftFoot},
+                    std::pair{right.leftHip, left.rightHip}, std::pair{right.leftKnee, left.rightKnee},
+                    std::pair{right.leftFoot, left.rightFoot}, std::pair{right.heldBall, left.heldBall}};
+                for (const auto& [a, b] : pairs)
+                    Tests::Check(Physics::Length(mirror(a) - b) < 1e-10,
+                        "All delivery joints and the held ball mirror exactly for a left-handed pitcher");
+                if (referenceTime == 0.)
+                {
+                    Tests::Check(Physics::Length(right.rightHand - state.releasePositionWorld) < 1e-10 &&
+                        Physics::Length(right.heldBall - state.releasePositionWorld) < 1e-10 &&
+                        Physics::Length(left.leftHand - state.releasePositionWorld) < 1e-10 &&
+                        Physics::Length(left.heldBall - state.releasePositionWorld) < 1e-10,
+                        "Every form and tempo places either throwing hand and ball at the exact configured release");
+                    if (delivery.height == .1)
+                        Tests::Check(right.chest.y < state.moundHeightMeters + .7 &&
+                            right.chest.z - right.pelvis.z > .4 && right.head.y > state.moundHeightMeters + .6,
+                            "The ten-centimeter submarine release bends an adult torso forward above the mound");
+                    if (delivery.height == 1.2)
+                        Tests::Check(std::abs(right.rightHand.y - right.rightShoulder.y) < .2 &&
+                            std::abs(right.rightHand.x - right.rightShoulder.x) > .35,
+                            "Sidearm release extends laterally near shoulder height");
+                    if (delivery.height == 1.8)
+                        Tests::Check(right.rightHand.y - right.rightShoulder.y > .3,
+                            "Overhand release brings the throwing hand above the shoulder");
+                }
+                if (referenceTime >= -.06 || referenceTime == -1.2)
+                {
+                    auto normalTempo = state;
+                    normalTempo.armSpeedScale = 1.;
+                    normalTempo.secondsFromRelease = referenceTime;
+                    Tests::Check(Physics::Length(right.rightHand - Common::BuildPitcherPose(normalTempo).rightHand) < 1e-10,
+                        "Each form retains the shared preset tempo for the forward swing and follow-through");
+                }
+            }
+        }
+    }
+}
+
 void RunFieldPresentationTests()
 {
+    CheckPitcherDeliveryForms();
     using namespace BaseballSimulatorVR;
     Common::PitcherPresentationState pitcher{};
     pitcher.visible = true;
@@ -112,6 +223,15 @@ void RunFieldPresentationTests()
     Common::SetGroundRuntimeSettings({145});
     const auto board = Common::BuildFieldScoreboardLayout();
     Tests::Check(std::abs(board.centerZ + 146.0) < 1e-10,"Scoreboard is fixed behind the configured center field radius");
+    Tests::Check(std::abs(board.unitsPerLayoutUnit - 1.45) < 1e-10 &&
+        std::abs(board.width - 44 * board.unitsPerLayoutUnit) < 1e-10 &&
+        std::abs(board.height - 17 * board.unitsPerLayoutUnit) < 1e-10,
+        "The original board dimensions and typography scale with center-field distance");
+    Common::FieldStatisticsState diagramState{};
+    const auto distantPlot = Common::BuildFieldPitchPlotLayout(diagramState);
+    Tests::Check(std::abs(distantPlot.width / board.unitsPerLayoutUnit - 11.8) < 1e-10 &&
+        std::abs(distantPlot.height / board.unitsPerLayoutUnit - 9.6) < 1e-10,
+        "The catcher diagram retains its original angular drawing-area dimensions on a distant field");
     Common::SetGroundRuntimeSettings({10});
     Common::SetPitchDistanceMeters(30);
     Tests::Check(Common::BuildFieldScoreboardLayout().centerZ < -40,
@@ -142,9 +262,8 @@ void RunFieldPresentationTests()
     Tests::Check(concealed[0] == L"球種  --" &&
         concealed[1] == L"球速  -- km/h    回転  -- rpm",
         "A concealed upcoming pitch renders placeholders rather than zeroes or secret values");
-    Tests::Check(concealed[2].find(L"180.0") == std::wstring::npos &&
-        concealed[3].find(L"116.7") == std::wstring::npos,
-        "Concealed pitch display cannot leak a supplied previous batted result");
+	Tests::Check(concealed[2] == landed[2] && concealed[3] == landed[3],
+	    "Batted results are independent of concealed pitch metrics, including tee batting");
     metrics.pitchMetricsVisible = true;
     metrics.hasBattedMetrics = false;
     const auto newBall = Common::BuildFieldStatisticsLines(metrics);

@@ -2,12 +2,17 @@
 
 #include "../Physics/PitchIntegratorType.hpp"
 #include "../Physics/Vector3.hpp"
+#include "../Physics/BallProperties.hpp"
 
 namespace BaseballSimulatorVR::Baseball
 {
 	struct PitchParameters final
 	{
 		Physics::Vector3 initialVelocity{ 0.0, 0.0, 40.0 };
+		double launchElevationDegrees{ 0.0 };
+		bool usePhysicalAerodynamics{ false };
+		bool underhandToss{ false };
+		Physics::BallProperties ballProperties{};
 		double releaseHeightMeters{ 1.8 };
 		Physics::Vector3 spinAxis{ 0.0, 1.0, 0.0 };
 		Physics::Vector3 windVelocity{};

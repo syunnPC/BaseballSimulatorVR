@@ -202,6 +202,19 @@ void RunUiPanelRenderingTests()
     field.statistics.pitchName=L"山本由伸・フォーシーム";
     field.statistics.pitchSpeedMetersPerSecond=43.1;
     field.statistics.pitchSpinRpm=2450;
+    field.statistics.zoneCall=Common::PitchZoneCall::Strike;
+    field.statistics.hasPitchBreak=true;
+    field.statistics.pitchHorizontalBreakMeters=-.18;
+    field.statistics.pitchVerticalBreakMeters=-.90;
+    field.statistics.pitchTrace={{0,1.9,0},{-.01,1.85,4},{-.04,1.7,8},{-.09,1.4,12},{-.18,1.0,18.44}};
+    field.statistics.hasBattedMetrics=true;
+    field.statistics.battedLaunchSpeedMetersPerSecond=45;
+    field.statistics.battedLaunchAngleDegrees=28;
+    field.statistics.battedDistanceMeters=95;
+    field.statistics.battedHasGroundContact=true;
+    field.statistics.battedMaxHeightMeters=24;
+    field.statistics.hasBatContactPosition=true;
+    field.statistics.batContactFraction=.82;
     view.position={20,2,0};
     view.orientation={0,std::sin(.09),0};
     view.orientationW=std::cos(.09);
@@ -233,6 +246,26 @@ void RunUiPanelRenderingTests()
             ++boardInk;
         }
     Check(boardInk>20, "Production field board displays Japanese and numeric text through the GPU atlas");
+
+    view.position={0,12,-60};
+    view.orientation={};
+    view.orientationW=1;
+    vertices.clear();
+    context.groups.clear();
+    atlas.BeginFrame();
+    Ui::EmitProjectedFieldPresentation(field,view,gpu.width,gpu.height,context,
+        [](const auto&,const auto&,const auto&,const float*) {});
+    Ui::SortAtlasTrianglesBackToFront(vertices);
+    const auto detailPixels=draw(pipeline);
+    SavePreview(detailPixels,gpu.width,gpu.height,L"UiBoardDetailRegression.bmp");
+    std::size_t greenInk=0, endpointInk=0;
+    for (const auto& pixel : detailPixels)
+    {
+        if (pixel[1]>210 && pixel[0]<90 && pixel[2]<130) ++greenInk;
+        if (pixel[0]>240 && pixel[1]>150 && pixel[1]<195 && pixel[2]<85) ++endpointInk;
+    }
+    Check(greenInk>20 && endpointInk>=8,
+        "The production GPU scoreboard preserves the green sweet spot, contact marker and pitch endpoint marker");
 
     // A near plane crossing clips the glyph polygon and its UVs together. It
     // must retain the visible half instead of rejecting the complete letter.
@@ -269,6 +302,164 @@ void RunUiPanelRenderingTests()
         [](double x,double y) { return BaseballSimulatorVR::Physics::Vector3{x*.0006,y*.0006,-.01}; },
         view,gpu.width,gpu.height,context);
     Check(vertices.empty(), "A glyph entirely behind the near plane emits no triangles");
+
+    {
+        namespace Physics = BaseballSimulatorVR::Physics;
+        view = Common::ViewProjectionState{};
+        view.isValid = true;
+        std::vector<Ui::AtlasVertex> allBodies, allShells;
+        std::array<Tests::GpuTestContext::Pixel, 3> tintedCenters{};
+        const auto drawBat = [&](const std::vector<Ui::AtlasVertex>& body,
+                                 const std::vector<Ui::AtlasVertex>& shell)
+        {
+            gpu.Begin();
+            Check(pipeline.UploadAndDraw(gpu.commands.Get(), atlas, body, gpu.width, gpu.height),
+                  "Draw the material body below the sweet-spot shell");
+            if (!shell.empty())
+                Check(laggingPipeline.UploadAndDraw(gpu.commands.Get(), atlas, shell, gpu.width, gpu.height),
+                      "Draw the translucent bat shell through the production alpha shader");
+            return gpu.ReadPixels();
+        };
+        for (std::size_t index = 0; index < 3; ++index)
+        {
+            const auto material = static_cast<Physics::BatMaterial>(index);
+            const double y = .18 - .18 * index;
+            const double depth = Common::GetPitchDistanceMeters() +
+                                 Common::DebugWorldLayout::BatterToPlateDistanceMeters - 1.;
+            Common::BatOverlayState bat{{-.42, y, depth}, {.42, y, depth}, .035, material};
+            std::vector<Ui::AtlasVertex> body, shell;
+            Common::EmitProjectedSolidBatOverlay(view, gpu.width, gpu.height, bat,
+                [&](const auto& p0, const auto& p1, const auto& p2, const float* color)
+                {
+                    auto& bucket = color[3] < .999F ? shell : body;
+                    Ui::AppendUntexturedTriangle(bucket, p0, p1, p2, color, gpu.width, gpu.height);
+                });
+            Check(!body.empty() && !shell.empty(), "A material bat emits both its body and a separate translucent shell");
+            Ui::SortAtlasTrianglesBackToFront(body);
+            Ui::SortAtlasTrianglesBackToFront(shell);
+            const auto barePixels = drawBat(body, {});
+            const auto overlaidPixels = drawBat(body, shell);
+            const auto& profile = Physics::GetBatMaterialProfile(material);
+            const double sweetRatio = .5 * (profile.sweetSpotStartRatio + profile.sweetSpotEndRatio);
+            Common::ScreenPoint sweetCenter{}, bodyCenter{};
+            Check(Common::TryProjectWorldToScreen({-.42 + .84 * sweetRatio, y, -1.},
+                      view, gpu.width, gpu.height, &sweetCenter) &&
+                  Common::TryProjectWorldToScreen({-.20, y, -1.}, view, gpu.width, gpu.height, &bodyCenter),
+                  "Project interior samples of the shell and unmarked material body");
+            const auto pixelIndex = [&](const Common::ScreenPoint& point)
+            {
+                return static_cast<std::size_t>(std::lround(point.y)) * gpu.width +
+                       static_cast<std::size_t>(std::lround(point.x));
+            };
+            const auto center = pixelIndex(sweetCenter);
+            const auto& tint = Common::DebugWorldStyle::BatSweetSpotColor;
+            Check(tint[3] > 0.F && tint[3] < .5F, "The green cylinder remains a faint translucent overlay");
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                const double expected = barePixels[center][channel] * (1. - tint[3]) +
+                                        255. * tint[channel] * tint[3];
+                Check(std::abs(overlaidPixels[center][channel] - expected) < 3.,
+                      "Actual GPU pixels blend one green shell layer over the visible material color");
+            }
+            Check(overlaidPixels[pixelIndex(bodyCenter)] == barePixels[pixelIndex(bodyCenter)],
+                  "The shell leaves the material appearance outside the sweet zone unchanged");
+            tintedCenters[index] = overlaidPixels[center];
+            allBodies.insert(allBodies.end(), body.begin(), body.end());
+            allShells.insert(allShells.end(), shell.begin(), shell.end());
+        }
+        Check(tintedCenters[0] != tintedCenters[1] && tintedCenters[1] != tintedCenters[2] &&
+                  tintedCenters[0] != tintedCenters[2],
+              "Wood, metal and urethane remain distinguishable through the green shell");
+        Ui::SortAtlasTrianglesBackToFront(allShells);
+        SavePreview(drawBat(allBodies, allShells), gpu.width, gpu.height, L"BatMaterialRegression.bmp");
+    }
+    {
+        namespace Physics = BaseballSimulatorVR::Physics;
+        view = Common::ViewProjectionState{};
+        view.isValid = true;
+        const double offset = Common::GetPitchDistanceMeters() +
+                              Common::DebugWorldLayout::BatterToPlateDistanceMeters;
+        const auto drawTrajectory = [&](const std::vector<Physics::Vector3>& worldPath)
+        {
+            std::vector<Physics::Vector3> simulationPath = worldPath;
+            for (auto& point : simulationPath) point.z += offset;
+            vertices.clear();
+            Common::EmitProjectedBallAndTrajectoryMeshOverlay(view, gpu.width, gpu.height,
+                simulationPath, {}, [&](const auto& a, const auto& b, const auto& c, const float* color)
+                {
+                    Ui::AppendUntexturedTriangle(vertices, a, b, c, color, gpu.width, gpu.height);
+                }, 1.F, 0.F, false, Common::TrajectoryColorMode::Uniform);
+            Ui::SortAtlasTrianglesBackToFront(vertices);
+            return draw(pipeline);
+        };
+        for (double eye : {0., -.032, .032})
+        {
+            view.position.x = eye;
+            const auto pixels = drawTrajectory({{0.,0.,-2.}, {0.,0.,-3.}, {0.,0.,-4.}});
+            std::size_t trajectoryInk = 0;
+            for (const auto& pixel : pixels) if (pixel[2] > 20) ++trajectoryInk;
+            Check(trajectoryInk > 20, "Actual GPU trajectory pixels remain visible end-on and in both XR eye positions");
+        }
+        view.position = {};
+        const auto clipped = drawTrajectory({{-.1,0.,-.01}, {.1,0.,-.2}});
+        std::size_t clippedTrajectoryInk = 0;
+        for (const auto& pixel : clipped) if (pixel[2] > 20) ++clippedTrajectoryInk;
+        Check(clippedTrajectoryInk > 100, "A near-plane crossing retains its visible trajectory in actual GPU pixels");
+        const auto before = drawTrajectory({{-.4,0.,-2.}, {0.,0.,-2.}});
+        const auto after = drawTrajectory({{-.4,0.,-2.}, {0.,0.,-2.}, {.4,1.,-3.}});
+        bool prefixUnchanged = true;
+        std::size_t prefixInk = 0;
+        for (UINT y = 0; y < gpu.height; ++y)
+        for (UINT x = 0; x < gpu.width / 2 - 30; ++x)
+        {
+            const auto index = static_cast<std::size_t>(y) * gpu.width + x;
+            prefixUnchanged &= before[index] == after[index];
+            if (before[index][2] > 20) ++prefixInk;
+        }
+        Check(prefixUnchanged && prefixInk > 20,
+              "Extending a curved trajectory leaves all earlier visible GPU pixels unchanged");
+    }
+    {
+        view = Common::ViewProjectionState{};
+        view.isValid = true;
+        view.position = {0, 1.1, 0};
+        view.fovUpRadians = .45;
+        view.fovDownRadians = -.45;
+        view.fovRightRadians = std::atan(std::tan(.45) * gpu.width / gpu.height);
+        view.fovLeftRadians = -view.fovRightRadians;
+        constexpr std::array<double, 3> heights{1.8, 1.2, .1};
+        constexpr std::array<double, 2> times{-.12, 0};
+        constexpr std::array<const wchar_t*, 3> forms{L"Overhand", L"Sidearm", L"Submarine"};
+        for (int row = 0; row < 2; ++row)
+        for (int column = 0; column < 3; ++column)
+        {
+            vertices.clear();
+            Common::PitcherPresentationState pitcher;
+            pitcher.visible = true;
+            pitcher.secondsFromRelease = times[row];
+            pitcher.releasePositionWorld = {-.2, heights[column] + .18, -3.5};
+            pitcher.moundHeightMeters = .18;
+            std::size_t triangles = 0;
+            Common::EmitProjectedPitcherMesh(pitcher, view, gpu.width, gpu.height,
+                [&](auto a, auto b, auto c, const float* color)
+                {
+                    ++triangles;
+                    Ui::AppendUntexturedTriangle(vertices, a, b, c, color, gpu.width, gpu.height);
+                });
+            Check(triangles > 300, "Every delivery form produces visible projected pitcher surfaces before and at release");
+            Ui::SortAtlasTrianglesBackToFront(vertices);
+            const auto deliveryPixels = draw(pipeline);
+            const std::wstring filename = std::wstring{L"Pitcher"} + forms[column] +
+                (row == 0 ? L"WindupRegression.bmp" : L"ReleaseRegression.bmp");
+            SavePreview(deliveryPixels, gpu.width, gpu.height, filename.c_str());
+            std::size_t uniformInk = 0;
+            for (const auto& pixel : deliveryPixels)
+            {
+                if (pixel[0] > 80 && pixel[1] > 80 && pixel[2] > 80) ++uniformInk;
+            }
+            Check(uniformInk > 1000, "All three full-size pitcher forms survive the production GPU shader and depth ordering");
+        }
+    }
     if (messages)
         for (UINT64 i=0; i<messages->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i)
         {

@@ -1415,15 +1415,16 @@ namespace BaseballSimulatorVR::Render
 				    {
 					    drawFallbackLine(startPoint, endPoint, halfSize, color);
 				    },
-				    m_fieldPresentation.ballVisible,
+				    true,
 				    m_overlayVisibility.showFloorMesh,
-				    m_overlayVisibility.showStrikeZone,
+				    true,
 			    m_fieldPresentation.ballVisible);
 				Common::EmitProjectedZonePassCircleOverlay(
 				    mirrorViewState,
 				    width,
 				    height,
 				    m_duelZonePassMarker,
+				    m_latestBallState.properties.radiusMeters,
 				    [&](const ScreenPoint& startPoint,
 				        const ScreenPoint& endPoint,
 				        const LONG halfSize,
@@ -1431,7 +1432,7 @@ namespace BaseballSimulatorVR::Render
 				    {
 					    drawFallbackLine(startPoint, endPoint, halfSize, color);
 				    });
-				Common::EmitProjectedBatCylinderOverlay(
+				Common::EmitProjectedBatOverlay(
 				    mirrorViewState,
 				    width,
 				    height,
@@ -1446,9 +1447,7 @@ namespace BaseballSimulatorVR::Render
 			}
 			else
 			{
-				if (m_fieldPresentation.ballVisible)
-				{
-					m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryTrail& trail) {
+					m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryRenderSpan& trail) {
 for (const Physics::Vector3& trailPoint : trail.Points())
 					{
 						const ScreenPoint screenPoint =
@@ -1459,12 +1458,11 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 						    Common::DebugWorldStyle::TrailColor.data());
 					}
 });
-				}
 				const ScreenPoint ballScreenPoint =
 				    Common::ProjectLegacyWorldToScreen(m_latestBallState.position, width, height);
 				if (m_fieldPresentation.ballVisible) drawFallbackMarker(
 				    ballScreenPoint,
-				    Common::DebugWorldStyle::BallHalfSizePixels,
+				    Common::LegacyBallMarkerHalfSizePixels(m_latestBallState.properties.radiusMeters),
 				    Common::DebugWorldStyle::BallColor.data());
 				if (m_duelZonePassMarker.has_value())
 				{
@@ -1472,8 +1470,7 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 					const Physics::Vector3 centerWorldPoint =
 					    Common::ConvertSimulationPositionToWorld(
 					        m_duelZonePassMarker.value());
-					constexpr double CircleRadiusMeters =
-					    Common::DebugWorldStyle::BallMeshRadiusMeters;
+					const double CircleRadiusMeters = m_latestBallState.properties.radiusMeters;
 					for (int segmentIndex = 0; segmentIndex < ZoneCircleSegmentCount;
 					     ++segmentIndex)
 					{
@@ -1564,7 +1561,6 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 		Common::UiText::AtlasDrawContext textContext{ m_textGlyphAtlas, m_textLayouts, alphaVertices };
 		bool hasVisibleCoverage = false;
 		const bool hasWorldMirror = m_mirrorViewState.isValid;
-		bool usedLegacyCoverageFallback = false;
 		bool usedCenterCoverageFallback = false;
 
 		auto selectVertexBucket =
@@ -1672,7 +1668,7 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 		const Common::ViewProjectionState mirrorViewState = m_mirrorViewState;
 		if (!mirrorViewState.isValid)
 		{
-			m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryTrail& trail) {
+			m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryRenderSpan& trail) {
 for (const Physics::Vector3& trailPoint : trail.Points())
 			{
 				const ScreenPoint screenPoint =
@@ -1683,12 +1679,12 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 
 			const ScreenPoint ballScreenPoint =
 			    Common::ProjectLegacyWorldToScreen(m_latestBallState.position, width, height);
-			if (m_fieldPresentation.ballVisible) appendMarker(ballScreenPoint, Common::DebugWorldStyle::BallHalfSizePixels, Common::DebugWorldStyle::BallColor.data());
+			if (m_fieldPresentation.ballVisible) appendMarker(ballScreenPoint, Common::LegacyBallMarkerHalfSizePixels(m_latestBallState.properties.radiusMeters), Common::DebugWorldStyle::BallColor.data());
 			if (m_duelZonePassMarker.has_value())
 			{
 				constexpr int ZoneCircleSegmentCount = 24;
 				const double radiusPixels =
-				    static_cast<double>(Common::DebugWorldStyle::BallHalfSizePixels);
+				    static_cast<double>(Common::LegacyBallMarkerHalfSizePixels(m_latestBallState.properties.radiusMeters));
 				const ScreenPoint centerPoint =
 				    Common::ProjectLegacyWorldToScreen(
 				        m_duelZonePassMarker.value(),
@@ -1767,13 +1763,14 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 			    },
 			    false,
 			    false,
-			    m_overlayVisibility.showStrikeZone,
+			    true,
 			    false);
 			Common::EmitProjectedZonePassCircleOverlay(
 			    mirrorViewState,
 			    width,
 			    height,
 			    m_duelZonePassMarker,
+			    m_latestBallState.properties.radiusMeters,
 			    [&](const ScreenPoint& startPoint,
 			        const ScreenPoint& endPoint,
 			        const LONG halfSize,
@@ -1785,7 +1782,7 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 				        halfSize,
 				        color);
 			    });
-			Common::EmitProjectedSolidBatCylinderOverlay(
+			Common::EmitProjectedSolidBatOverlay(
 			    mirrorViewState,
 			    width,
 			    height,
@@ -1798,8 +1795,6 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 				    appendTriangle(p0, p1, p2, color);
 			    });
 
-			if (m_fieldPresentation.ballVisible)
-			{
 			Common::EmitProjectedPhaseBallAndTrajectoryMeshOverlay(
 			    mirrorViewState,
 			    width,
@@ -1816,14 +1811,12 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 			    std::clamp(
 			        m_renderQuality.trailOpacityScale,
 			        0.0F,
-			        1.5F));
-			}
+			        1.5F), m_fieldPresentation.ballVisible);
 		}
 
-		if (!hasVisibleCoverage)
+		if (!hasVisibleCoverage && !hasWorldMirror)
 		{
-			usedLegacyCoverageFallback = true;
-			m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryTrail& trail) {
+			m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryRenderSpan& trail) {
 for (const Physics::Vector3& trailPoint : trail.Points())
 			{
 				const ScreenPoint screenPoint =
@@ -1839,11 +1832,11 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 			    Common::ProjectLegacyWorldToScreen(m_latestBallState.position, width, height);
 			if (m_fieldPresentation.ballVisible) appendMarker(
 			    ballScreenPoint,
-			    Common::DebugWorldStyle::BallHalfSizePixels,
+			    Common::LegacyBallMarkerHalfSizePixels(m_latestBallState.properties.radiusMeters),
 			    Common::DebugWorldStyle::BallColor.data());
 		}
 
-		if (!hasVisibleCoverage)
+		if (!hasVisibleCoverage && !hasWorldMirror)
 		{
 			usedCenterCoverageFallback = true;
 			const double centerX =
@@ -1922,7 +1915,8 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 		const UINT opaqueVertexCount = static_cast<UINT>(opaqueVertices.size());
 		if ((opaqueVertexCount == 0U) && alphaVertices.empty())
 		{
-			SetDebugDrawPathStatus(L"empty-shader");
+			m_desktopRenderStatus.atlasVertexCount = 0;
+			SetDebugDrawPathStatus(hasWorldMirror ? L"empty-world-shader" : L"empty-shader");
 			return;
 		}
 
@@ -1965,10 +1959,6 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 		if (usedCenterCoverageFallback)
 		{
 			SetDebugDrawPathStatus(L"center-shader-fallback");
-		}
-		else if (hasWorldMirror && usedLegacyCoverageFallback)
-		{
-			SetDebugDrawPathStatus(L"world-shader-legacy-fallback");
 		}
 		else if (hasWorldMirror)
 		{

@@ -11,7 +11,9 @@
 #include "../Render/IRenderBackend.hpp"
 #include "../Simulation/PitchSimulationService.hpp"
 #include "../Simulation/PitchDeliveryController.hpp"
+#include "../Simulation/PitchFlightAnalysis.hpp"
 #include "../Common/StrikeZoneCalibration.hpp"
+#include "../Common/StrikeZoneSettings.hpp"
 #include "../UI/DesktopHudViewModel.hpp"
 #include "../XR/IXrSystem.hpp"
 #include "FrameStatistics.hpp"
@@ -53,15 +55,12 @@ namespace BaseballSimulatorVR::Core
 			double pitchDistanceMeters{ 18.44 };
 			bool enableMoundHeightOffset{ false };
 			double moundHeightOffsetMeters{ 0.18 };
-			double strikeZoneBottomMeters{ 0.55 };
-			double strikeZoneHeightMeters{ 1.00 };
-			double strikeZoneWidthMeters{ 0.44 };
 			Physics::Vector3 windVelocity{};
+			Physics::BallProperties ballProperties{};
 			bool enableHeightDependentWind{ false };
 			double windShearFactor{ 0.08 };
 			double batRadiusMeters{ 0.035 };
 			double batLengthMeters{ 0.84 };
-			double batBallRestitution{ 0.45 };
 			double batAngleOffsetDegrees{ 0.0 };
 			double batYawOffsetDegrees{ 0.0 };
 			double groundFanRadiusMeters{ 100.0 };
@@ -73,6 +72,8 @@ namespace BaseballSimulatorVR::Core
 		[[nodiscard]] bool InitializeWindow(HINSTANCE instanceHandle, int commandShow);
 		void ApplyPreset(Data::PitchPresetType presetType);
 		void ResetPitchSimulation();
+		void AdvancePitchSimulation(std::chrono::duration<double> delta);
+		void CommitPitchAnalysis(const Physics::Vector3& endpoint, double cutoffTime);
 		void ApplyPitchParameterChanges(
 		    bool preserveDirectionalVelocityForCurrentPitch = false);
 		void ApplyPitchParameterChangesAndLog(
@@ -116,9 +117,9 @@ namespace BaseballSimulatorVR::Core
 		    std::wstring_view eventType,
 		    std::wstring_view note);
 		void ApplyOverlayVisibilityChanges(std::wstring_view note = L"");
-		void TogglePitchTrajectoryVisibility();
+		void CyclePitchTrajectoryDisplayMode();
 		void ToggleBattedTrajectoryVisibility();
-		void ToggleStrikeZoneVisibility();
+		void CycleStrikeZoneDisplayMode();
 		void ToggleFloorMeshVisibility();
 		void ApplyRenderQualityChanges(std::wstring_view note = L"");
 		void AdjustFxaaQualityPreset(int delta);
@@ -130,11 +131,14 @@ namespace BaseballSimulatorVR::Core
 		void BeginStrikeZoneCalibration(
 		    std::wstring_view note = L"");
 		void UpdateStrikeZoneCalibration();
+		void ApplyStrikeZoneSettingsChanges(bool persist);
+		void AdjustStrikeZoneBoundary(bool upper, double deltaMeters);
 		[[nodiscard]] Common::FieldPresentationState BuildFieldPresentationState() const;
 		void AdjustPitchDistance(double deltaMeters);
 		void AdjustDuelPitchInterval(double deltaSeconds, std::wstring_view note = L"");
 		void ToggleDuelPitchPreview(std::wstring_view note = L"");
 		void ToggleBatHandedness(std::wstring_view note = L"");
+		void CycleBatMaterial(std::wstring_view note = L"");
 		void AdjustBatAngleOffset(double deltaDegrees, std::wstring_view note = L"");
 		void AdjustBatYawOffset(double deltaDegrees, std::wstring_view note = L"");
 		void SetDuelTargetZoneBias(int zoneIndex);
@@ -145,7 +149,7 @@ namespace BaseballSimulatorVR::Core
 		    int fileOffset,
 		    std::wstring_view note = L"");
 		void ToggleRandomPitchProfile(std::wstring_view note = L"");
-		void ApplyAutoZoneResultTag(const Physics::Vector3& zonePassPoint, std::wstring_view note);
+		void ApplyAutoZoneResultTag(Common::PitchZoneCall call, std::wstring_view note);
 		void SetOperationMode(OperationMode mode, std::wstring_view note = L"");
 		void StartRandomBattingDuelPitch(std::wstring_view note = L"");
 		[[nodiscard]] bool IsWaitingForNextDuelPitch() const noexcept;
@@ -195,6 +199,9 @@ namespace BaseballSimulatorVR::Core
 			bool hasFirstGroundContact{ false };
 			Physics::Vector3 contactPosition{};
 			Physics::Vector3 launchVelocity{};
+			bool hasBatContactPosition{false};
+			double batContactFraction{}, contactBatLengthMeters{.84};
+			double contactFlightTimeSeconds{};
 			double firstGroundDistanceMeters{ 0.0 };
 			double maxHeightMeters{ 0.0 };
 		};
@@ -207,6 +214,8 @@ namespace BaseballSimulatorVR::Core
 		Data::SessionLogRepository m_sessionLogRepository;
 		Simulation::PitchSimulationService m_pitchSimulationService;
 		Simulation::PitchDeliveryController m_pitchDeliveryController;
+		Simulation::PitchFlightAnalysis m_pitchFlightAnalysis;
+		std::vector<Physics::BallState> m_pendingPitchSamples{};
 		UI::DesktopHudViewModel m_desktopHudViewModel;
 		FrameStatistics m_frameStatistics;
 		Baseball::PitchParameters m_activePitchParameters{};
@@ -237,6 +246,8 @@ namespace BaseballSimulatorVR::Core
 		std::wstring m_fxaaQualityPresetLabel{ L"balanced" };
 		OperationMode m_operationMode{ OperationMode::PitchTrajectory };
 		EnvironmentSettings m_environmentSettings{};
+		Common::StrikeZoneRuntimeSettings m_strikeZoneSettings{};
+		bool m_strikeZoneConfigured{ false };
 		std::wstring m_environmentSettingsFilePath{
 			L"EnvironmentSettings.user.json"
 		};
@@ -248,6 +259,7 @@ namespace BaseballSimulatorVR::Core
 		double m_duelPitchElapsedSeconds{ 0.0 };
 		bool m_duelPitchPreviewEnabled{ true };
 		bool m_batUseRightHand{ true };
+		Physics::BatMaterial m_batMaterial{ Physics::BatMaterial::Wood };
 		bool m_isWaitingForNextDuelPitch{ false };
 		bool m_hasCurrentDuelPitchPassedZone{ false };
 		bool m_hasDuelBallBeenBatted{ false };
@@ -265,6 +277,7 @@ namespace BaseballSimulatorVR::Core
 		bool m_hasTeeBattedBallBounced{ false };
 		double m_teePostBounceElapsedSeconds{ 0.0 };
 		BattedBallMetrics m_teeBattedMetrics{};
+		std::uint64_t m_battedContactSequence{ 0 };
 		bool m_hasPreviousTeeBallState{ false };
 		Physics::BallState m_previousTeeBallState{};
 		Physics::Vector3 m_teeBallPosition{ 0.0, 1.0, 18.44 };

@@ -5,6 +5,6 @@ namespace BaseballSimulatorVR::Physics
 	enum class BallAerodynamicsModel
 	{
 		PitchProfile,
-		BattedBall
+		Physical
 	};
 } // namespace BaseballSimulatorVR::Physics

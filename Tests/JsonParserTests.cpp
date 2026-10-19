@@ -64,6 +64,7 @@ namespace
 
 void RunJsonParserTests()
 {
+	using namespace BaseballSimulatorVR;
 	using namespace BaseballSimulatorVR::Common::JsonKeyValueParser;
 	using namespace BaseballSimulatorVR::Data;
 
@@ -226,6 +227,163 @@ void RunJsonParserTests()
 		    "Play round trip with null optional zone under comma locale");
 	}
 	const auto loadedPitch = presets.LoadPitchSettings(presetPath.wstring(), error);
+	for (const auto material : { Physics::BatMaterial::Wood, Physics::BatMaterial::Metal,
+	    Physics::BatMaterial::Urethane })
+	{
+		PlayRuntimeSettings play{};
+		play.batMaterial = material;
+		play.strikeZoneBottomMeters = .324;
+		play.strikeZoneHeightMeters = .318;
+		play.strikeZoneWidthMeters = .46;
+		play.strikeZoneConfigured = true;
+		Tests::Check(runtime.SavePlay(playPath.wstring(), play, error), "Save each bat material");
+		const auto restored = runtime.LoadPlay(playPath.wstring(), error);
+		Tests::Check(restored && restored->batMaterial == material && restored->strikeZoneConfigured &&
+		    restored->strikeZoneBottomMeters == .324 && restored->strikeZoneHeightMeters == .318 &&
+		    restored->strikeZoneWidthMeters == .46,
+		    "Bat materials and the player's independent strike-zone dimensions survive JSON round trip");
+	}
+	for (const auto pitchMode : {Common::PitchTrajectoryDisplayMode::None,
+	    Common::PitchTrajectoryDisplayMode::Full, Common::PitchTrajectoryDisplayMode::ZoneOnly})
+	{
+		for (const auto zoneMode : {Common::StrikeZoneDisplayMode::None,
+		    Common::StrikeZoneDisplayMode::Plane, Common::StrikeZoneDisplayMode::Box})
+		{
+			PlayRuntimeSettings play{};
+			play.pitchTrajectoryDisplayMode = pitchMode;
+			play.strikeZoneDisplayMode = zoneMode;
+			play.battedTrajectoryVisible = false;
+			Tests::Check(runtime.SavePlay(playPath.wstring(), play, error), "Save all overlay display modes");
+			const auto restored = runtime.LoadPlay(playPath.wstring(), error);
+			Tests::Check(restored && restored->pitchTrajectoryDisplayMode == pitchMode &&
+			    restored->strikeZoneDisplayMode == zoneMode && !restored->battedTrajectoryVisible,
+			    "Every pitch and zone display mode round trips independently of batted visibility");
+		}
+	}
+	const auto validPlay = Tests::ReadFile(playPath);
+	for (const auto key : {"pitchTrajectoryDisplayMode", "strikeZoneDisplayMode"})
+	{
+		for (const auto invalidValue : {"\"Unknown\"", "\"none\"", "true", "0", "null"})
+		{
+			auto invalid = validPlay;
+			const auto begin = invalid.find("\"" + std::string(key) + "\":");
+			invalid.replace(begin, invalid.find('\n', begin) - begin,
+			    "\"" + std::string(key) + "\": " + invalidValue + ",");
+			WriteFile(playPath, invalid);
+			Tests::Check(!runtime.LoadPlay(playPath.wstring(), error) && !error.empty(),
+			    "Unknown or incorrectly typed display mode is rejected");
+		}
+		auto missing = validPlay;
+		const auto begin = missing.find("\"" + std::string(key) + "\":");
+		missing.erase(begin, missing.find('\n', begin) - begin);
+		WriteFile(playPath, missing);
+		Tests::Check(!runtime.LoadPlay(playPath.wstring(), error), "Both display modes are required");
+	}
+	WriteFile(playPath, validPlay);
+	for (const bool invalidPitchMode : {false, true})
+	{
+		PlayRuntimeSettings invalid{};
+		if (invalidPitchMode) invalid.pitchTrajectoryDisplayMode = static_cast<Common::PitchTrajectoryDisplayMode>(99);
+		else invalid.strikeZoneDisplayMode = static_cast<Common::StrikeZoneDisplayMode>(99);
+		Tests::Check(!runtime.SavePlay(playPath.wstring(), invalid, error) && Tests::ReadFile(playPath) == validPlay,
+		    "Invalid display modes preserve the existing settings file on save");
+	}
+	struct InvalidZoneField { std::string_view key, value; };
+	for (const auto& field : {InvalidZoneField{"strikeZoneBottomMeters", "0.1"},
+	    InvalidZoneField{"strikeZoneBottomMeters", "2.4"}, InvalidZoneField{"strikeZoneHeightMeters", "0.19"},
+	    InvalidZoneField{"strikeZoneHeightMeters", "1.61"}, InvalidZoneField{"strikeZoneWidthMeters", "0.19"},
+	    InvalidZoneField{"strikeZoneWidthMeters", "0.81"}, InvalidZoneField{"strikeZoneConfigured", "0"},
+	    InvalidZoneField{"strikeZoneBottomMeters", "null"}, InvalidZoneField{"strikeZoneHeightMeters", "\"0.5\""}})
+	{
+		auto invalid = validPlay;
+		const auto begin = invalid.find("\"" + std::string(field.key) + "\":");
+		invalid.replace(begin, invalid.find('\n', begin) - begin,
+		    "\"" + std::string(field.key) + "\": " + std::string(field.value) + ",");
+		WriteFile(playPath, invalid);
+		Tests::Check(!runtime.LoadPlay(playPath.wstring(), error) && !error.empty(),
+		    "Player strike-zone dimensions and configured metadata reject incorrect types and out-of-range geometry");
+	}
+	for (const auto key : {"strikeZoneBottomMeters", "strikeZoneHeightMeters", "strikeZoneWidthMeters", "strikeZoneConfigured"})
+	{
+		auto missing = validPlay;
+		const auto begin = missing.find("\"" + std::string(key) + "\":");
+		missing.erase(begin, missing.find('\n', begin) - begin);
+		WriteFile(playPath, missing);
+		Tests::Check(!runtime.LoadPlay(playPath.wstring(), error), "Every player strike-zone field is required");
+	}
+	WriteFile(playPath, validPlay);
+	for (const double invalidHeight : {-.1, .19, 1.61, std::numeric_limits<double>::quiet_NaN()})
+	{
+		PlayRuntimeSettings invalid{};
+		invalid.strikeZoneHeightMeters = invalidHeight;
+		Tests::Check(!runtime.SavePlay(playPath.wstring(), invalid, error) && Tests::ReadFile(playPath) == validPlay,
+		    "Invalid player-zone saves preserve the previous play settings file");
+	}
+	for (const auto invalidValue : { "\"wood\"", "\"Carbon\"", "0", "null", "true" })
+	{
+		auto invalid = validPlay;
+		const auto begin = invalid.find("\"batMaterial\":");
+		invalid.replace(begin, invalid.find('\n', begin) - begin,
+		    std::string("\"batMaterial\": ") + invalidValue + ",");
+		WriteFile(playPath, invalid);
+		Tests::Check(!runtime.LoadPlay(playPath.wstring(), error) && !error.empty(),
+		    "Unknown or incorrectly typed bat material is rejected");
+	}
+	{
+		auto missing = validPlay;
+		const auto begin = missing.find("\"batMaterial\":");
+		missing.erase(begin, missing.find('\n', begin) - begin);
+		WriteFile(playPath, missing);
+		Tests::Check(!runtime.LoadPlay(playPath.wstring(), error), "Missing bat material is rejected");
+	}
+	WriteFile(playPath, validPlay);
+	PlayRuntimeSettings invalidPlay{};
+	invalidPlay.batMaterial = static_cast<Physics::BatMaterial>(99);
+	Tests::Check(!runtime.SavePlay(playPath.wstring(), invalidPlay, error) &&
+	    Tests::ReadFile(playPath) == validPlay,
+	    "Saving an invalid bat material preserves the previous settings file");
+
+	EnvironmentRuntimeSettings environment{};
+	environment.ballProperties.restitutionAtReferenceSpeed = .62;
+	Tests::Check(runtime.SaveEnvironment(environmentPath.wstring(), environment, error),
+	    "Save ball restitution as a ball property");
+	const auto restoredEnvironment = runtime.LoadEnvironment(environmentPath.wstring(), error);
+	Tests::Check(restoredEnvironment && restoredEnvironment->ballProperties.restitutionAtReferenceSpeed == .62,
+	    "Ball restitution survives an environment JSON round trip");
+	const auto validEnvironment = Tests::ReadFile(environmentPath);
+	Tests::Check(validEnvironment.find("\"batBallRestitution\"") == std::string::npos,
+	    "Environment output contains no obsolete bat restitution setting");
+	Tests::Check(validEnvironment.find("\"strikeZoneBottomMeters\"") == std::string::npos &&
+	    validEnvironment.find("\"strikeZoneHeightMeters\"") == std::string::npos &&
+	    validEnvironment.find("\"strikeZoneWidthMeters\"") == std::string::npos,
+	    "Environment files contain no player strike-zone settings");
+	for (const auto invalidValue : { "-0.01", "1.01", "\"0.45\"", "null", "true" })
+	{
+		auto invalid = validEnvironment;
+		const auto begin = invalid.find("\"ballRestitutionAtReferenceSpeed\":");
+		invalid.replace(begin, invalid.find('\n', begin) - begin,
+		    std::string("\"ballRestitutionAtReferenceSpeed\": ") + invalidValue + ",");
+		WriteFile(environmentPath, invalid);
+		Tests::Check(!runtime.LoadEnvironment(environmentPath.wstring(), error) && !error.empty(),
+		    "Environment rejects invalid ball restitution instead of substituting a default");
+	}
+	{
+		auto missing = validEnvironment;
+		const auto begin = missing.find("\"ballRestitutionAtReferenceSpeed\":");
+		missing.erase(begin, missing.find('\n', begin) - begin);
+		WriteFile(environmentPath, missing);
+		Tests::Check(!runtime.LoadEnvironment(environmentPath.wstring(), error),
+		    "Environment requires the ball restitution setting");
+	}
+	WriteFile(environmentPath, validEnvironment);
+	for (const auto value : { -.01, 1.01, std::numeric_limits<double>::infinity(),
+	    std::numeric_limits<double>::quiet_NaN() })
+	{
+		environment.ballProperties.restitutionAtReferenceSpeed = value;
+		Tests::Check(!runtime.SaveEnvironment(environmentPath.wstring(), environment, error) &&
+		    Tests::ReadFile(environmentPath) == validEnvironment,
+		    "Saving invalid ball restitution leaves the previous environment file intact");
+	}
 	Tests::Check(loadedPitch && loadedPitch->pitcherThrowsLeftHanded,
 	    "Left-handed pitcher setting survives a JSON save/load round trip");
 	Tests::Check(
@@ -261,17 +419,17 @@ void RunJsonParserTests()
 	}
 	WriteFile(
 	    environmentPath,
-	    R"({"pitchDistanceMeters":18.44,"enableMoundHeightOffset":false,"moundHeightOffsetMeters":0.18,"integratorType":"Rk4"} garbage)");
+	    R"({"pitchDistanceMeters":18.44,"enableMoundHeightOffset":false,"moundHeightOffsetMeters":0.18,"ballRestitutionAtReferenceSpeed":0.45,"integratorType":"Rk4"} garbage)");
 	Tests::Check(
 	    !runtime.LoadEnvironment(environmentPath.wstring(), error),
 	    "Environment rejects trailing document garbage");
 	WriteFile(
 	    playPath,
-	    R"({"duelPitchIntervalSeconds":5,"playbackSpeedPercent":100,"duelTargetZoneIndex":"null"})");
+	    R"({"duelPitchIntervalSeconds":5,"playbackSpeedPercent":100,"batMaterial":"Wood","strikeZoneBottomMeters":0.55,"strikeZoneHeightMeters":1.0,"strikeZoneWidthMeters":0.44,"strikeZoneConfigured":false,"pitchTrajectoryDisplayMode":"Full","strikeZoneDisplayMode":"Box","duelTargetZoneIndex":"null"})");
 	Tests::Check(!runtime.LoadPlay(playPath.wstring(), error), "Play settings reject quoted null");
 	WriteFile(
 	    playPath,
-	    R"({"duelPitchIntervalSeconds":5,"playbackSpeedPercent":100,"duelTargetZoneIndex":null})");
+	    R"({"duelPitchIntervalSeconds":5,"playbackSpeedPercent":100,"batMaterial":"Wood","strikeZoneBottomMeters":0.55,"strikeZoneHeightMeters":1.0,"strikeZoneWidthMeters":0.44,"strikeZoneConfigured":false,"pitchTrajectoryDisplayMode":"Full","strikeZoneDisplayMode":"Box","duelTargetZoneIndex":null})");
 	Tests::Check(
 	    runtime.LoadPlay(playPath.wstring(), error).has_value(),
 	    "Play settings accept explicit null");

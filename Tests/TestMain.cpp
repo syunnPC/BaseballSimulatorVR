@@ -19,10 +19,20 @@ void RunUiPanelRenderingTests();
 void RunD3d12RenderFrameTests();
 void RunSceneGeometryTests();
 void RunTrajectoryTrailTests();
+void RunTrajectoryMeshTests();
 void RunBattedBallFlightTests();
+void RunTossPhysicsTests(const std::filesystem::path& sourceRoot);
+void RunBallRenderingTests();
+void RunStrikeZoneCalibrationUiTests();
+void RunMetricsPanelControlsTests();
+void RunUiPointerInputTests();
 void RunDesktopRenderResizeTests();
-void RunApplicationSimulationTests();
+void RunApplicationSimulationTests(const std::filesystem::path& sourceRoot);
 void RunBundledSettingsTests(const std::filesystem::path& sourceRoot);
+void RunBeginnerPresetTests(const std::filesystem::path& sourceRoot);
+void RunPitchPresetUiTests();
+void RunHomePlateGeometryTests();
+void RunPitchFlightAnalysisTests();
 
 int wmain(int argc, wchar_t** argv)
 {
@@ -33,6 +43,9 @@ int wmain(int argc, wchar_t** argv)
 	}
 	const std::filesystem::path sourceRoot(argv[1]);
 	const std::vector<std::pair<std::string_view, std::function<void()>>> suites{
+		{ "Readable pitch preset labels and full-width layout", RunPitchPresetUiTests },
+		{ "Swept ball and home plate prism geometry", RunHomePlateGeometryTests },
+		{ "Pitch verdict, frontal trace and total bending", RunPitchFlightAnalysisTests },
 		{ "JSON settings parser", RunJsonParserTests },
 		{ "Session log and CSV export", RunSessionLogTests },
 		{ "Frame statistics", RunFrameStatisticsTests },
@@ -48,9 +61,16 @@ int wmain(int argc, wchar_t** argv)
 		{ "Asynchronous per-view GPU submission and safe reuse", RunD3d12RenderFrameTests },
 		{ "Cached scene geometry and prepared projection equivalence", RunSceneGeometryTests },
 		{ "Independent pitch and batted trajectory history and rendering", RunTrajectoryTrailTests },
+		{ "Stable world trajectory mesh and near-plane clipping", RunTrajectoryMeshTests },
 		{ "Physical batted-ball aerodynamics and immutable pitch settings", RunBattedBallFlightTests },
-		{ "Application mode resets, collisions and calibration", RunApplicationSimulationTests },
-		{ "Bundled pitch and runtime settings", [&] { RunBundledSettingsTests(sourceRoot); } }
+		{ "Ball dimensions and underhand toss rendering", RunBallRenderingTests },
+		{ "Independent strike-zone calibration UI and progress", RunStrikeZoneCalibrationUiTests },
+		{ "Metrics controls and independent manual zone buttons", RunMetricsPanelControlsTests },
+		{ "Batting pointer visibility and intentional panel clicks", RunUiPointerInputTests },
+		{ "Nine-meter lob toss presets and variable ball physics", [&] { RunTossPhysicsTests(sourceRoot); } },
+		{ "Application mode resets, collisions and calibration", [&] { RunApplicationSimulationTests(sourceRoot); } },
+		{ "Bundled pitch and runtime settings", [&] { RunBundledSettingsTests(sourceRoot); } },
+		{ "Beginner softball presets and physical pitch shapes", [&] { RunBeginnerPresetTests(sourceRoot); } }
 	};
 	int failures = 0;
 	for (const auto& [name, run] : suites)

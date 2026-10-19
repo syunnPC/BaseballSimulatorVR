@@ -176,6 +176,8 @@ namespace BaseballSimulatorVR::Physics
 		}
 
 		const BallState sanitizedCurrentState = SanitizeBallState(currentState);
+		if (!sanitizedCurrentState.properties.IsValid())
+			throw std::invalid_argument("Invalid ball radius or mass");
 		BallState nextState = sanitizedCurrentState;
 		switch (pitchParameters.integratorType)
 		{
@@ -283,9 +285,9 @@ namespace BaseballSimulatorVR::Physics
 
 		switch (currentState.aerodynamicsModel)
 		{
-			case BallAerodynamicsModel::BattedBall:
+			case BallAerodynamicsModel::Physical:
 				return ComputeBattedBallAerodynamicAcceleration(relativeAirVelocity,
-				    currentState.spinAxis, currentState.spinRpm);
+				    currentState.spinAxis, currentState.spinRpm, currentState.properties);
 			case BallAerodynamicsModel::PitchProfile:
 				break;
 			default:

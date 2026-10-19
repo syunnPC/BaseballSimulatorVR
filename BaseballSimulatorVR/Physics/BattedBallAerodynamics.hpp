@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Vector3.hpp"
+#include "BallProperties.hpp"
 
 #include <cmath>
 #include <numbers>
@@ -22,7 +23,8 @@ namespace BaseballSimulatorVR::Physics
 	// Nathan (2017), Analysis of Baseball Trajectories, Eqs. 10-11.
 	// Dimensionless C_D and C_L for batted-ball flight.
 	[[nodiscard]] inline BattedBallAerodynamicCoefficients ResolveBattedBallAerodynamicCoefficients(
-	    const Vector3& relativeAirVelocity, const Vector3& spinAxis, double spinRpm)
+	    const Vector3& relativeAirVelocity, const Vector3& spinAxis, double spinRpm,
+	    const BallProperties& properties = {})
 	{
 		BattedBallAerodynamicCoefficients result;
 		result.drag = .297 + .0292 * (std::abs(spinRpm) / 1000.);
@@ -44,7 +46,7 @@ namespace BaseballSimulatorVR::Physics
 			return result;
 		}
 
-		result.transverseSpinFactor = AerodynamicBaseballRadiusMeters * transverseSpin / speed;
+		result.transverseSpinFactor = properties.radiusMeters * transverseSpin / speed;
 		result.lift =
 		    1.120 * result.transverseSpinFactor / (.583 + 2.333 * result.transverseSpinFactor);
 		result.liftDirection = transverseAngularVelocity / transverseSpin;
@@ -52,7 +54,8 @@ namespace BaseballSimulatorVR::Physics
 	}
 
 	[[nodiscard]] inline Vector3 ComputeBattedBallAerodynamicAcceleration(
-	    const Vector3& relativeAirVelocity, const Vector3& spinAxis, double spinRpm)
+	    const Vector3& relativeAirVelocity, const Vector3& spinAxis, double spinRpm,
+	    const BallProperties& properties = {})
 	{
 		const double speed = Length(relativeAirVelocity);
 		if (speed <= 1e-6)
@@ -60,11 +63,10 @@ namespace BaseballSimulatorVR::Physics
 			return {};
 		}
 		const auto coefficients =
-		    ResolveBattedBallAerodynamicCoefficients(relativeAirVelocity, spinAxis, spinRpm);
-		constexpr double accelerationScale = StandardAirDensityKilogramsPerCubicMeter *
-		                                     std::numbers::pi * AerodynamicBaseballRadiusMeters *
-		                                     AerodynamicBaseballRadiusMeters /
-		                                     (2. * AerodynamicBaseballMassKilograms);
+		    ResolveBattedBallAerodynamicCoefficients(relativeAirVelocity, spinAxis, spinRpm, properties);
+		const double accelerationScale = StandardAirDensityKilogramsPerCubicMeter *
+		    std::numbers::pi * properties.radiusMeters * properties.radiusMeters /
+		    (2. * properties.massKilograms);
 		const double dynamicPressurePerMass = accelerationScale * speed * speed;
 		return -(relativeAirVelocity / speed) * (dynamicPressurePerMass * coefficients.drag) +
 		       coefficients.liftDirection * (dynamicPressurePerMass * coefficients.lift);

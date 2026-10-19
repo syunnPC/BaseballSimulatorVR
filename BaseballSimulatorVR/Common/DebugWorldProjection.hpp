@@ -2,12 +2,17 @@
 
 #include "../Framework.hpp"
 #include "../Physics/BallState.hpp"
+#include "../Physics/BatGeometry.hpp"
 #include "../Physics/Vector3.hpp"
 #include "BatOverlayState.hpp"
+#include "HomePlateGeometry.hpp"
 #include "PreparedWorldProjection.hpp"
 #include "IndexedWorldMesh.hpp"
+#include "TrajectoryTubeMesh.hpp"
 #include "ViewProjectionState.hpp"
 #include "StrikeZoneCalibration.hpp"
+#include "StrikeZoneSettings.hpp"
+#include "StrikeZoneTrajectoryGeometry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -65,13 +71,6 @@ namespace BaseballSimulatorVR::Common
 		inline constexpr double UiLaserMaxDistanceMeters = 3.2;
 		inline constexpr float UiLaserOverlayDepth = 0.001F;
 	} // namespace DebugWorldLayout
-
-	struct StrikeZoneRuntimeSettings final
-	{
-		double bottomMeters{ DebugWorldLayout::StrikeZoneBottomMeters };
-		double heightMeters{ DebugWorldLayout::StrikeZoneHeightMeters };
-		double widthMeters{ DebugWorldLayout::StrikeZoneWidthMeters };
-	};
 
 	struct GroundRuntimeSettings final
 	{
@@ -164,9 +163,8 @@ namespace BaseballSimulatorVR::Common
 		inline constexpr LONG BallHalfSizePixels = 8;
 		inline constexpr LONG TrailHalfSizePixels = 4;
 		inline constexpr LONG WorldLineHalfSizePixels = 2;
-		inline constexpr LONG PlateMarkerHalfSizePixels = 2;
 		inline constexpr LONG UiLaserHalfSizePixels = 1;
-		inline constexpr double BallMeshRadiusMeters = 0.037;
+		inline constexpr LONG UiLaserHitHalfSizePixels = 4;
 		inline constexpr int BallMeshLatitudeSegments = 24;
 		inline constexpr int BallMeshLongitudeSegments = 40;
 		inline constexpr double TrailMeshHalfWidthMeters = 0.03;
@@ -175,6 +173,7 @@ namespace BaseballSimulatorVR::Common
 		inline constexpr double FloorMeshFarDepthMeters = 24.5;
 		inline constexpr double FloorMeshTileSizeMeters = 1.0;
 		inline constexpr double FloorMeshHeightMeters = -0.01;
+		inline constexpr double HomePlateHeightMeters = 0.005;
 		inline constexpr std::array<float, 4> FloorMeshTileColorA{ 0.04F, 0.08F, 0.06F, 1.0F };
 		inline constexpr std::array<float, 4> FloorMeshTileColorB{ 0.05F, 0.10F, 0.07F, 1.0F };
 		inline constexpr std::array<float, 4> FloorGridColor{ 0.12F, 0.30F, 0.22F, 1.0F };
@@ -182,6 +181,10 @@ namespace BaseballSimulatorVR::Common
 		inline constexpr std::array<float, 4> PlateColor{ 0.95F, 0.95F, 0.98F, 1.0F };
 		inline constexpr std::array<float, 4> BallColor{ 1.0F, 0.98F, 0.80F, 1.0F };
 		inline constexpr std::array<float, 4> BatColor{ 0.79F, 0.56F, 0.26F, 1.0F };
+		inline constexpr std::array<float, 4> MetalBatColor{ 0.78F, 0.81F, 0.85F, 1.0F };
+		inline constexpr std::array<float, 4> UrethaneBatColor{ 0.22F, 0.24F, 0.27F, 1.0F };
+		inline constexpr std::array<float, 4> BatSweetSpotColor{ 0.08F, 0.95F, 0.20F, 0.35F };
+		inline constexpr double BatSweetSpotShellOffsetMeters = 0.001;
 		inline constexpr std::array<float, 4> TrailMeshColor{ 0.20F, 0.64F, 0.90F, 0.92F };
 		inline constexpr std::array<float, 4> TrailColor{ 0.24F, 0.88F, 1.0F, 1.0F };
 		inline constexpr std::array<float, 4> ZoneColor{ 1.0F, 0.55F, 0.18F, 1.0F };
@@ -356,42 +359,76 @@ namespace BaseballSimulatorVR::Common
 		    color);
 	}
 
+	template <typename TDrawTriangleFn>
+	void EmitProjectedHomePlateOverlay(const ViewProjectionState& view, LONG width, LONG height,
+	    TDrawTriangleFn&& drawTriangle)
+	{
+		if (!view.isValid || width <= 0 || height <= 0)
+		{
+			return;
+		}
+		const auto vertices = GetHomePlateVertices(-DebugWorldLayout::BatterToPlateDistanceMeters,
+		    DebugWorldStyle::HomePlateHeightMeters);
+		for (std::size_t i = 1; i + 1 < vertices.size(); ++i)
+		{
+			EmitProjectedWorldTriangle(vertices[0], vertices[i + 1], vertices[i], view, width, height,
+			    DebugWorldStyle::PlateColor.data(), drawTriangle);
+		}
+	}
+
+	[[nodiscard]] inline LONG LegacyBallMarkerHalfSizePixels(double radiusMeters)
+	{
+		return (std::max)(1L,
+		    static_cast<LONG>(std::lround(DebugWorldStyle::BallHalfSizePixels * radiusMeters /
+		                                  Physics::BallProperties{}.radiusMeters)));
+	}
+	[[nodiscard]] inline LONG OrthographicBallRadiusPixels(
+	    double radiusMeters, LONG pixelSpan, double worldSpanMeters)
+	{
+		return (std::max)(1L,
+		    static_cast<LONG>(std::lround(radiusMeters * pixelSpan / worldSpanMeters)));
+	}
+
+	[[nodiscard]] inline bool TryProjectBallMarker(const Physics::BallState& ball,
+	    const ViewProjectionState& view, LONG width, LONG height, ScreenPoint& center,
+	    double& radiusPixels)
+	{
+		const PreparedWorldProjection projection(
+		    view, width, height, DebugWorldLayout::NearClipMeters, DebugWorldLayout::FarClipMeters);
+		const auto world = ConvertSimulationPositionToWorld(ball.position);
+		if (!projection.Project(world, &center))
+		{
+			return false;
+		}
+		const auto q = view.orientation;
+		const double w = view.orientationW;
+		const Physics::Vector3 right{
+		    1 - 2 * (q.y * q.y + q.z * q.z), 2 * (q.x * q.y + q.z * w), 2 * (q.x * q.z - q.y * w)};
+		const Physics::Vector3 up{
+		    2 * (q.x * q.y - q.z * w), 1 - 2 * (q.x * q.x + q.z * q.z), 2 * (q.y * q.z + q.x * w)};
+		ScreenPoint horizontal, vertical;
+		if (!projection.Project(world + right * ball.properties.radiusMeters, &horizontal, false) ||
+		    !projection.Project(world + up * ball.properties.radiusMeters, &vertical, false))
+		{
+			return false;
+		}
+		radiusPixels =
+		    (std::max)(std::abs(horizontal.x - center.x), std::abs(vertical.y - center.y));
+		return true;
+	}
+
 	template <typename TDrawPointFn, typename TDrawLineFn>
-	void EmitProjectedDebugWorldOverlay(
-	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
-	    const std::vector<Physics::Vector3>& trajectory,
-	    const Physics::BallState& latestBallState,
-	    TDrawPointFn&& drawPoint,
-	    TDrawLineFn&& drawLine,
-	    const bool drawTrajectoryPolyline = true,
-	    const bool drawFloorGrid = true,
-	    const bool drawStrikeZone = true,
+	void EmitProjectedDebugWorldOverlay(const ViewProjectionState& projectionState,
+	    const LONG width, const LONG height, const std::vector<Physics::Vector3>& trajectory,
+	    const Physics::BallState& latestBallState, TDrawPointFn&& drawPoint, TDrawLineFn&& drawLine,
+	    const bool drawTrajectoryPolyline = true, const bool drawFloorGrid = true,
+	    const StrikeZoneDisplayMode strikeZoneDisplayMode = StrikeZoneDisplayMode::Box,
 	    const bool drawBallMarker = true)
 	{
 		if (!projectionState.isValid || (width <= 0) || (height <= 0))
 		{
 			return;
 		}
-
-		auto drawProjectedWorldPoint = [&](const Physics::Vector3& worldPoint,
-		                                   const LONG halfSize,
-		                                   const float* color) -> void
-		{
-			ScreenPoint projectedPoint{};
-			if (!TryProjectWorldToScreen(
-			        worldPoint,
-			        projectionState,
-			        width,
-			        height,
-			        &projectedPoint))
-			{
-				return;
-			}
-
-			drawPoint(projectedPoint, halfSize, color);
-		};
 
 		auto drawProjectedWorldLine = [&](const Physics::Vector3& lineStart,
 		                                  const Physics::Vector3& lineEnd,
@@ -473,82 +510,11 @@ namespace BaseballSimulatorVR::Common
 			}
 		}
 
-		if (drawStrikeZone)
-		{
-			const double strikeZoneBottom = GetStrikeZoneBottomMeters();
-			const double strikeZoneTop = GetStrikeZoneTopMeters();
-			const double strikeZoneHalfWidth = GetStrikeZoneHalfWidthMeters();
-			const Physics::Vector3 strikeZoneBottomLeft{
-				-strikeZoneHalfWidth,
-				strikeZoneBottom,
-				-DebugWorldLayout::BatterToPlateDistanceMeters
-			};
-			const Physics::Vector3 strikeZoneBottomRight{
-				strikeZoneHalfWidth,
-				strikeZoneBottom,
-				-DebugWorldLayout::BatterToPlateDistanceMeters
-			};
-			const Physics::Vector3 strikeZoneTopLeft{
-				-strikeZoneHalfWidth,
-				strikeZoneTop,
-				-DebugWorldLayout::BatterToPlateDistanceMeters
-			};
-			const Physics::Vector3 strikeZoneTopRight{
-				strikeZoneHalfWidth,
-				strikeZoneTop,
-				-DebugWorldLayout::BatterToPlateDistanceMeters
-			};
-			drawProjectedWorldLine(
-			    strikeZoneBottomLeft,
-			    strikeZoneBottomRight,
-			    DebugWorldStyle::ZoneColor.data(),
-			    0.05);
-			drawProjectedWorldLine(
-			    strikeZoneTopLeft,
-			    strikeZoneTopRight,
-			    DebugWorldStyle::ZoneColor.data(),
-			    0.05);
-			drawProjectedWorldLine(
-			    strikeZoneBottomLeft,
-			    strikeZoneTopLeft,
-			    DebugWorldStyle::ZoneColor.data(),
-			    0.05);
-			drawProjectedWorldLine(
-			    strikeZoneBottomRight,
-			    strikeZoneTopRight,
-			    DebugWorldStyle::ZoneColor.data(),
-			    0.05);
-
-			drawProjectedWorldLine(
-			    Physics::Vector3{
-			        -0.25,
-			        0.01,
-			        -DebugWorldLayout::BatterToPlateDistanceMeters },
-			    Physics::Vector3{
-			        0.25,
-			        0.01,
-			        -DebugWorldLayout::BatterToPlateDistanceMeters },
-			    DebugWorldStyle::PlateColor.data(),
-			    0.03);
-			drawProjectedWorldLine(
-			    Physics::Vector3{
-			        0.0,
-			        0.01,
-			        -DebugWorldLayout::BatterToPlateDistanceMeters - 0.25 },
-			    Physics::Vector3{
-			        0.0,
-			        0.01,
-			        -DebugWorldLayout::BatterToPlateDistanceMeters + 0.25 },
-			    DebugWorldStyle::PlateColor.data(),
-			    0.03);
-			drawProjectedWorldPoint(
-			    Physics::Vector3{
-			        0.0,
-			        0.01,
-			        -DebugWorldLayout::BatterToPlateDistanceMeters },
-			    DebugWorldStyle::PlateMarkerHalfSizePixels,
-			    DebugWorldStyle::PlateColor.data());
-		}
+		ForEachStrikeZoneWireSegment(strikeZoneDisplayMode,
+		    {-DebugWorldLayout::BatterToPlateDistanceMeters, GetStrikeZoneBottomMeters(),
+		     GetStrikeZoneTopMeters()}, [&](const auto& from, const auto& to) {
+			    drawProjectedWorldLine(from, to, DebugWorldStyle::ZoneColor.data(), 0.05);
+		    });
 
 		if (drawTrajectoryPolyline)
 		{
@@ -585,22 +551,22 @@ namespace BaseballSimulatorVR::Common
 
 		if (drawBallMarker)
 		{
-			const Physics::Vector3 ballWorldPoint =
-			    ConvertSimulationPositionToWorld(latestBallState.position);
-			drawProjectedWorldPoint(
-			    ballWorldPoint,
-			    DebugWorldStyle::BallHalfSizePixels,
-			    DebugWorldStyle::BallColor.data());
+			ScreenPoint center;
+			double radiusPixels{};
+			if (TryProjectBallMarker(
+			        latestBallState, projectionState, width, height, center, radiusPixels))
+			{
+				drawPoint(center, (std::max)(1L, static_cast<LONG>(std::ceil(radiusPixels))),
+				    DebugWorldStyle::BallColor.data());
+			}
 		}
 	}
 
 	template <typename TDrawLineFn>
-	void EmitProjectedZonePassCircleOverlay(
-	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
+	void EmitProjectedZonePassCircleOverlay(const ViewProjectionState& projectionState,
+	    const LONG width, const LONG height,
 	    const std::optional<Physics::Vector3>& zonePassSimulationPosition,
-	    TDrawLineFn&& drawLine)
+	    const double circleRadiusMeters, TDrawLineFn&& drawLine)
 	{
 		if (!projectionState.isValid || (width <= 0) || (height <= 0) ||
 		    !zonePassSimulationPosition.has_value())
@@ -611,18 +577,19 @@ namespace BaseballSimulatorVR::Common
 		const Physics::Vector3 centerWorldPoint =
 		    ConvertSimulationPositionToWorld(zonePassSimulationPosition.value());
 		constexpr int SegmentCount = 24;
-		constexpr double CircleRadiusMeters = DebugWorldStyle::BallMeshRadiusMeters;
+		const double CircleRadiusMeters = circleRadiusMeters;
 		for (int segmentIndex = 0; segmentIndex < SegmentCount; ++segmentIndex)
 		{
-			const double startAngle = (2.0 * 3.14159265358979323846 * static_cast<double>(segmentIndex)) /
-			                          static_cast<double>(SegmentCount);
-			const double endAngle = (2.0 * 3.14159265358979323846 * static_cast<double>(segmentIndex + 1)) /
-			                        static_cast<double>(SegmentCount);
+			const double startAngle =
+			    (2.0 * 3.14159265358979323846 * static_cast<double>(segmentIndex)) /
+			    static_cast<double>(SegmentCount);
+			const double endAngle =
+			    (2.0 * 3.14159265358979323846 * static_cast<double>(segmentIndex + 1)) /
+			    static_cast<double>(SegmentCount);
 			const Physics::Vector3 startWorldPoint{
-				centerWorldPoint.x + (std::cos(startAngle) * CircleRadiusMeters),
-				centerWorldPoint.y + (std::sin(startAngle) * CircleRadiusMeters),
-				centerWorldPoint.z
-			};
+			    centerWorldPoint.x + (std::cos(startAngle) * CircleRadiusMeters),
+			    centerWorldPoint.y + (std::sin(startAngle) * CircleRadiusMeters),
+			    centerWorldPoint.z};
 			const Physics::Vector3 endWorldPoint{
 				centerWorldPoint.x + (std::cos(endAngle) * CircleRadiusMeters),
 				centerWorldPoint.y + (std::sin(endAngle) * CircleRadiusMeters),
@@ -655,278 +622,337 @@ namespace BaseballSimulatorVR::Common
 		}
 	}
 
+	[[nodiscard]] inline const std::array<float, 4>& GetBatMaterialColor(
+	    const Physics::BatMaterial material)
+	{
+		switch (material)
+		{
+		case Physics::BatMaterial::Wood: return DebugWorldStyle::BatColor;
+		case Physics::BatMaterial::Metal: return DebugWorldStyle::MetalBatColor;
+		case Physics::BatMaterial::Urethane: return DebugWorldStyle::UrethaneBatColor;
+		}
+		throw std::invalid_argument("Invalid bat material");
+	}
+
+	inline constexpr int BatCircumferenceSegments = 40;
+	inline constexpr double BatTwoPi = 6.28318530717958647692;
+
+	struct BatRenderGeometry final
+	{
+		Physics::Vector3 knob{};
+		Physics::Vector3 direction{};
+		Physics::Vector3 radialBasisX{};
+		Physics::Vector3 radialBasisY{};
+		std::array<Physics::Vector3, BatCircumferenceSegments> radialDirections{};
+		std::vector<double> sectionFractions;
+		double lengthMeters{};
+		double radiusMeters{};
+		double sweetStartFraction{};
+		double sweetEndFraction{};
+	};
+
+	[[nodiscard]] inline std::optional<BatRenderGeometry> BuildBatRenderGeometry(
+	    const BatOverlayState& batState)
+	{
+		const auto start = ConvertSimulationPositionToWorld(batState.startSimulationPosition);
+		const auto end = ConvertSimulationPositionToWorld(batState.endSimulationPosition);
+		const auto axis = end - start;
+		const double length = Physics::Length(axis);
+		const auto finite = [](const Physics::Vector3& p)
+		{ return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); };
+		if (!Physics::IsValidBatMaterial(batState.material) ||
+		    !finite(start) || !finite(end) || !finite(batState.upSimulationDirection) ||
+		    !std::isfinite(length) || length <= 1e-6 ||
+		    !std::isfinite(batState.radiusMeters) || batState.radiusMeters <= 0.0)
+			return std::nullopt;
+		const auto direction = axis / length;
+		auto radialX = batState.upSimulationDirection -
+		    direction * Physics::Dot(batState.upSimulationDirection, direction);
+		if (Physics::Length(radialX) <= 1e-6)
+		{
+			const Physics::Vector3 perpendicularSeed = std::abs(direction.y) < .9 ?
+			    Physics::Vector3{0., 1., 0.} : Physics::Vector3{1., 0., 0.};
+			radialX = perpendicularSeed - direction * Physics::Dot(perpendicularSeed, direction);
+		}
+		radialX = Physics::NormalizeOrZero(radialX);
+		const auto& profile = Physics::GetBatMaterialProfile(batState.material);
+		BatRenderGeometry geometry;
+		geometry.knob = start;
+		geometry.direction = direction;
+		geometry.radialBasisX = radialX;
+		geometry.radialBasisY = Physics::Cross(direction, radialX);
+		geometry.lengthMeters = length;
+		geometry.radiusMeters = batState.radiusMeters;
+		geometry.sweetStartFraction = profile.sweetSpotStartRatio;
+		geometry.sweetEndFraction = profile.sweetSpotEndRatio;
+		geometry.sectionFractions.reserve(Physics::BatBodyProfile.size() + 20);
+		for (const auto& point : Physics::BatBodyProfile)
+			geometry.sectionFractions.push_back(point.fraction);
+		geometry.sectionFractions.push_back(profile.sweetSpotStartRatio);
+		geometry.sectionFractions.push_back(profile.sweetSpotEndRatio);
+		// Extra grip rings resolve the diagonal tape seams without altering the shared profile.
+		constexpr int GripSections = 16;
+		for (int index = 1; index < GripSections; ++index)
+			geometry.sectionFractions.push_back(std::lerp(Physics::BatGripStartRatio,
+			    Physics::BatGripEndRatio, static_cast<double>(index) / GripSections));
+		std::sort(geometry.sectionFractions.begin(), geometry.sectionFractions.end());
+		geometry.sectionFractions.erase(std::unique(geometry.sectionFractions.begin(),
+		    geometry.sectionFractions.end(), [](double a, double b) { return std::abs(a - b) < 1e-12; }),
+		    geometry.sectionFractions.end());
+		for (int segment = 0; segment < BatCircumferenceSegments; ++segment)
+		{
+			const double angle = BatTwoPi * segment / BatCircumferenceSegments;
+			geometry.radialDirections[segment] = radialX * std::cos(angle) +
+			    geometry.radialBasisY * std::sin(angle);
+		}
+		return geometry;
+	}
+
+	[[nodiscard]] inline Physics::Vector3 BatRenderSurfacePoint(
+	    const BatRenderGeometry& geometry, double fraction, int segment, double shellOffset = 0.)
+	{
+		return geometry.knob + geometry.direction * (fraction * geometry.lengthMeters) +
+		    geometry.radialDirections[segment % BatCircumferenceSegments] *
+		    (Physics::BatRadiusAtFraction(fraction, geometry.radiusMeters) + shellOffset);
+	}
+
+	[[nodiscard]] inline std::array<float, 4> BatSurfaceColor(
+	    Physics::BatMaterial material, double fraction, double angle)
+	{
+		const auto& base = GetBatMaterialColor(material);
+		if (fraction >= Physics::BatGripStartRatio && fraction <= Physics::BatGripEndRatio)
+		{
+			const double wrap = .5 + .5 * std::cos(BatTwoPi * fraction * 24. - angle);
+			const float seam = static_cast<float>(std::pow(wrap, 12.));
+			if (material == Physics::BatMaterial::Wood)
+				return {base[0] * (.76F + .07F * seam), base[1] * (.73F + .07F * seam),
+				    base[2] * (.68F + .07F * seam), 1.F};
+			return {.055F + .045F * seam, .060F + .045F * seam, .068F + .045F * seam, 1.F};
+		}
+		if (material == Physics::BatMaterial::Wood)
+		{
+			const double grain = std::sin(angle * 11. + .6 * std::sin(fraction * 13.)) *
+			    std::sin(angle * 7. - fraction * 2.);
+			const float shade = static_cast<float>(.95 + .07 * grain);
+			return {base[0] * shade, base[1] * shade, base[2] * shade, 1.F};
+		}
+		if (material == Physics::BatMaterial::Metal)
+		{
+			const float brushed = static_cast<float>(.98 + .02 * std::sin(angle * 17.));
+			return {base[0] * brushed, base[1] * brushed, base[2] * brushed, 1.F};
+		}
+		const float finish = static_cast<float>(.97 + .03 * std::sin(angle * 5. + fraction * 8.));
+		return {base[0] * finish, base[1] * finish, base[2] * finish, 1.F};
+	}
+
 	template <typename TDrawLineFn>
-	void EmitProjectedBatCylinderOverlay(
+	void EmitBatWorldWireframe(const BatOverlayState& batState, TDrawLineFn&& drawLine)
+	{
+		const auto geometry = BuildBatRenderGeometry(batState);
+		if (!geometry) return;
+		for (const bool shell : {false, true})
+		{
+			const double offset = shell ? DebugWorldStyle::BatSweetSpotShellOffsetMeters : 0.;
+			for (std::size_t span = 0; span + 1 < geometry->sectionFractions.size(); ++span)
+			{
+				const double f0 = geometry->sectionFractions[span], f1 = geometry->sectionFractions[span + 1];
+				if (shell && (f0 < geometry->sweetStartFraction || f1 > geometry->sweetEndFraction)) continue;
+				for (int segment = 0; segment < BatCircumferenceSegments; ++segment)
+				{
+					const auto color = shell ? DebugWorldStyle::BatSweetSpotColor :
+					    BatSurfaceColor(batState.material, (f0 + f1) * .5,
+					        BatTwoPi * (segment + .5) / BatCircumferenceSegments);
+					const auto a = BatRenderSurfacePoint(*geometry, f0, segment, offset);
+					const auto b = BatRenderSurfacePoint(*geometry, f0, segment + 1, offset);
+					const auto c = BatRenderSurfacePoint(*geometry, f1, segment, offset);
+					drawLine(a, b, color);
+					drawLine(a, c, color);
+					if (shell && f1 == geometry->sweetEndFraction)
+						drawLine(c, BatRenderSurfacePoint(*geometry, f1, segment + 1, offset), color);
+				}
+			}
+		}
+	}
+
+	template <typename TDrawTriangleFn>
+	void EmitBatWorldMesh(const BatOverlayState& batState, TDrawTriangleFn&& drawTriangle)
+	{
+		const auto geometry = BuildBatRenderGeometry(batState);
+		if (!geometry) return;
+		for (const bool shell : {false, true})
+		{
+			const double offset = shell ? DebugWorldStyle::BatSweetSpotShellOffsetMeters : 0.;
+			for (std::size_t span = 0; span + 1 < geometry->sectionFractions.size(); ++span)
+			{
+				const double f0 = geometry->sectionFractions[span], f1 = geometry->sectionFractions[span + 1];
+				if (shell && (f0 < geometry->sweetStartFraction || f1 > geometry->sweetEndFraction)) continue;
+				for (int segment = 0; segment < BatCircumferenceSegments; ++segment)
+				{
+					const double angle = BatTwoPi * (segment + .5) / BatCircumferenceSegments;
+					const auto color = shell ? DebugWorldStyle::BatSweetSpotColor :
+					    BatSurfaceColor(batState.material, (f0 + f1) * .5, angle);
+					const auto a = BatRenderSurfacePoint(*geometry, f0, segment, offset);
+					const auto b = BatRenderSurfacePoint(*geometry, f0, segment + 1, offset);
+					const auto c = BatRenderSurfacePoint(*geometry, f1, segment + 1, offset);
+					const auto d = BatRenderSurfacePoint(*geometry, f1, segment, offset);
+					drawTriangle(a, b, c, color, shell);
+					if (f1 < 1.) drawTriangle(a, c, d, color, shell);
+					if (!shell && span == 0)
+						drawTriangle(geometry->knob, b, a, BatSurfaceColor(batState.material, 0., angle), false);
+				}
+			}
+		}
+	}
+
+	template <typename TDrawLineFn>
+	void EmitProjectedBatOverlay(
 	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
+	    const LONG width, const LONG height,
 	    const std::optional<BatOverlayState>& batOverlayState,
 	    TDrawLineFn&& drawLine)
 	{
-		if (!projectionState.isValid || (width <= 0) || (height <= 0) ||
-		    !batOverlayState.has_value())
-		{
-			return;
-		}
-
-		const BatOverlayState& batState = batOverlayState.value();
-		const double clampedRadiusMeters = std::clamp(
-		    batState.radiusMeters,
-		    0.002,
-		    0.20);
-		const Physics::Vector3 startWorldPoint =
-		    ConvertSimulationPositionToWorld(batState.startSimulationPosition);
-		const Physics::Vector3 endWorldPoint =
-		    ConvertSimulationPositionToWorld(batState.endSimulationPosition);
-		const Physics::Vector3 axisVector = endWorldPoint - startWorldPoint;
-		const double axisLength = Physics::Length(axisVector);
-		if ((clampedRadiusMeters <= 1e-6) || (axisLength <= 1e-6))
-		{
-			return;
-		}
-
-		const Physics::Vector3 axisDirection =
-		    axisVector / axisLength;
-		Physics::Vector3 radialBasisX = Physics::Cross(
-		    axisDirection,
-		    Physics::Vector3{ 0.0, 1.0, 0.0 });
-		if (Physics::Length(radialBasisX) <= 1e-6)
-		{
-			radialBasisX = Physics::Cross(
-			    axisDirection,
-			    Physics::Vector3{ 1.0, 0.0, 0.0 });
-		}
-		radialBasisX = Physics::NormalizeOrZero(radialBasisX);
-		if (Physics::Length(radialBasisX) <= 1e-6)
-		{
-			return;
-		}
-
-		Physics::Vector3 radialBasisY = Physics::NormalizeOrZero(
-		    Physics::Cross(axisDirection, radialBasisX));
-		if (Physics::Length(radialBasisY) <= 1e-6)
-		{
-			return;
-		}
-
-		auto drawProjectedLine = [&](const Physics::Vector3& worldStart,
-		                             const Physics::Vector3& worldEnd) -> void
-		{
-			ScreenPoint startPoint{};
-			ScreenPoint endPoint{};
-			if (!TryProjectWorldToScreen(
-			        worldStart,
-			        projectionState,
-			        width,
-			        height,
-			        &startPoint,
-			        false) ||
-			    !TryProjectWorldToScreen(
-			        worldEnd,
-			        projectionState,
-			        width,
-			        height,
-			        &endPoint,
-			        false))
-			{
-				return;
-			}
-			drawLine(
-			    startPoint,
-			    endPoint,
-			    DebugWorldStyle::WorldLineHalfSizePixels,
-			    DebugWorldStyle::BatColor.data());
-		};
-
-		constexpr int SegmentCount = 36;
-		constexpr double TwoPi = 6.28318530717958647692;
-		for (int segmentIndex = 0; segmentIndex < SegmentCount; ++segmentIndex)
-		{
-			const double startAngle =
-			    (TwoPi * static_cast<double>(segmentIndex)) /
-			    static_cast<double>(SegmentCount);
-			const double endAngle =
-			    (TwoPi * static_cast<double>(segmentIndex + 1)) /
-			    static_cast<double>(SegmentCount);
-			const Physics::Vector3 radialStart =
-			    (radialBasisX * std::cos(startAngle)) +
-			    (radialBasisY * std::sin(startAngle));
-			const Physics::Vector3 radialEnd =
-			    (radialBasisX * std::cos(endAngle)) +
-			    (radialBasisY * std::sin(endAngle));
-			const Physics::Vector3 startRingPoint0 =
-			    startWorldPoint + (radialStart * clampedRadiusMeters);
-			const Physics::Vector3 startRingPoint1 =
-			    startWorldPoint + (radialEnd * clampedRadiusMeters);
-			const Physics::Vector3 endRingPoint0 =
-			    endWorldPoint + (radialStart * clampedRadiusMeters);
-			const Physics::Vector3 endRingPoint1 =
-			    endWorldPoint + (radialEnd * clampedRadiusMeters);
-
-			drawProjectedLine(startRingPoint0, startRingPoint1);
-			drawProjectedLine(endRingPoint0, endRingPoint1);
-			drawProjectedLine(startRingPoint0, endRingPoint0);
-		}
+		if (!projectionState.isValid || width <= 0 || height <= 0 || !batOverlayState) return;
+		EmitBatWorldWireframe(*batOverlayState,
+		    [&](const Physics::Vector3& start, const Physics::Vector3& end, const auto& color)
+		    {
+			    ScreenPoint projectedStart{}, projectedEnd{};
+			    if (TryProjectWorldToScreen(start, projectionState, width, height, &projectedStart, false) &&
+			        TryProjectWorldToScreen(end, projectionState, width, height, &projectedEnd, false))
+				    drawLine(projectedStart, projectedEnd,
+				        DebugWorldStyle::WorldLineHalfSizePixels, color.data());
+		    });
 	}
 
 	template <typename TDrawTriangleFn>
-	void EmitProjectedSolidBatCylinderOverlay(
+	void EmitProjectedSolidBatOverlay(
 	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
+	    const LONG width, const LONG height,
 	    const std::optional<BatOverlayState>& batOverlayState,
 	    TDrawTriangleFn&& drawTriangle)
 	{
-		if (!projectionState.isValid || (width <= 0) || (height <= 0) ||
-		    !batOverlayState.has_value())
-		{
-			return;
-		}
+		if (!projectionState.isValid || width <= 0 || height <= 0 || !batOverlayState) return;
+		const auto lightDirection = Physics::NormalizeOrZero(Physics::Vector3{-0.34, 0.78, -0.52});
+		const auto knob = ConvertSimulationPositionToWorld(batOverlayState->startSimulationPosition);
+		const auto batAxis = batOverlayState->endSimulationPosition - batOverlayState->startSimulationPosition;
+		EmitBatWorldMesh(*batOverlayState,
+		    [&](const Physics::Vector3& point0, const Physics::Vector3& point1,
+		        const Physics::Vector3& point2, const auto& color, const bool sweetSpot)
+		    {
+			    const auto normal = Physics::Cross(point1 - point0, point2 - point0);
+			    if (Physics::Length(normal) <= 1e-10 ||
+			        Physics::Dot(normal, projectionState.position - (point0 + point1 + point2) / 3.0) <= 0.0)
+				    return;
+			    const auto unitNormal = Physics::NormalizeOrZero(normal);
+			    const double diffuse = std::clamp(Physics::Dot(unitNormal, lightDirection), 0.0, 1.0);
+			    const float lightScale = sweetSpot ? 1.0F : static_cast<float>(.30 + .62 * diffuse);
+			    const auto eyeDirection = Physics::NormalizeOrZero(
+			        projectionState.position - (point0 + point1 + point2) / 3.);
+			    const auto halfVector = Physics::NormalizeOrZero(lightDirection + eyeDirection);
+			    const double fraction = Physics::Dot((point0 + point1 + point2) / 3. - knob, batAxis) /
+			        Physics::LengthSquared(batAxis);
+			    const bool grip = fraction >= Physics::BatGripStartRatio && fraction <= Physics::BatGripEndRatio;
+			    const bool metal = !grip && batOverlayState->material == Physics::BatMaterial::Metal;
+			    const double gloss = grip ? .02 : metal ? .38 : .07;
+			    const float specular = sweetSpot ? 0.F : static_cast<float>(gloss *
+			        std::pow((std::max)(0., Physics::Dot(unitNormal, halfVector)), metal ? 42. : 20.));
+			    const std::array<float, 4> shadedColor{
+				    (std::min)(1.F, color[0] * lightScale + specular),
+				    (std::min)(1.F, color[1] * lightScale + specular),
+				    (std::min)(1.F, color[2] * lightScale + specular), color[3]};
+			    EmitProjectedWorldTriangle(point0, point1, point2, projectionState, width, height,
+			        shadedColor.data(), drawTriangle);
+		    });
+	}
 
-		const BatOverlayState& batState = batOverlayState.value();
-		const double clampedRadiusMeters = std::clamp(
-		    batState.radiusMeters,
-		    0.002,
-		    0.20);
-		const Physics::Vector3 startWorldPoint =
-		    ConvertSimulationPositionToWorld(batState.startSimulationPosition);
-		const Physics::Vector3 endWorldPoint =
-		    ConvertSimulationPositionToWorld(batState.endSimulationPosition);
-		const Physics::Vector3 axisVector = endWorldPoint - startWorldPoint;
-		const double axisLength = Physics::Length(axisVector);
-		if ((clampedRadiusMeters <= 1e-6) || (axisLength <= 1e-6))
+	template <typename TTriangle>
+	void EmitBallWorldMesh(
+	    const Physics::Vector3& ballCenter, double ballRadiusMeters, TTriangle&& emitBallTriangle)
+	{
+		constexpr double pi = 3.14159265358979323846;
+		for (int latitudeIndex = 0; latitudeIndex < DebugWorldStyle::BallMeshLatitudeSegments;
+		    ++latitudeIndex)
 		{
-			return;
-		}
+			const double latitude0 =
+			    (-pi * 0.5) + (static_cast<double>(latitudeIndex) * pi /
+			                      static_cast<double>(DebugWorldStyle::BallMeshLatitudeSegments));
+			const double latitude1 =
+			    (-pi * 0.5) + (static_cast<double>(latitudeIndex + 1) * pi /
+			                      static_cast<double>(DebugWorldStyle::BallMeshLatitudeSegments));
+			const double sinLatitude0 = std::sin(latitude0);
+			const double sinLatitude1 = std::sin(latitude1);
+			const double cosLatitude0 = std::cos(latitude0);
+			const double cosLatitude1 = std::cos(latitude1);
 
-		const Physics::Vector3 axisDirection = axisVector / axisLength;
-		Physics::Vector3 radialBasisX = Physics::Cross(
-		    axisDirection,
-		    Physics::Vector3{ 0.0, 1.0, 0.0 });
-		if (Physics::Length(radialBasisX) <= 1e-6)
-		{
-			radialBasisX = Physics::Cross(
-			    axisDirection,
-			    Physics::Vector3{ 1.0, 0.0, 0.0 });
-		}
-		radialBasisX = Physics::NormalizeOrZero(radialBasisX);
-		if (Physics::Length(radialBasisX) <= 1e-6)
-		{
-			return;
-		}
-
-		Physics::Vector3 radialBasisY = Physics::NormalizeOrZero(
-		    Physics::Cross(axisDirection, radialBasisX));
-		if (Physics::Length(radialBasisY) <= 1e-6)
-		{
-			return;
-		}
-
-		const Physics::Vector3 lightDirection =
-		    Physics::NormalizeOrZero(Physics::Vector3{ -0.34, 0.78, -0.52 });
-		auto emitBatTriangle = [&](const Physics::Vector3& point0,
-		                           const Physics::Vector3& point1,
-		                           const Physics::Vector3& point2) -> void
-		{
-			const Physics::Vector3 triangleNormal =
-			    Physics::Cross(point1 - point0, point2 - point0);
-			if (Physics::Length(triangleNormal) <= 1e-6)
+			for (int longitudeIndex = 0;
+			    longitudeIndex < DebugWorldStyle::BallMeshLongitudeSegments; ++longitudeIndex)
 			{
-				return;
+				const double longitude0 =
+				    (static_cast<double>(longitudeIndex) * (2.0 * pi)) /
+				    static_cast<double>(DebugWorldStyle::BallMeshLongitudeSegments);
+				const double longitude1 =
+				    (static_cast<double>(longitudeIndex + 1) * (2.0 * pi)) /
+				    static_cast<double>(DebugWorldStyle::BallMeshLongitudeSegments);
+				const double sinLongitude0 = std::sin(longitude0);
+				const double sinLongitude1 = std::sin(longitude1);
+				const double cosLongitude0 = std::cos(longitude0);
+				const double cosLongitude1 = std::cos(longitude1);
+
+				const Physics::Vector3 point00{
+				    ballCenter.x + (ballRadiusMeters * cosLatitude0 * cosLongitude0),
+				    ballCenter.y + (ballRadiusMeters * sinLatitude0),
+				    ballCenter.z + (ballRadiusMeters * cosLatitude0 * sinLongitude0)};
+				const Physics::Vector3 point01{
+				    ballCenter.x + (ballRadiusMeters * cosLatitude0 * cosLongitude1),
+				    ballCenter.y + (ballRadiusMeters * sinLatitude0),
+				    ballCenter.z + (ballRadiusMeters * cosLatitude0 * sinLongitude1)};
+				const Physics::Vector3 point10{
+				    ballCenter.x + (ballRadiusMeters * cosLatitude1 * cosLongitude0),
+				    ballCenter.y + (ballRadiusMeters * sinLatitude1),
+				    ballCenter.z + (ballRadiusMeters * cosLatitude1 * sinLongitude0)};
+				const Physics::Vector3 point11{
+				    ballCenter.x + (ballRadiusMeters * cosLatitude1 * cosLongitude1),
+				    ballCenter.y + (ballRadiusMeters * sinLatitude1),
+				    ballCenter.z + (ballRadiusMeters * cosLatitude1 * sinLongitude1)};
+
+				emitBallTriangle(point00, point01, point11);
+				emitBallTriangle(point00, point11, point10);
 			}
-
-			const Physics::Vector3 triangleCenter =
-			    (point0 + point1 + point2) / 3.0;
-			const Physics::Vector3 triangleToCamera =
-			    projectionState.position - triangleCenter;
-			const double facing = Physics::Dot(triangleNormal, triangleToCamera);
-			if (facing <= 0.0)
-			{
-				return;
-			}
-
-			const Physics::Vector3 normalizedNormal =
-			    Physics::NormalizeOrZero(triangleNormal);
-			const double diffuse = std::clamp(
-			    Physics::Dot(normalizedNormal, lightDirection),
-			    0.0,
-			    1.0);
-			const float lightScale = static_cast<float>(std::clamp(
-			    0.24 + (0.62 * diffuse),
-			    0.22,
-			    0.92));
-			std::array<float, 4> shadedBatColor{
-				DebugWorldStyle::BatColor[0] * lightScale,
-				DebugWorldStyle::BatColor[1] * lightScale,
-				DebugWorldStyle::BatColor[2] * lightScale,
-				DebugWorldStyle::BatColor[3]
-			};
-			EmitProjectedWorldTriangle(
-			    point0,
-			    point1,
-			    point2,
-			    projectionState,
-			    width,
-			    height,
-			    shadedBatColor.data(),
-			    drawTriangle);
-		};
-
-		constexpr int SegmentCount = 40;
-		constexpr double TwoPi = 6.28318530717958647692;
-		for (int segmentIndex = 0; segmentIndex < SegmentCount; ++segmentIndex)
-		{
-			const double startAngle =
-			    (TwoPi * static_cast<double>(segmentIndex)) /
-			    static_cast<double>(SegmentCount);
-			const double endAngle =
-			    (TwoPi * static_cast<double>(segmentIndex + 1)) /
-			    static_cast<double>(SegmentCount);
-			const Physics::Vector3 radialStart =
-			    (radialBasisX * std::cos(startAngle)) +
-			    (radialBasisY * std::sin(startAngle));
-			const Physics::Vector3 radialEnd =
-			    (radialBasisX * std::cos(endAngle)) +
-			    (radialBasisY * std::sin(endAngle));
-			const Physics::Vector3 startRingPoint0 =
-			    startWorldPoint + (radialStart * clampedRadiusMeters);
-			const Physics::Vector3 startRingPoint1 =
-			    startWorldPoint + (radialEnd * clampedRadiusMeters);
-			const Physics::Vector3 endRingPoint0 =
-			    endWorldPoint + (radialStart * clampedRadiusMeters);
-			const Physics::Vector3 endRingPoint1 =
-			    endWorldPoint + (radialEnd * clampedRadiusMeters);
-
-			emitBatTriangle(startRingPoint0, startRingPoint1, endRingPoint1);
-			emitBatTriangle(startRingPoint0, endRingPoint1, endRingPoint0);
-			emitBatTriangle(startWorldPoint, startRingPoint1, startRingPoint0);
-			emitBatTriangle(endWorldPoint, endRingPoint0, endRingPoint1);
 		}
 	}
 
+	enum class TrajectoryColorMode { Fading, Uniform, UniformOpaque };
+
 	template <typename TDrawTriangleFn>
-	void EmitProjectedBallAndTrajectoryMeshOverlay(
-	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
-	    const std::vector<Physics::Vector3>& trajectory,
-	    const Physics::BallState& latestBallState,
-	    TDrawTriangleFn&& drawTriangle,
-	    const float trailOpacityScale = 1.0F,
-	    const float staleFadeProgress = 0.0F,
-	    const bool drawBall = true)
+	void EmitProjectedBallAndTrajectoryMeshOverlay(const ViewProjectionState& projectionState,
+	    const LONG width, const LONG height, const std::vector<Physics::Vector3>& trajectory,
+	    const Physics::BallState& latestBallState, TDrawTriangleFn&& drawTriangle,
+	    const float trailOpacityScale = 1.0F, const float staleFadeProgress = 0.0F,
+	    const bool drawBall = true,
+	    const TrajectoryColorMode colorMode = TrajectoryColorMode::Fading)
 	{
 		if (!projectionState.isValid || (width <= 0) || (height <= 0))
 		{
 			return;
 		}
 
-		const float clampedTrailOpacityScale =
-		    std::clamp(trailOpacityScale, 0.0F, 1.50F);
-		const float clampedStaleFadeProgress =
-		    std::clamp(staleFadeProgress, 0.0F, 1.0F);
+		const float clampedTrailOpacityScale = std::clamp(trailOpacityScale, 0.0F, 1.50F);
+		const float clampedStaleFadeProgress = std::clamp(staleFadeProgress, 0.0F, 1.0F);
 		const std::size_t trajectoryCount = trajectory.size();
-		if (trajectoryCount >= 2)
+		if (trajectoryCount >= 2 && colorMode != TrajectoryColorMode::Fading)
+		{
+			static thread_local TrajectoryTubeMesh mesh;
+			static thread_local TrajectoryTubeProjectionWorkspace projection;
+			mesh.Build(trajectory, {0., 0., -(GetPitchDistanceMeters() +
+			    DebugWorldLayout::BatterToPlateDistanceMeters)}, DebugWorldStyle::TrailMeshHalfWidthMeters);
+			const std::array<float,4> color{DebugWorldStyle::TrailMeshColor[0],
+			    DebugWorldStyle::TrailMeshColor[1], DebugWorldStyle::TrailMeshColor[2],
+			    (colorMode == TrajectoryColorMode::UniformOpaque ? 1.F : DebugWorldStyle::TrailMeshColor[3]) *
+			        std::clamp(clampedTrailOpacityScale, 0.F, 1.F)};
+			if (color[3] > .001F)
+				projection.Emit(mesh, projectionState, width, height, DebugWorldLayout::NearClipMeters,
+				    DebugWorldLayout::FarClipMeters, color.data(), drawTriangle);
+		}
+		else if (trajectoryCount >= 2)
 		{
 			const Physics::Vector3 worldUpAxis{ 0.0, 1.0, 0.0 };
 			const Physics::Vector3 worldRightAxis{ 1.0, 0.0, 0.0 };
@@ -1058,142 +1084,48 @@ namespace BaseballSimulatorVR::Common
 		if (!drawBall) return;
 		const Physics::Vector3 ballCenter =
 		    ConvertSimulationPositionToWorld(latestBallState.position);
-		constexpr double pi = 3.14159265358979323846;
 		const Physics::Vector3 lightDirection =
 		    Physics::NormalizeOrZero(Physics::Vector3{ -0.36, 0.82, -0.44 });
 		const Physics::Vector3 fillLightDirection =
 		    Physics::NormalizeOrZero(Physics::Vector3{ 0.42, 0.36, 0.84 });
-		for (int latitudeIndex = 0;
-		     latitudeIndex < DebugWorldStyle::BallMeshLatitudeSegments;
-		     ++latitudeIndex)
-		{
-			const double latitude0 =
-			    (-pi * 0.5) +
-			    (static_cast<double>(latitudeIndex) * pi /
-			     static_cast<double>(DebugWorldStyle::BallMeshLatitudeSegments));
-			const double latitude1 =
-			    (-pi * 0.5) +
-			    (static_cast<double>(latitudeIndex + 1) * pi /
-			     static_cast<double>(DebugWorldStyle::BallMeshLatitudeSegments));
-			const double sinLatitude0 = std::sin(latitude0);
-			const double sinLatitude1 = std::sin(latitude1);
-			const double cosLatitude0 = std::cos(latitude0);
-			const double cosLatitude1 = std::cos(latitude1);
+		EmitBallWorldMesh(ballCenter, latestBallState.properties.radiusMeters,
+		    [&](const Physics::Vector3& point0, const Physics::Vector3& point1,
+		        const Physics::Vector3& point2)
+		    {
+			    const Physics::Vector3 triangleNormal =
+			        Physics::Cross(point1 - point0, point2 - point0);
+			    if (Physics::Length(triangleNormal) <= 1e-6)
+			    {
+				    return;
+			    }
 
-			for (int longitudeIndex = 0;
-			     longitudeIndex < DebugWorldStyle::BallMeshLongitudeSegments;
-			     ++longitudeIndex)
-			{
-				const double longitude0 =
-				    (static_cast<double>(longitudeIndex) * (2.0 * pi)) /
-				    static_cast<double>(DebugWorldStyle::BallMeshLongitudeSegments);
-				const double longitude1 =
-				    (static_cast<double>(longitudeIndex + 1) * (2.0 * pi)) /
-				    static_cast<double>(DebugWorldStyle::BallMeshLongitudeSegments);
-				const double sinLongitude0 = std::sin(longitude0);
-				const double sinLongitude1 = std::sin(longitude1);
-				const double cosLongitude0 = std::cos(longitude0);
-				const double cosLongitude1 = std::cos(longitude1);
+			    const Physics::Vector3 triangleCenter = (point0 + point1 + point2) / 3.0;
+			    const Physics::Vector3 triangleToCamera = projectionState.position - triangleCenter;
+			    const double facing = Physics::Dot(triangleNormal, triangleToCamera);
+			    if (facing <= 0.0)
+			    {
+				    return;
+			    }
 
-				const Physics::Vector3 point00{
-					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude0 * cosLongitude0),
-					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
-					                sinLatitude0),
-					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude0 * sinLongitude0)
-				};
-				const Physics::Vector3 point01{
-					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude0 * cosLongitude1),
-					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
-					                sinLatitude0),
-					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude0 * sinLongitude1)
-				};
-				const Physics::Vector3 point10{
-					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude1 * cosLongitude0),
-					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
-					                sinLatitude1),
-					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude1 * sinLongitude0)
-				};
-				const Physics::Vector3 point11{
-					ballCenter.x + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude1 * cosLongitude1),
-					ballCenter.y + (DebugWorldStyle::BallMeshRadiusMeters *
-					                sinLatitude1),
-					ballCenter.z + (DebugWorldStyle::BallMeshRadiusMeters *
-					                cosLatitude1 * sinLongitude1)
-				};
-
-				auto emitBallTriangle = [&](const Physics::Vector3& point0,
-				                            const Physics::Vector3& point1,
-				                            const Physics::Vector3& point2) -> void
-				{
-					const Physics::Vector3 triangleNormal =
-					    Physics::Cross(point1 - point0, point2 - point0);
-					if (Physics::Length(triangleNormal) <= 1e-6)
-					{
-						return;
-					}
-
-					const Physics::Vector3 triangleCenter =
-					    (point0 + point1 + point2) / 3.0;
-					const Physics::Vector3 triangleToCamera =
-					    projectionState.position - triangleCenter;
-					const double facing = Physics::Dot(triangleNormal, triangleToCamera);
-					if (facing <= 0.0)
-					{
-						return;
-					}
-
-					const Physics::Vector3 normalizedNormal =
-					    Physics::NormalizeOrZero(triangleNormal);
-					const double diffuse = std::clamp(
-					    Physics::Dot(normalizedNormal, lightDirection),
-					    0.0,
-					    1.0);
-					const double fillDiffuse = std::clamp(
-					    Physics::Dot(normalizedNormal, fillLightDirection),
-					    0.0,
-					    1.0);
-					const float lightScale = static_cast<float>(std::clamp(
-					    0.30 + (0.52 * diffuse) + (0.16 * fillDiffuse),
-					    0.24,
-					    0.96));
-					std::array<float, 4> ballColor{
-						DebugWorldStyle::BallColor[0] * lightScale,
-						DebugWorldStyle::BallColor[1] * lightScale,
-						DebugWorldStyle::BallColor[2] * lightScale,
-						DebugWorldStyle::BallColor[3]
-					};
-					EmitProjectedWorldTriangle(
-					    point0,
-					    point1,
-					    point2,
-					    projectionState,
-					    width,
-					    height,
-					    ballColor.data(),
-					    drawTriangle);
-				};
-
-				emitBallTriangle(point00, point01, point11);
-				emitBallTriangle(point00, point11, point10);
-			}
-		}
+			    const Physics::Vector3 normalizedNormal = Physics::NormalizeOrZero(triangleNormal);
+			    const double diffuse =
+			        std::clamp(Physics::Dot(normalizedNormal, lightDirection), 0.0, 1.0);
+			    const double fillDiffuse =
+			        std::clamp(Physics::Dot(normalizedNormal, fillLightDirection), 0.0, 1.0);
+			    const float lightScale = static_cast<float>(
+			        std::clamp(0.30 + (0.52 * diffuse) + (0.16 * fillDiffuse), 0.24, 0.96));
+			    std::array<float, 4> ballColor{DebugWorldStyle::BallColor[0] * lightScale,
+			        DebugWorldStyle::BallColor[1] * lightScale,
+			        DebugWorldStyle::BallColor[2] * lightScale, DebugWorldStyle::BallColor[3]};
+			    EmitProjectedWorldTriangle(point0, point1, point2, projectionState, width, height,
+			        ballColor.data(), drawTriangle);
+		    });
 	}
 
 	template <typename TDrawTriangleFn>
-	void EmitProjectedResultTagPanelOverlay(
-	    const ViewProjectionState& projectionState,
-	    const LONG width,
-	    const LONG height,
-	    const std::wstring_view resultLabel,
-	    const double resultScore,
-	    TDrawTriangleFn&& drawTriangle)
+	void EmitProjectedResultTagPanelOverlay(const ViewProjectionState& projectionState,
+	    const LONG width, const LONG height, const std::wstring_view resultLabel,
+	    const double resultScore, TDrawTriangleFn&& drawTriangle)
 	{
 		if (!projectionState.isValid || (width <= 0) || (height <= 0))
 		{

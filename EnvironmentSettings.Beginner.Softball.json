@@ -1,0 +1,19 @@
+{
+  "pitchDistanceMeters": 18.44,
+  "enableMoundHeightOffset": false,
+  "moundHeightOffsetMeters": 0.18,
+  "windVelocityX": 0,
+  "windVelocityY": 0,
+  "windVelocityZ": 0,
+  "enableHeightDependentWind": false,
+  "windShearFactor": 0.08,
+  "batRadiusMeters": 0.035,
+  "batLengthMeters": 0.84,
+  "ballRestitutionAtReferenceSpeed": 0.45,
+  "batAngleOffsetDegrees": 0,
+  "batYawOffsetDegrees": 0,
+  "groundFanRadiusMeters": 100,
+  "integratorType": "Rk4",
+  "ballRadiusMeters": 0.0485,
+  "ballMassKilograms": 0.19
+}

@@ -84,6 +84,9 @@ namespace BaseballSimulatorVR::Simulation
 		m_ballState.velocity = m_pitchParameters.initialVelocity;
 		m_ballState.spinAxis = Physics::NormalizeOrZero(m_pitchParameters.spinAxis);
 		m_ballState.spinRpm = m_pitchParameters.spinRpm;
+		m_ballState.properties = m_pitchParameters.ballProperties;
+		m_ballState.aerodynamicsModel = m_pitchParameters.usePhysicalAerodynamics
+		    ? Physics::BallAerodynamicsModel::Physical : Physics::BallAerodynamicsModel::PitchProfile;
 	}
 
 	void PitchSimulationService::Tick(std::chrono::duration<double> deltaTime)

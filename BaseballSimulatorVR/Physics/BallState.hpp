@@ -2,6 +2,7 @@
 
 #include "Vector3.hpp"
 #include "BallAerodynamicsModel.hpp"
+#include "BallProperties.hpp"
 
 namespace BaseballSimulatorVR::Physics
 {
@@ -13,5 +14,6 @@ namespace BaseballSimulatorVR::Physics
 		double spinRpm{ 0.0 };
 		double flightTimeSeconds{ 0.0 };
 		BallAerodynamicsModel aerodynamicsModel{ BallAerodynamicsModel::PitchProfile };
+		BallProperties properties{};
 	};
 } // namespace BaseballSimulatorVR::Physics

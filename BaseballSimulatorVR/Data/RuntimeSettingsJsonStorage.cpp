@@ -2,6 +2,7 @@
 #include "../Common/JsonKeyValueParser.hpp"
 #include "../Common/RuntimeLimits.hpp"
 #include "../Common/ZoneMaskUtilities.hpp"
+#include "../Common/StrikeZoneSettings.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -118,6 +119,11 @@ namespace BaseballSimulatorVR::Data
 	    std::wstring& errorMessage) const
 	{
 		errorMessage.clear();
+		if (!settings.ballProperties.IsValid())
+		{
+			errorMessage = L"Environment ball radius, mass or restitution is out of range.";
+			return false;
+		}
 
 		std::ofstream outputFile{ std::filesystem::path(filePath) };
 		if (!outputFile.is_open())
@@ -130,6 +136,12 @@ namespace BaseballSimulatorVR::Data
 		outputFile.setf(std::ios::fixed);
 		outputFile.precision(std::numeric_limits<double>::max_digits10);
 		outputFile << "{\n";
+		outputFile << "  \"_comment_ballRadiusMeters\": \"Ball radius [m].\",\n";
+		outputFile << "  \"ballRadiusMeters\": " << settings.ballProperties.radiusMeters << ",\n";
+		outputFile << "  \"_comment_ballMassKilograms\": \"Ball mass [kg].\",\n";
+		outputFile << "  \"ballMassKilograms\": " << settings.ballProperties.massKilograms << ",\n";
+		outputFile << "  \"_comment_ballRestitutionAtReferenceSpeed\": \"Ball COR at 71.5264 m/s normal closing speed.\",\n";
+		outputFile << "  \"ballRestitutionAtReferenceSpeed\": " << settings.ballProperties.restitutionAtReferenceSpeed << ",\n";
 		outputFile << "  \"_comment_pitchDistanceMeters\": \"Pitch distance from release area to home plate [m]\",\n";
 		outputFile << "  \"pitchDistanceMeters\": " << settings.pitchDistanceMeters << ",\n";
 		outputFile << "  \"_comment_enableMoundHeightOffset\": \"Apply mound height offset to player viewpoint\",\n";
@@ -138,15 +150,6 @@ namespace BaseballSimulatorVR::Data
 		           << ",\n";
 		outputFile << "  \"_comment_moundHeightOffsetMeters\": \"Mound height offset [m] (always applied to pitch release/zone space)\",\n";
 		outputFile << "  \"moundHeightOffsetMeters\": " << settings.moundHeightOffsetMeters
-		           << ",\n";
-		outputFile << "  \"_comment_strikeZoneBottomMeters\": \"Strike zone bottom height from ground [m]\",\n";
-		outputFile << "  \"strikeZoneBottomMeters\": " << settings.strikeZoneBottomMeters
-		           << ",\n";
-		outputFile << "  \"_comment_strikeZoneHeightMeters\": \"Strike zone height [m]\",\n";
-		outputFile << "  \"strikeZoneHeightMeters\": " << settings.strikeZoneHeightMeters
-		           << ",\n";
-		outputFile << "  \"_comment_strikeZoneWidthMeters\": \"Strike zone width [m]\",\n";
-		outputFile << "  \"strikeZoneWidthMeters\": " << settings.strikeZoneWidthMeters
 		           << ",\n";
 		outputFile << "  \"_comment_windVelocityX\": \"Wind velocity X [m/s], positive to batter-right.\",\n";
 		outputFile << "  \"windVelocityX\": " << settings.windVelocity.x << ",\n";
@@ -160,12 +163,10 @@ namespace BaseballSimulatorVR::Data
 		           << ",\n";
 		outputFile << "  \"_comment_windShearFactor\": \"Cross-wind shear factor [m/s per meter above reference height].\",\n";
 		outputFile << "  \"windShearFactor\": " << settings.windShearFactor << ",\n";
-		outputFile << "  \"_comment_batRadiusMeters\": \"Bat radius [m]\",\n";
+		outputFile << "  \"_comment_batRadiusMeters\": \"Maximum barrel radius [m]\",\n";
 		outputFile << "  \"batRadiusMeters\": " << settings.batRadiusMeters << ",\n";
-		outputFile << "  \"_comment_batLengthMeters\": \"Bat length [m]\",\n";
+		outputFile << "  \"_comment_batLengthMeters\": \"Total bat length from knob face to tip [m]\",\n";
 		outputFile << "  \"batLengthMeters\": " << settings.batLengthMeters << ",\n";
-		outputFile << "  \"_comment_batBallRestitution\": \"Normal wood bat-ball COR at 160 mph closing speed (speed-dependent, finite effective bat mass).\",\n";
-		outputFile << "  \"batBallRestitution\": " << settings.batBallRestitution << ",\n";
 		outputFile << "  \"_comment_batAngleOffsetDegrees\": \"Bat angle offset around local right axis [deg]\",\n";
 		outputFile << "  \"batAngleOffsetDegrees\": "
 		           << settings.batAngleOffsetDegrees << ",\n";
@@ -209,6 +210,23 @@ namespace BaseballSimulatorVR::Data
 
 		const std::string jsonText = buffer.str();
 		EnvironmentRuntimeSettings settings{};
+		if (!Common::JsonKeyValueParser::TryReadDouble(jsonText,
+		        "ballRestitutionAtReferenceSpeed", settings.ballProperties.restitutionAtReferenceSpeed))
+		{
+			errorMessage = L"Environment ballRestitutionAtReferenceSpeed is missing or invalid.";
+			return std::nullopt;
+		}
+		if (!TryReadOptionalField(jsonText, "ballRadiusMeters", L"Invalid ball radius.",
+		        Common::JsonKeyValueParser::ReadDoubleResult,
+		        [&](double value) { settings.ballProperties.radiusMeters = value; }, errorMessage) ||
+		    !TryReadOptionalField(jsonText, "ballMassKilograms", L"Invalid ball mass.",
+		        Common::JsonKeyValueParser::ReadDoubleResult,
+		        [&](double value) { settings.ballProperties.massKilograms = value; }, errorMessage) ||
+		    !settings.ballProperties.IsValid())
+		{
+			if (errorMessage.empty()) errorMessage = L"Environment ball radius, mass or restitution is out of range.";
+			return std::nullopt;
+		}
 		if (!Common::JsonKeyValueParser::TryReadDouble(
 		        jsonText,
 		        "pitchDistanceMeters",
@@ -226,36 +244,6 @@ namespace BaseballSimulatorVR::Data
 			return std::nullopt;
 		}
 		if (!TryReadOptionalField(
-		        jsonText,
-		        "strikeZoneBottomMeters",
-		        L"Environment settings strikeZoneBottomMeters is invalid.",
-		        Common::JsonKeyValueParser::ReadDoubleResult,
-		        [&](const double value)
-		        {
-			        settings.strikeZoneBottomMeters = value;
-		        },
-		        errorMessage) ||
-		    !TryReadOptionalField(
-		        jsonText,
-		        "strikeZoneHeightMeters",
-		        L"Environment settings strikeZoneHeightMeters is invalid.",
-		        Common::JsonKeyValueParser::ReadDoubleResult,
-		        [&](const double value)
-		        {
-			        settings.strikeZoneHeightMeters = value;
-		        },
-		        errorMessage) ||
-		    !TryReadOptionalField(
-		        jsonText,
-		        "strikeZoneWidthMeters",
-		        L"Environment settings strikeZoneWidthMeters is invalid.",
-		        Common::JsonKeyValueParser::ReadDoubleResult,
-		        [&](const double value)
-		        {
-			        settings.strikeZoneWidthMeters = value;
-		        },
-		        errorMessage) ||
-		    !TryReadOptionalField(
 		        jsonText,
 		        "windVelocityX",
 		        L"Environment settings windVelocityX is invalid.",
@@ -327,16 +315,6 @@ namespace BaseballSimulatorVR::Data
 		        errorMessage) ||
 		    !TryReadOptionalField(
 		        jsonText,
-		        "batBallRestitution",
-		        L"Environment settings batBallRestitution is invalid.",
-		        Common::JsonKeyValueParser::ReadDoubleResult,
-		        [&](const double value)
-		        {
-			        settings.batBallRestitution = value;
-		        },
-		        errorMessage) ||
-		    !TryReadOptionalField(
-		        jsonText,
 		        "batAngleOffsetDegrees",
 		        L"Environment settings batAngleOffsetDegrees is invalid.",
 		        Common::JsonKeyValueParser::ReadDoubleResult,
@@ -390,6 +368,23 @@ namespace BaseballSimulatorVR::Data
 	    std::wstring& errorMessage) const
 	{
 		errorMessage.clear();
+		if (!Physics::IsValidBatMaterial(settings.batMaterial))
+		{
+			errorMessage = L"Play settings batMaterial is invalid.";
+			return false;
+		}
+		if (Common::GetPitchTrajectoryDisplayModeToken(settings.pitchTrajectoryDisplayMode).empty() ||
+		    Common::GetStrikeZoneDisplayModeToken(settings.strikeZoneDisplayMode).empty())
+		{
+			errorMessage = L"Play settings overlay display mode is invalid.";
+			return false;
+		}
+		if (!Common::IsValidStrikeZoneSettings({settings.strikeZoneBottomMeters,
+		        settings.strikeZoneHeightMeters, settings.strikeZoneWidthMeters}))
+		{
+			errorMessage = L"Play settings strike zone is out of range.";
+			return false;
+		}
 
 		std::ofstream outputFile{ std::filesystem::path(filePath) };
 		if (!outputFile.is_open())
@@ -406,6 +401,17 @@ namespace BaseballSimulatorVR::Data
 		const double clampedPlaybackSpeedPercent =
 		    ClampPlaybackSpeedPercent(settings.playbackSpeedPercent);
 		outputFile << "{\n";
+		outputFile << "  \"_comment_strikeZoneBottomMeters\": \"Strike zone bottom height from ground [m]\",\n";
+		outputFile << "  \"_comment_strikeZoneConfigured\": \"Player zone configured by calibration or manual adjustment.\",\n";
+		outputFile << "  \"strikeZoneConfigured\": " << (settings.strikeZoneConfigured ? "true" : "false") << ",\n";
+		outputFile << "  \"strikeZoneBottomMeters\": " << settings.strikeZoneBottomMeters
+		           << ",\n";
+		outputFile << "  \"_comment_strikeZoneHeightMeters\": \"Strike zone height [m]\",\n";
+		outputFile << "  \"strikeZoneHeightMeters\": " << settings.strikeZoneHeightMeters
+		           << ",\n";
+		outputFile << "  \"_comment_strikeZoneWidthMeters\": \"Strike zone width [m]\",\n";
+		outputFile << "  \"strikeZoneWidthMeters\": " << settings.strikeZoneWidthMeters
+		           << ",\n";
 		outputFile << "  \"_comment_duelPitchIntervalSeconds\": \"Wait interval between pitches in duel mode [s]\",\n";
 		outputFile << "  \"duelPitchIntervalSeconds\": "
 		           << clampedDuelPitchIntervalSeconds << ",\n";
@@ -420,10 +426,14 @@ namespace BaseballSimulatorVR::Data
 		outputFile << "  \"batUseRightHand\": "
 		           << (settings.batUseRightHand ? "true" : "false")
 		           << ",\n";
-		outputFile << "  \"_comment_pitchTrajectoryVisible\": \"Show pitched-ball trajectory in every mode, independently of batted balls\",\n";
-		outputFile << "  \"pitchTrajectoryVisible\": "
-		           << (settings.pitchTrajectoryVisible ? "true" : "false")
-		           << ",\n";
+		outputFile << "  \"_comment_batMaterial\": \"Bat material: Wood, Metal or Urethane.\",\n";
+		outputFile << "  \"batMaterial\": \"" << Physics::BatMaterialName(settings.batMaterial) << "\",\n";
+		outputFile << "  \"_comment_pitchTrajectoryDisplayMode\": \"Pitch trail: None, Full or ZoneOnly (inside strike-zone volume).\",\n";
+		outputFile << "  \"pitchTrajectoryDisplayMode\": \""
+		           << Common::GetPitchTrajectoryDisplayModeToken(settings.pitchTrajectoryDisplayMode) << "\",\n";
+		outputFile << "  \"_comment_strikeZoneDisplayMode\": \"Strike zone: None, Plane or Box.\",\n";
+		outputFile << "  \"strikeZoneDisplayMode\": \""
+		           << Common::GetStrikeZoneDisplayModeToken(settings.strikeZoneDisplayMode) << "\",\n";
 		outputFile << "  \"_comment_battedTrajectoryVisible\": \"Show batted-ball trajectory in every mode, independently of pitches\",\n";
 		outputFile << "  \"battedTrajectoryVisible\": "
 		           << (settings.battedTrajectoryVisible ? "true" : "false")
@@ -485,6 +495,45 @@ namespace BaseballSimulatorVR::Data
 
 		const std::string jsonText = buffer.str();
 		PlayRuntimeSettings settings{};
+		if (!Common::JsonKeyValueParser::TryReadBool(jsonText, "strikeZoneConfigured", settings.strikeZoneConfigured) ||
+		    !Common::JsonKeyValueParser::TryReadDouble(jsonText, "strikeZoneBottomMeters", settings.strikeZoneBottomMeters) ||
+		    !Common::JsonKeyValueParser::TryReadDouble(jsonText, "strikeZoneHeightMeters", settings.strikeZoneHeightMeters) ||
+		    !Common::JsonKeyValueParser::TryReadDouble(jsonText, "strikeZoneWidthMeters", settings.strikeZoneWidthMeters) ||
+		    !Common::IsValidStrikeZoneSettings({settings.strikeZoneBottomMeters,
+		        settings.strikeZoneHeightMeters, settings.strikeZoneWidthMeters}))
+		{
+			errorMessage = L"Play settings strike zone is missing, invalid or out of range.";
+			return std::nullopt;
+		}
+		const auto materialToken = Common::JsonKeyValueParser::ReadStringResult(jsonText, "batMaterial");
+		const auto material = materialToken.value
+		    ? Physics::ParseBatMaterial(*materialToken.value) : std::nullopt;
+		if (!material)
+		{
+			errorMessage = L"Play settings batMaterial is missing or invalid.";
+			return std::nullopt;
+		}
+		settings.batMaterial = *material;
+		const auto pitchDisplay = Common::JsonKeyValueParser::ReadStringResult(jsonText, "pitchTrajectoryDisplayMode");
+		if (!pitchDisplay.value ||
+		    (*pitchDisplay.value != "None" && *pitchDisplay.value != "Full" && *pitchDisplay.value != "ZoneOnly"))
+		{
+			errorMessage = L"Play settings pitchTrajectoryDisplayMode is missing or invalid.";
+			return std::nullopt;
+		}
+		settings.pitchTrajectoryDisplayMode = *pitchDisplay.value == "None"
+		    ? Common::PitchTrajectoryDisplayMode::None : *pitchDisplay.value == "Full"
+		    ? Common::PitchTrajectoryDisplayMode::Full : Common::PitchTrajectoryDisplayMode::ZoneOnly;
+		const auto zoneDisplay = Common::JsonKeyValueParser::ReadStringResult(jsonText, "strikeZoneDisplayMode");
+		if (!zoneDisplay.value ||
+		    (*zoneDisplay.value != "None" && *zoneDisplay.value != "Plane" && *zoneDisplay.value != "Box"))
+		{
+			errorMessage = L"Play settings strikeZoneDisplayMode is missing or invalid.";
+			return std::nullopt;
+		}
+		settings.strikeZoneDisplayMode = *zoneDisplay.value == "None"
+		    ? Common::StrikeZoneDisplayMode::None : *zoneDisplay.value == "Plane"
+		    ? Common::StrikeZoneDisplayMode::Plane : Common::StrikeZoneDisplayMode::Box;
 		if (!Common::JsonKeyValueParser::TryReadDouble(
 		        jsonText,
 		        "duelPitchIntervalSeconds",
@@ -515,16 +564,6 @@ namespace BaseballSimulatorVR::Data
 		        [&](const bool value)
 		        {
 			        settings.batUseRightHand = value;
-		        },
-		        errorMessage) ||
-		    !TryReadOptionalField(
-		        jsonText,
-		        "pitchTrajectoryVisible",
-		        L"Play settings pitchTrajectoryVisible is invalid.",
-		        Common::JsonKeyValueParser::ReadBoolResult,
-		        [&](const bool value)
-		        {
-			        settings.pitchTrajectoryVisible = value;
 		        },
 		        errorMessage) ||
 		    !TryReadOptionalField(

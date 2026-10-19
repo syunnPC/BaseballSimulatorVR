@@ -43,6 +43,9 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
@@ -91,7 +94,7 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(ProjectDir)..\external\openxr\lib\x64;$(ProjectDir)..\external\sqlite\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>openxr_loader.lib;sqlite3.lib;d3d12.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
@@ -112,6 +115,8 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="Common\FieldPresentationOverlay.hpp" />
     <ClInclude Include="Common\PitcherPresentation.hpp" />
     <ClInclude Include="Common\StrikeZoneCalibration.hpp" />
+    <ClInclude Include="Common\StrikeZoneSettings.hpp" />
+    <ClInclude Include="Common\MetricsPanelControls.hpp" />
     <ClInclude Include="Common\UiTextRasterization.hpp" />
     <ClInclude Include="Common\UiTextAtlas.hpp" />
     <ClInclude Include="Common\UiTextAtlasPipeline.hpp" />
@@ -120,9 +125,11 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="Common\IndexedWorldMesh.hpp" />
     <ClInclude Include="Common\ProjectedSceneMeshes.hpp" />
     <ClInclude Include="Common\PhaseTrajectoryTrails.hpp" />
+    <ClInclude Include="Common\TrajectoryTubeMesh.hpp" />
     <ClInclude Include="Common\PhaseTrajectoryOverlay.hpp" />
     <ClInclude Include="Common\BallFlightPhase.hpp" />
     <ClInclude Include="Common\TransparentGeometry.hpp" />
+    <ClInclude Include="Common\GdiAlphaTriangleRasterizer.hpp" />
     <ClInclude Include="Common\JsonKeyValueParser.hpp" />
     <ClInclude Include="Common\MathUtilities.hpp" />
     <ClInclude Include="Common\ViewProjectionState.hpp" />
@@ -134,7 +141,11 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="Data\SessionLogRepository.hpp" />
     <ClInclude Include="Framework.hpp" />
     <ClInclude Include="Physics\BallState.hpp" />
+    <ClInclude Include="Physics\BallProperties.hpp" />
+    <ClInclude Include="Common\StrikeZoneCalibrationUi.hpp" />
     <ClInclude Include="Physics\BatBallCollision.hpp" />
+    <ClInclude Include="Physics\BatMaterial.hpp" />
+    <ClInclude Include="Physics\BatGeometry.hpp" />
     <ClInclude Include="Physics\BallAerodynamicsModel.hpp" />
     <ClInclude Include="Physics\BattedBallAerodynamics.hpp" />
     <ClInclude Include="Physics\SweptBatCollision.hpp" />
@@ -146,6 +157,11 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="Render\NullRenderBackend.hpp" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="Simulation\PitchSimulationService.hpp" />
+    <ClInclude Include="Simulation\PitchFlightAnalysis.hpp" />
+    <ClInclude Include="Common\HomePlateGeometry.hpp" />
+    <ClInclude Include="Common\StrikeZoneTrajectoryGeometry.hpp" />
+    <ClInclude Include="Common\PitchPresetUi.hpp" />
+    <ClInclude Include="Common\UiPointerInput.hpp" />
     <ClInclude Include="Simulation\PitchDeliveryController.hpp" />
     <ClInclude Include="UI\DesktopHudViewModel.hpp" />
     <ClInclude Include="targetver.h" />
@@ -165,6 +181,7 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClCompile Include="Render\Dx12RenderBackend.cpp" />
     <ClCompile Include="Render\NullRenderBackend.cpp" />
     <ClCompile Include="Simulation\PitchSimulationService.cpp" />
+    <ClCompile Include="Simulation\PitchFlightAnalysis.cpp" />
     <ClCompile Include="UI\DesktopHudViewModel.cpp" />
     <ClCompile Include="XR\NullXrSystem.cpp" />
   </ItemGroup>
@@ -180,6 +197,12 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <Manifest>
       <AdditionalManifestFiles>$(ProjectDir)BaseballSimulatorVR.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
+    <Link>
+      <LinkTimeCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Release|x64'">UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+    </Link>
+    <ClCompile>
+      <EnableEnhancedInstructionSet Condition="'$(Configuration)|$(Platform)'=='Release|x64'">AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <BundledSettings Include="$(ProjectDir)..\PitchSettings.*.json;$(ProjectDir)..\EnvironmentSettings.*.json;$(ProjectDir)..\PlaySettings.*.json" />

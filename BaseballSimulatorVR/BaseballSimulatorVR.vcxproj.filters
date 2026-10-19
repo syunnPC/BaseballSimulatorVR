@@ -18,10 +18,27 @@
     <ClInclude Include="Baseball\PitchParameters.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Common\HomePlateGeometry.hpp"><Filter>ヘッダー ファイル</Filter></ClInclude>
+    <ClInclude Include="Common\StrikeZoneTrajectoryGeometry.hpp"><Filter>ヘッダー ファイル</Filter></ClInclude>
+    <ClInclude Include="Common\PitchPresetUi.hpp"><Filter>ヘッダー ファイル</Filter></ClInclude>
+    <ClInclude Include="Common\UiPointerInput.hpp"><Filter>ヘッダー ファイル</Filter></ClInclude>
+    <ClInclude Include="Simulation\PitchFlightAnalysis.hpp"><Filter>ヘッダー ファイル</Filter></ClInclude>
     <ClInclude Include="Common\D3d12DebugOverlay.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
     <ClInclude Include="Common\DebugWorldProjection.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\StrikeZoneSettings.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\MetricsPanelControls.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\TrajectoryTubeMesh.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\GdiAlphaTriangleRasterizer.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
     <ClInclude Include="Common\GraphicsBinding.hpp">
@@ -60,6 +77,12 @@
     <ClInclude Include="Physics\BallState.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Physics\BallProperties.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\StrikeZoneCalibrationUi.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Physics\PitchIntegratorType.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -96,11 +119,81 @@
     <ClInclude Include="XR\NullXrSystem.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Common\BatPoseUtilities.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\FieldPresentationState.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\FieldPresentationOverlay.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\PitcherPresentation.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\StrikeZoneCalibration.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\UiTextRasterization.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\UiTextAtlas.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\UiTextAtlasPipeline.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\D3d12RenderFrame.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\PreparedWorldProjection.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\IndexedWorldMesh.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\ProjectedSceneMeshes.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\PhaseTrajectoryTrails.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\PhaseTrajectoryOverlay.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\BallFlightPhase.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\TransparentGeometry.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\BatBallCollision.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\BatMaterial.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\BatGeometry.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\BallAerodynamicsModel.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\BattedBallAerodynamics.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\SweptBatCollision.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Simulation\PitchDeliveryController.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Core\Application.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
+    <ClCompile Include="Simulation\PitchFlightAnalysis.cpp"><Filter>ソース ファイル</Filter></ClCompile>
     <ClCompile Include="Core\FrameStatistics.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
@@ -137,6 +230,9 @@
     <ClCompile Include="XR\NullXrSystem.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
+    <ClCompile Include="Physics\BatBallCollision.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="BaseballSimulatorVR.rc">
@@ -150,5 +246,8 @@
     <Image Include="BaseballSimulatorVR.ico">
       <Filter>リソース ファイル</Filter>
     </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="BaseballSimulatorVR.manifest" />
   </ItemGroup>
 </Project>

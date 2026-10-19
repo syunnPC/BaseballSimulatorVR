@@ -1,7 +1,11 @@
 #pragma once
 
+#include "../Common/OverlayVisibilitySettings.hpp"
+
 #include "../Physics/PitchIntegratorType.hpp"
 #include "../Physics/Vector3.hpp"
+#include "../Physics/BallProperties.hpp"
+#include "../Physics/BatMaterial.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -15,15 +19,12 @@ namespace BaseballSimulatorVR::Data
 		double pitchDistanceMeters{ 18.44 };
 		bool enableMoundHeightOffset{ false };
 		double moundHeightOffsetMeters{ 0.18 };
-		double strikeZoneBottomMeters{ 0.55 };
-		double strikeZoneHeightMeters{ 1.0 };
-		double strikeZoneWidthMeters{ 0.44 };
 		Physics::Vector3 windVelocity{};
+		Physics::BallProperties ballProperties{};
 		bool enableHeightDependentWind{ false };
 		double windShearFactor{ 0.08 };
 		double batRadiusMeters{ 0.035 };
 		double batLengthMeters{ 0.84 };
-		double batBallRestitution{ 0.45 };
 		double batAngleOffsetDegrees{ 0.0 };
 		double batYawOffsetDegrees{ 0.0 };
 		double groundFanRadiusMeters{ 100.0 };
@@ -34,13 +35,19 @@ namespace BaseballSimulatorVR::Data
 
 	struct PlayRuntimeSettings final
 	{
+		double strikeZoneBottomMeters{ 0.55 };
+		double strikeZoneHeightMeters{ 1.0 };
+		double strikeZoneWidthMeters{ 0.44 };
+		bool strikeZoneConfigured{ false };
 		double duelPitchIntervalSeconds{ 5.0 };
 		double playbackSpeedPercent{ 100.0 };
 		std::uint32_t duelTargetZoneMask{ 0U };
 		std::optional<int> duelTargetZoneIndex{};
 		bool duelPitchPreviewEnabled{ true };
 		bool batUseRightHand{ true };
-		bool pitchTrajectoryVisible{ true };
+		Physics::BatMaterial batMaterial{ Physics::BatMaterial::Wood };
+		Common::PitchTrajectoryDisplayMode pitchTrajectoryDisplayMode{ Common::PitchTrajectoryDisplayMode::Full };
+		Common::StrikeZoneDisplayMode strikeZoneDisplayMode{ Common::StrikeZoneDisplayMode::Box };
 		bool battedTrajectoryVisible{ true };
 	};
 

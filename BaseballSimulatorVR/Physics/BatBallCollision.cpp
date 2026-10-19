@@ -31,27 +31,31 @@ namespace BaseballSimulatorVR::Physics
 		BatBallCollisionResult result{};
 		result.ballVelocityWorld = input.ballVelocityWorld;
 		result.ballAngularVelocityWorld = input.ballAngularVelocityWorld;
-		if (!IsFinite(input.ballVelocityWorld) ||
+		if (!input.ballProperties.IsValid() || !IsValidBatMaterial(input.batMaterial) ||
+		    !IsFinite(input.ballVelocityWorld) ||
 		    !IsFinite(input.ballAngularVelocityWorld) ||
 		    !IsFinite(input.batContactVelocityWorld) ||
 		    !IsFinite(input.collisionNormal) ||
 		    !IsFinite(input.batAxisDirectionWorld) ||
+		    !IsFinite(input.batSurfaceOffsetWorld) ||
 		    !std::isfinite(input.batLengthMeters) || input.batLengthMeters <= 0.0 ||
 		    !std::isfinite(input.batRadiusMeters) || input.batRadiusMeters <= 0.0 ||
 		    input.batRadiusMeters > input.batLengthMeters ||
 		    !std::isfinite(input.contactDistanceFromHandleMeters) ||
 		    input.contactDistanceFromHandleMeters < 0.0 ||
-		    input.contactDistanceFromHandleMeters > input.batLengthMeters ||
-		    !std::isfinite(input.restitutionAtReferenceSpeed) ||
-		    input.restitutionAtReferenceSpeed < 0.0 ||
-		    input.restitutionAtReferenceSpeed > 1.0)
+		    input.contactDistanceFromHandleMeters > input.batLengthMeters)
 		{
 			return result;
 		}
 
 		const Vector3 normal = NormalizeOrZero(input.collisionNormal);
 		const Vector3 batAxis = NormalizeOrZero(input.batAxisDirectionWorld);
-		if (LengthSquared(normal) < 0.5 || LengthSquared(batAxis) < 0.5)
+		constexpr double surfaceToleranceMeters = 1e-9;
+		const double surfaceRadius = Length(input.batSurfaceOffsetWorld);
+		if (LengthSquared(normal) < 0.5 || LengthSquared(batAxis) < 0.5 ||
+		    !std::isfinite(surfaceRadius) ||
+		    surfaceRadius > input.batRadiusMeters + surfaceToleranceMeters ||
+		    std::abs(Dot(input.batSurfaceOffsetWorld, batAxis)) > surfaceToleranceMeters)
 		{
 			return result;
 		}
@@ -63,13 +67,23 @@ namespace BaseballSimulatorVR::Physics
 		}
 
 		const double lengthScale = input.batLengthMeters / ReferenceBatLengthMeters;
+		const double ballMass = input.ballProperties.massKilograms;
+		const double ballRadius = input.ballProperties.radiusMeters;
 		const double centerOfMass = ReferenceCenterOfMassMeters * lengthScale;
 		const double radiusOfGyration = ReferenceRadiusOfGyrationMeters * lengthScale;
 		const double inertia = BatMassKilograms * radiusOfGyration * radiusOfGyration;
-		const Vector3 leverArm = batAxis *
-		    (input.contactDistanceFromHandleMeters - centerOfMass);
+		const Vector3 batSurfaceLever = batAxis *
+		    (input.contactDistanceFromHandleMeters - centerOfMass) + input.batSurfaceOffsetWorld;
+		const double axialInertia = BatAxialInertiaFactor * BatMassKilograms *
+		    input.batRadiusMeters * input.batRadiusMeters;
+		const auto inverseBatInertia = [&](const Vector3& angularImpulse)
+		{
+			const Vector3 axial = batAxis * Dot(angularImpulse, batAxis);
+			return (angularImpulse - axial) / inertia + axial / axialInertia;
+		};
+		const Vector3 normalTorque = Cross(batSurfaceLever, normal);
 		const double inverseEffectiveBatMass =
-		    (1.0 / BatMassKilograms) + LengthSquared(Cross(leverArm, normal)) / inertia;
+		    (1.0 / BatMassKilograms) + Dot(normalTorque, inverseBatInertia(normalTorque));
 		if (!std::isfinite(inverseEffectiveBatMass) || inverseEffectiveBatMass <= 0.0)
 		{
 			return result;
@@ -83,26 +97,20 @@ namespace BaseballSimulatorVR::Physics
 		const double standardRestitution = 0.45 +
 		    0.001 * (BatBallReferenceImpactSpeedMetersPerSecond - measuredSpeed) /
 		    MilesPerHourToMetersPerSecond;
-		result.restitution = std::clamp(input.restitutionAtReferenceSpeed *
-		    (standardRestitution / DefaultBatBallRestitution), 0.0, 1.0);
+		result.restitution = std::clamp(input.ballProperties.restitutionAtReferenceSpeed *
+		    (standardRestitution / DefaultBatBallRestitution) *
+		    BatContactRestitutionScale(input.batMaterial,
+		        input.contactDistanceFromHandleMeters / input.batLengthMeters), 0.0, 1.0);
 		result.effectiveBatMassKilograms = 1.0 / inverseEffectiveBatMass;
-		const double recoilFactor = BaseballMassKilograms * inverseEffectiveBatMass;
+		const double recoilFactor = ballMass * inverseEffectiveBatMass;
 		result.collisionEfficiency = (result.restitution - recoilFactor) /
 		    (1.0 + recoilFactor);
-		const double ballInertia = BaseballInertiaFactor * BaseballMassKilograms *
-		    BaseballRadiusMeters * BaseballRadiusMeters;
-		const Vector3 ballSurfaceLever = normal * -BaseballRadiusMeters;
-		const Vector3 batSurfaceLever = leverArm + normal * input.batRadiusMeters;
-		const double axialInertia = BatAxialInertiaFactor * BatMassKilograms *
-		    input.batRadiusMeters * input.batRadiusMeters;
-		const auto inverseBatInertia = [&](const Vector3& angularImpulse)
-		{
-			const Vector3 axial = batAxis * Dot(angularImpulse, batAxis);
-			return (angularImpulse - axial) / inertia + axial / axialInertia;
-		};
+		const double ballInertia = BaseballInertiaFactor * ballMass *
+		    ballRadius * ballRadius;
+		const Vector3 ballSurfaceLever = normal * -ballRadius;
 		const auto contactMobility = [&](const Vector3& impulse)
 		{
-			return impulse * (1.0 / BaseballMassKilograms + 1.0 / BatMassKilograms) +
+			return impulse * (1.0 / ballMass + 1.0 / BatMassKilograms) +
 			    Cross(Cross(ballSurfaceLever, impulse) / ballInertia, ballSurfaceLever) +
 			    Cross(inverseBatInertia(Cross(batSurfaceLever, impulse)), batSurfaceLever);
 		};
@@ -205,7 +213,7 @@ namespace BaseballSimulatorVR::Physics
 		result.normalImpulseNewtonSeconds = normalImpulseFor(jt);
 		result.tangentialImpulseWorld = tangent * jt.first + secondTangent * jt.second;
 		const Vector3 totalImpulse = normal * result.normalImpulseNewtonSeconds + result.tangentialImpulseWorld;
-		const Vector3 nextVelocity = input.ballVelocityWorld + totalImpulse / BaseballMassKilograms;
+		const Vector3 nextVelocity = input.ballVelocityWorld + totalImpulse / ballMass;
 		const Vector3 nextAngularVelocity = input.ballAngularVelocityWorld +
 		    Cross(ballSurfaceLever, totalImpulse) / ballInertia;
 		if (!IsFinite(nextVelocity) || !IsFinite(nextAngularVelocity) || !std::isfinite(result.normalImpulseNewtonSeconds))

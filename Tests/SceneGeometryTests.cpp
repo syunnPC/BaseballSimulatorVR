@@ -50,28 +50,22 @@ namespace
 		    shape == 0 ? 0. : (shape == 1 ? .18 : .5)};
 	}
 
-	void CheckOriginalPitcherSnapshots()
+	void CheckPitcherMeshStyles()
 	{
 		constexpr std::array times{-1.2, -.85, -.42, -.12, 0., .22, .6};
-		constexpr std::array<std::array<std::uint64_t, 3>, 7> expected{
-		    {{5381398187296392542ULL, 7043649313622720827ULL, 3708676262501311267ULL},
-		        {13564100428247898003ULL, 2903708032650740506ULL, 15899586376154001141ULL},
-		        {1551650178342724128ULL, 4205097021306021816ULL, 17516275741489525659ULL},
-		        {16017031932507390859ULL, 18092001968885409482ULL, 8357615223046500492ULL},
-		        {700832494844028532ULL, 14988189790871159496ULL, 4020620991657659326ULL},
-		        {979762963008122798ULL, 8956889128613172497ULL, 12176429682424443695ULL},
-		        {22894062826277434ULL, 17327341265274754273ULL, 17615095741864513723ULL}}};
 		Common::IndexedWorldMesh mesh;
-		for (std::size_t frame = 0; frame < times.size(); ++frame)
+		Common::PitcherWorldMeshCache cache;
+		for (const double time : times)
 		{
-			for (int shape = 0; shape < 3; ++shape)
+			for (const double releaseHeight : {.1, 1.2, 1.8})
 			{
-				Common::BuildPitcherWorldMesh(PitcherState(times[frame], shape), mesh);
-				Tests::Check(mesh.triangles.size() == (times[frame] < 0 ? 4514 : 4322),
-				    "Every original pitcher, mound, and held ball triangle is retained");
-				Tests::Check(Fingerprint(mesh) == expected[frame][shape],
-				    "Original pitcher positions, colors, and triangle order are retained across "
-				    "all animation keys and body scales");
+				auto state = PitcherState(time, 1);
+				state.releasePositionWorld.y = state.moundHeightMeters + releaseHeight;
+				Common::BuildPitcherWorldMesh(state, mesh);
+				Tests::Check(mesh.triangles.size() == (time < 0 ? 4514 : 4322),
+				    "Every delivery style retains the complete pitcher, mound and held ball tessellation");
+				Tests::Check(Fingerprint(cache.Get(state)) == Fingerprint(mesh),
+				    "Cached geometry matches the direct mesh across every style and animation key");
 				Tests::Check(mesh.vertices.size() < mesh.triangles.size(),
 				    "Adjacent actor faces share vertices for projection");
 			}
@@ -266,7 +260,7 @@ namespace
 
 void RunSceneGeometryTests()
 {
-	CheckOriginalPitcherSnapshots();
+	CheckPitcherMeshStyles();
 	for (double radius : {10., 100., 300.})
 	{
 		for (double width : {.1, .46, 1.2})

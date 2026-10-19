@@ -9,6 +9,10 @@
 #include "../Common/FxaaPipelineUtilities.hpp"
 #include "../Common/RuntimeLimits.hpp"
 #include "../Common/PhaseTrajectoryOverlay.hpp"
+#include "../Common/StrikeZoneCalibrationUi.hpp"
+#include "../Common/MetricsPanelControls.hpp"
+#include "../Common/PitchPresetUi.hpp"
+#include "../Common/UiPointerInput.hpp"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +41,28 @@ namespace BaseballSimulatorVR::Xr
 
 	namespace
 	{
+		[[nodiscard]] std::wstring_view PitchTrajectoryDisplayLabel(const Common::PitchTrajectoryDisplayMode mode) noexcept
+		{
+			switch (mode)
+			{
+			case Common::PitchTrajectoryDisplayMode::None: return L"投球跡 なし";
+			case Common::PitchTrajectoryDisplayMode::Full: return L"投球跡 全体";
+			case Common::PitchTrajectoryDisplayMode::ZoneOnly: return L"投球跡 ゾーン内";
+			}
+			return {};
+		}
+
+		[[nodiscard]] std::wstring_view StrikeZoneDisplayLabel(const Common::StrikeZoneDisplayMode mode) noexcept
+		{
+			switch (mode)
+			{
+			case Common::StrikeZoneDisplayMode::None: return L"ゾーン なし";
+			case Common::StrikeZoneDisplayMode::Plane: return L"ゾーン 平面";
+			case Common::StrikeZoneDisplayMode::Box: return L"ゾーン 立体";
+			}
+			return {};
+		}
+
 		constexpr wchar_t ActiveRuntimeValueName[] = L"ActiveRuntime";
 		constexpr wchar_t OpenXrRegistryPath[] = L"SOFTWARE\\Khronos\\OpenXR\\1";
 		constexpr XrViewConfigurationType PrimaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -65,24 +91,6 @@ namespace BaseballSimulatorVR::Xr
 			}
 
 			return fullPath.substr(separator + 1);
-		}
-
-		[[nodiscard]] std::wstring ExtractPitchSettingsDisplayName(
-		    const std::wstring_view fileName)
-		{
-			constexpr std::wstring_view Prefix = L"PitchSettings.";
-			constexpr std::wstring_view Suffix = L".json";
-			if (fileName.starts_with(Prefix) &&
-			    fileName.ends_with(Suffix) &&
-			    (fileName.size() > (Prefix.size() + Suffix.size())))
-			{
-				return std::wstring{
-					fileName.substr(
-					    Prefix.size(),
-					    fileName.size() - Prefix.size() - Suffix.size())
-				};
-			}
-			return std::wstring{ fileName };
 		}
 
 #if defined(_WIN64)
@@ -1128,7 +1136,8 @@ namespace BaseballSimulatorVR::Xr
 			return true;
 		}
 
-		constexpr std::size_t MetricsControlButtonCount = 12U;
+		constexpr std::size_t MetricsControlButtonCount = Common::MetricsControlButtonCount;
+		constexpr int BatMaterialControlButtonIndex = 12;
 
 		[[nodiscard]] bool TryBuildMetricsPanelBodyLayout(
 		    const OrientedUiPanelLayout& panelLayout,
@@ -1140,51 +1149,7 @@ namespace BaseballSimulatorVR::Xr
 				return false;
 			}
 
-			UiPanelInnerLayout innerLayout{};
-			if (!TryBuildPanelInnerLayout(panelLayout, &innerLayout))
-			{
-				return false;
-			}
-
-			const double titleBarBottom = innerLayout.innerTop - innerLayout.cellHeight;
-			const double controlGap =
-			    std::clamp(panelLayout.cellGapMeters * 0.8, 0.0025, 0.0100);
-			const double buttonHeight = std::clamp(
-			    innerLayout.cellHeight * 0.80,
-			    0.018,
-			    0.045);
-			const double buttonTop = innerLayout.innerBottom + buttonHeight;
-			const double buttonBottom = innerLayout.innerBottom;
-			const double availableButtonWidth =
-			    innerLayout.innerRight - innerLayout.innerLeft -
-			    (controlGap * static_cast<double>(controlButtonRects->size() - 1U));
-			if (availableButtonWidth <= 1e-6)
-			{
-				return false;
-			}
-			const double buttonWidth = availableButtonWidth /
-			                           static_cast<double>(controlButtonRects->size());
-			for (std::size_t buttonIndex = 0;
-			     buttonIndex < controlButtonRects->size();
-			     ++buttonIndex)
-			{
-				const double left =
-				    innerLayout.innerLeft +
-				    (static_cast<double>(buttonIndex) * (buttonWidth + controlGap));
-				(*controlButtonRects)[buttonIndex] = UiPanelLocalRect{
-					left,
-					buttonTop,
-					left + buttonWidth,
-					buttonBottom
-				};
-			}
-
-			bodyRect->left = innerLayout.innerLeft;
-			bodyRect->top = titleBarBottom - controlGap;
-			bodyRect->right = innerLayout.innerRight;
-			bodyRect->bottom = buttonTop + controlGap;
-			return (bodyRect->right > bodyRect->left) &&
-			       (bodyRect->top > bodyRect->bottom);
+			return Common::BuildMetricsPanelControlLayout(panelLayout, *bodyRect, *controlButtonRects);
 		}
 
 		[[nodiscard]] bool TryResolveMetricsPanelControlButtonIndex(
@@ -1221,20 +1186,10 @@ namespace BaseballSimulatorVR::Xr
 				return false;
 			}
 
-			for (std::size_t index = 0; index < controlButtonRects.size(); ++index)
-			{
-				if (!IsPointInsidePanelLocalRect(
-				        controlButtonRects[index],
-				        localX,
-				        localY))
-				{
-					continue;
-				}
-				*buttonIndex = static_cast<int>(index);
-				return true;
-			}
-
-			return false;
+			const auto resolved = Common::FindMetricsPanelControl(panelLayout, panelHitPoint, controlButtonRects);
+			if (!resolved) return false;
+			*buttonIndex = *resolved;
+			return true;
 		}
 
 		template <typename TResolveRowColorFn, typename TDrawTriangleFn>
@@ -1526,54 +1481,11 @@ namespace BaseballSimulatorVR::Xr
 		    const Physics::Vector3& panelHitPoint,
 		    int* const cellIndex)
 		{
-			if (cellIndex == nullptr)
-			{
-				return false;
-			}
-			*cellIndex = -1;
-
-			UiPanelInnerLayout innerLayout{};
-			if (!TryBuildPanelInnerLayout(panelLayout, &innerLayout))
-			{
-				return false;
-			}
-
-			const Physics::Vector3 relative = panelHitPoint - panelLayout.center;
-			const double localX = Physics::Dot(relative, panelLayout.rightAxis);
-			const double localY = Physics::Dot(relative, panelLayout.upAxis);
-			if ((localX < innerLayout.innerLeft) ||
-			    (localX > innerLayout.innerRight) ||
-			    (localY > innerLayout.innerTop) ||
-			    (localY < innerLayout.innerBottom))
-			{
-				return false;
-			}
-
-			for (int rowIndex = 0; rowIndex < panelLayout.rows; ++rowIndex)
-			{
-				const double cellTop = innerLayout.innerTop -
-				                       (static_cast<double>(rowIndex) *
-				                        (innerLayout.cellHeight + panelLayout.cellGapMeters));
-				const double cellBottom = cellTop - innerLayout.cellHeight;
-				for (int columnIndex = 0; columnIndex < panelLayout.columns; ++columnIndex)
-				{
-					const double cellLeft =
-					    innerLayout.innerLeft +
-					    (static_cast<double>(columnIndex) *
-					     (innerLayout.cellWidth + panelLayout.cellGapMeters));
-					const double cellRight = cellLeft + innerLayout.cellWidth;
-					if ((localX >= cellLeft) && (localX <= cellRight) &&
-					    (localY <= cellTop) && (localY >= cellBottom))
-					{
-						*cellIndex = (rowIndex * panelLayout.columns) + columnIndex;
-						return true;
-					}
-				}
-			}
-
-			return false;
+			if (cellIndex == nullptr) return false;
+			const auto hit = Common::FindOrientedUiPanelCellIndex(panelLayout, panelHitPoint);
+			*cellIndex = hit.value_or(-1);
+			return hit.has_value();
 		}
-
 		[[nodiscard]] bool TryResolveOrientedPanelCellBounds(
 		    const OrientedUiPanelLayout& panelLayout,
 		    const int cellIndex,
@@ -1808,8 +1720,6 @@ namespace BaseballSimulatorVR::Xr
 		    PitchPlaybackSliderCellStartIndex + PitchPlaybackSliderCellCount;
 		constexpr int PitchSettingsPreviousCellIndex =
 		    PitchZoneRandomCellIndex + 1;
-		constexpr int PitchSettingsNameCellIndex =
-		    PitchSettingsPreviousCellIndex + 1;
 		constexpr int PitchSettingsNextCellIndex =
 		    PitchSettingsPreviousCellIndex + 2;
 		constexpr double RadiansToDegrees = 57.29577951308232;
@@ -2132,11 +2042,11 @@ namespace BaseballSimulatorVR::Xr
 			layout.upAxis = upAxis;
 			layout.forwardAxis = forwardAxis;
 			layout.widthMeters = 0.36;
-			layout.heightMeters = 0.16;
+			layout.heightMeters = 0.236;
 			layout.paddingMeters = 0.010;
 			layout.cellGapMeters = 0.004;
-			layout.columns = 4;
-			layout.rows = 2;
+			layout.columns = Common::CalibrationMainPanelColumns;
+			layout.rows = Common::CalibrationMainPanelRows;
 			return layout;
 		}
 
@@ -2163,12 +2073,7 @@ namespace BaseballSimulatorVR::Xr
 				return layout;
 			}
 
-			layout.widthMeters = 0.34;
-			layout.heightMeters = 0.45;
-			layout.paddingMeters = 0.009;
-			layout.cellGapMeters = 0.004;
-			layout.columns = 5;
-			layout.rows = 9;
+			Common::ConfigureExpandedPitchPanel(layout);
 			return layout;
 		}
 
@@ -2196,7 +2101,7 @@ namespace BaseballSimulatorVR::Xr
 			}
 
 			layout.widthMeters = 0.42;
-			layout.heightMeters = 0.23;
+			layout.heightMeters = Common::MetricsPanelHeightMeters;
 			layout.paddingMeters = 0.009;
 			layout.cellGapMeters = 0.003;
 			layout.columns = 5;
@@ -4546,21 +4451,8 @@ namespace BaseballSimulatorVR::Xr
 		const bool isBatMode =
 		    (m_uiTelemetry.operationMode == UiOperationMode::BattingDuel) ||
 		    (m_uiTelemetry.operationMode == UiOperationMode::TeeBatting);
-		const HandRayState* mainPanelHandState = &rightHandRayState;
-		const HandRayState* laserHandStateWhenMainPanelVisible = &leftHandRayState;
-		if (isBatMode)
-		{
-			if (m_uiTelemetry.batUseRightHand)
-			{
-				mainPanelHandState = &leftHandRayState;
-				laserHandStateWhenMainPanelVisible = &rightHandRayState;
-			}
-			else
-			{
-				mainPanelHandState = &rightHandRayState;
-				laserHandStateWhenMainPanelVisible = &leftHandRayState;
-			}
-		}
+		const HandRayState* mainPanelHandState = isBatMode && m_uiTelemetry.batUseRightHand
+		    ? &leftHandRayState : &rightHandRayState;
 		m_showMainControlPanel = isHandRequestingMainPanel(*mainPanelHandState);
 		const Physics::Vector3 panelArcForward =
 		    ComputeHorizontalArcForwardFromHeadView(
@@ -4722,10 +4614,13 @@ namespace BaseballSimulatorVR::Xr
 		        m_battingMetricsPanelMinimized);
 
 		HandRayState handRayState{};
-		if (m_showMainControlPanel &&
-		    laserHandStateWhenMainPanelVisible->isValid)
+		if (isBatMode)
 		{
-			handRayState = *laserHandStateWhenMainPanelVisible;
+			handRayState = m_uiTelemetry.batUseRightHand ? rightHandRayState : leftHandRayState;
+		}
+		else if (m_showMainControlPanel && leftHandRayState.isValid)
+		{
+			handRayState = leftHandRayState;
 		}
 		else if (m_showMainControlPanel && mainPanelHandState->isValid)
 		{
@@ -4739,9 +4634,10 @@ namespace BaseballSimulatorVR::Xr
 		{
 			handRayState = leftHandRayState;
 		}
-		if (!handRayState.isValid)
+		const auto pointerInput = Common::AdvanceUiPointerInput(isBatMode, m_showMainControlPanel,
+		    handRayState.isValid, handRayState.isPressed, m_wasResultPanelSelectPressed);
+		if (!pointerInput.visible)
 		{
-			m_wasResultPanelSelectPressed = false;
 			m_subPanelDragTarget = SubPanelDragTarget::None;
 			m_isPitchPlaybackSliderDragging = false;
 			return;
@@ -5258,10 +5154,9 @@ namespace BaseballSimulatorVR::Xr
 			m_pendingUiCommands.push_back(command);
 		};
 
-		const bool isPressed = handRayState.isPressed;
-		const bool isRisingEdge = isPressed && !m_wasResultPanelSelectPressed;
-		const bool isFallingEdge = !isPressed && m_wasResultPanelSelectPressed;
-		m_wasResultPanelSelectPressed = isPressed;
+		const bool isPressed = pointerInput.pressed;
+		const bool isRisingEdge = pointerInput.risingEdge;
+		const bool isFallingEdge = pointerInput.fallingEdge;
 		if (isFallingEdge)
 		{
 			m_subPanelDragTarget = SubPanelDragTarget::None;
@@ -5437,10 +5332,13 @@ namespace BaseballSimulatorVR::Xr
 					m_resultPanelLaserStatus = L"batting-metrics-rescue";
 					return;
 				case 6:
-					queueCommand(UiCommandType::TogglePitchTrajectoryVisibility);
+					queueCommand(UiCommandType::CyclePitchTrajectoryDisplayMode);
 					return;
 				case 7:
 					queueCommand(UiCommandType::ToggleBattedTrajectoryVisibility);
+					return;
+				case Common::CalibrationMainButtonCellIndex:
+					queueCommand(UiCommandType::RecalibrateStrikeZone);
 					return;
 				default:
 					break;
@@ -5561,10 +5459,10 @@ namespace BaseballSimulatorVR::Xr
 			switch (hoveredMetricsControlButtonIndex)
 			{
 				case 0:
-					queueCommand(UiCommandType::TogglePitchTrajectoryVisibility);
+					queueCommand(UiCommandType::CyclePitchTrajectoryDisplayMode);
 					return;
 				case 1:
-					queueCommand(UiCommandType::ToggleStrikeZoneVisibility);
+					queueCommand(UiCommandType::CycleStrikeZoneDisplayMode);
 					return;
 				case 2:
 					queueCommand(UiCommandType::ToggleMoundHeightOffset);
@@ -5592,11 +5490,26 @@ namespace BaseballSimulatorVR::Xr
 					m_metricsPanelArcRadiusMeters = DefaultMetricsPanelArcRadiusMeters;
 					m_metricsPanelHeightOffsetMeters = DefaultMetricsPanelHeightOffsetMeters;
 					return;
-				case 10:
+				case Common::CalibrationMetricsButtonIndex:
 					queueCommand(UiCommandType::RecalibrateStrikeZone);
 					return;
 				case 11:
 					queueCommand(UiCommandType::ToggleBattedTrajectoryVisibility);
+					return;
+				case BatMaterialControlButtonIndex:
+					queueCommand(UiCommandType::CycleBatMaterial);
+					return;
+				case Common::MetricsZoneBottomDownIndex:
+					queueCommand(UiCommandType::AdjustStrikeZoneBottomDown);
+					return;
+				case Common::MetricsZoneBottomUpIndex:
+					queueCommand(UiCommandType::AdjustStrikeZoneBottomUp);
+					return;
+				case Common::MetricsZoneTopDownIndex:
+					queueCommand(UiCommandType::AdjustStrikeZoneTopDown);
+					return;
+				case Common::MetricsZoneTopUpIndex:
+					queueCommand(UiCommandType::AdjustStrikeZoneTopUp);
 					return;
 				default:
 					break;
@@ -5947,14 +5860,17 @@ namespace BaseballSimulatorVR::Xr
 		                     m_uiTelemetry.operationMode == UiOperationMode::TeeBatting;
 		const auto& hand = m_uiTelemetry.batUseRightHand ? m_rightHandPose : m_leftHandPose;
 		if (batting && hand.isValid) {
-		    const auto axis = Common::BuildBatAxisDirection(hand.forward, hand.up,
+		    const auto orientation = Common::BuildBatOrientation(hand.forward, hand.up,
 		        m_uiTelemetry.batAngleOffsetDegrees, m_uiTelemetry.batYawOffsetDegrees);
-		    if (axis) {
+		    if (orientation) {
 		        const Physics::Vector3 simulationOffset{0, 0, Common::GetPitchDistanceMeters() + Common::DebugWorldLayout::BatterToPlateDistanceMeters};
+		        const auto endpoints = Physics::BatEndpointsFromGrip(hand.position, orientation->axis,
+		            m_uiTelemetry.batLengthMeters);
 		        m_batOverlayState = Common::BatOverlayState{
-		            hand.position + *axis * Common::BatHandleStartOffsetMeters + simulationOffset,
-		            hand.position + *axis * m_uiTelemetry.batLengthMeters + simulationOffset,
-		            m_uiTelemetry.batRadiusMeters};
+		            endpoints.knob + simulationOffset,
+		            endpoints.tip + simulationOffset,
+		            m_uiTelemetry.batRadiusMeters, m_uiTelemetry.batMaterial,
+		            orientation->up};
 		    }
 		}
 
@@ -6374,13 +6290,14 @@ namespace BaseballSimulatorVR::Xr
 			    },
 			    false,
 			    false,
-			    m_overlayVisibility.showStrikeZone,
+			    true,
 			    false);
 			Common::EmitProjectedZonePassCircleOverlay(
 			    projectionState,
 			    width,
 			    height,
 			    m_duelZonePassMarker,
+			    m_latestBallState.properties.radiusMeters,
 			    [&](const ScreenPoint& startPoint,
 			        const ScreenPoint& endPoint,
 			        const LONG halfSize,
@@ -6392,7 +6309,7 @@ namespace BaseballSimulatorVR::Xr
 				        halfSize,
 				        color);
 			    });
-			Common::EmitProjectedSolidBatCylinderOverlay(
+			Common::EmitProjectedSolidBatOverlay(
 			    projectionState,
 			    width,
 			    height,
@@ -6405,8 +6322,6 @@ namespace BaseballSimulatorVR::Xr
 				    appendTriangle(p0, p1, p2, color);
 			    });
 
-			if (m_fieldPresentation.ballVisible)
-			{
 			Common::EmitProjectedPhaseBallAndTrajectoryMeshOverlay(
 			    projectionState,
 			    width,
@@ -6423,8 +6338,7 @@ namespace BaseballSimulatorVR::Xr
 			    std::clamp(
 			        m_renderQuality.trailOpacityScale,
 			        0.0F,
-			        1.5F));
-			}
+			        1.5F), m_fieldPresentation.ballVisible);
 
 			if (m_showMainControlPanel || m_showPitchControlPanel ||
 			    m_showMetricsPanel || m_showBattingMetricsPanel)
@@ -6521,6 +6435,7 @@ namespace BaseballSimulatorVR::Xr
 
 				if (m_showMainControlPanel)
 				{
+					const auto calibrationUi = Common::BuildStrikeZoneCalibrationUi(m_uiTelemetry.strikeZoneCalibration);
 					static constexpr std::array<std::array<float, 4>, 2> MainPanelRowColors{
 						Common::DebugWorldStyle::MainControlPanelModeRowColor,
 						Common::DebugWorldStyle::MainControlPanelEnvironmentRowColor
@@ -6542,7 +6457,7 @@ namespace BaseballSimulatorVR::Xr
 					    {
 						    appendTriangle(p0, p1, p2, color);
 					    },textContext);
-					const std::array<std::wstring, 8> mainPanelLabels{
+					const std::array<std::wstring_view, 9> mainPanelLabels{
 						L"\u8ecc\u9053", // trajectory
 						L"\u5bfe\u6226", // duel
 						L"\u30c6\u30a3\u30fc",
@@ -6555,8 +6470,9 @@ namespace BaseballSimulatorVR::Xr
 						m_showBattingMetricsPanel
 						    ? L"\u6253\u7403\u6307\u6a19 \u6551\u6e08"
 						    : L"\u6253\u7403\u6307\u6a19 \u958b\u304f",
-						m_overlayVisibility.showPitchTrajectory ? L"投球跡 隠" : L"投球跡 表",
-						m_overlayVisibility.showBattedTrajectory ? L"打球跡 隠" : L"打球跡 表"
+						PitchTrajectoryDisplayLabel(m_overlayVisibility.pitchTrajectoryDisplayMode),
+						m_overlayVisibility.showBattedTrajectory ? L"打球跡 隠" : L"打球跡 表",
+						calibrationUi.buttonLabel
 					};
 					EmitProjectedOrientedPanelTextOverlay(
 					    projectionState,
@@ -6578,6 +6494,28 @@ namespace BaseballSimulatorVR::Xr
 					    {
 						    appendTriangle(p0, p1, p2, color);
 					    },textContext);
+					UiPanelInnerLayout calibrationInner{};
+					if (TryBuildPanelInnerLayout(mainPanelLayout, &calibrationInner))
+					{
+						auto statusRect = Common::UiText::BuildPanelCellRect(calibrationInner.innerLeft,
+						    calibrationInner.innerTop, calibrationInner.cellWidth, calibrationInner.cellHeight,
+						    mainPanelLayout.cellGapMeters, mainPanelLayout.columns, 9);
+						statusRect.right = calibrationInner.innerRight;
+						const double middle = (statusRect.top + statusRect.bottom) * .5;
+						auto instructionRect = statusRect;
+						statusRect.bottom = middle;
+						instructionRect.top = middle;
+						const auto appendCalibrationLine = [&](const UiPanelLocalRect& rect, std::wstring_view text)
+						{
+							EmitProjectedOrientedPanelTextInRect(projectionState, width, height, mainPanelLayout,
+							    rect, text, 16, .95, .75, 0.0, .5,
+							    Common::DebugWorldStyle::MainControlPanelLabelColor,
+							    [&](const ScreenPoint& a, const ScreenPoint& b, const ScreenPoint& c, const float* color)
+							    { appendTriangle(a, b, c, color); }, textContext);
+						};
+						appendCalibrationLine(statusRect, calibrationUi.statusLine);
+						appendCalibrationLine(instructionRect, calibrationUi.instructionLine);
+					}
 				}
 
 				if (m_showPitchControlPanel)
@@ -6588,7 +6526,7 @@ namespace BaseballSimulatorVR::Xr
 						0.0F,
 						0.0F
 					};
-					static constexpr std::array<std::array<float, 4>, 9> PitchPanelRowColors{
+					static constexpr std::array<std::array<float, 4>, Common::PitchPanelRows> PitchPanelRowColors{
 						TransparentRowColor,
 						Common::DebugWorldStyle::MainControlPanelOverlayRowColor,
 						Common::DebugWorldStyle::MainControlPanelOverlayRowColor,
@@ -6597,7 +6535,9 @@ namespace BaseballSimulatorVR::Xr
 						Common::DebugWorldStyle::MainControlPanelOverlayRowColor,
 						Common::DebugWorldStyle::MainControlPanelPresetRowColor,
 						TransparentRowColor,
-						Common::DebugWorldStyle::MainControlPanelEnvironmentRowColor
+						Common::DebugWorldStyle::MainControlPanelEnvironmentRowColor,
+						TransparentRowColor,
+						TransparentRowColor
 					};
 					EmitProjectedOrientedPanelOverlay(
 					    projectionState,
@@ -6748,52 +6688,13 @@ namespace BaseballSimulatorVR::Xr
 							L"",
 							L"\u30be\u30fc\u30f3R",
 							L"<",
-							L"-",
+							L"プリセット",
 							L">",
-							L"\u8a2d\u5b9a",
+							L"",
 							L""
 						};
-						const int pitchProfileCount = std::clamp(
-						    m_uiTelemetry.pitchProfileCount,
-						    0,
-						    static_cast<int>(m_uiTelemetry.pitchProfileNames.size()));
-						if (pitchProfileCount > 0)
-						{
-							int activeProfileIndex = m_uiTelemetry.activePitchProfileIndex;
-							if ((activeProfileIndex < 0) ||
-							    (activeProfileIndex >= pitchProfileCount))
-							{
-								activeProfileIndex = 0;
-							}
-							pitchPanelLabels[static_cast<std::size_t>(
-							    PitchTypeNameCellIndex)] =
-							    m_uiTelemetry.pitchProfileNames[static_cast<std::size_t>(
-							        activeProfileIndex)];
-						}
-						else if (!m_uiTelemetry.presetName.empty())
-						{
-							pitchPanelLabels[static_cast<std::size_t>(
-							    PitchTypeNameCellIndex)] = m_uiTelemetry.presetName;
-						}
-						std::wstring settingsFileLabel =
-						    ExtractPitchSettingsDisplayName(
-						        m_uiTelemetry.pitchSettingsFileName);
 						pitchPanelLabels[static_cast<std::size_t>(PitchTypeNameCellIndex)] =
-						    m_fieldPresentation.statistics.pitchMetricsVisible
-						        ? m_fieldPresentation.statistics.pitchName : L"--";
-						if (settingsFileLabel.empty() ||
-						    (m_uiTelemetry.pitchSettingsFileCount <= 0))
-						{
-							settingsFileLabel = L"(none)";
-						}
-						if (settingsFileLabel.size() > 20)
-						{
-							settingsFileLabel =
-							    L"..." +
-							    settingsFileLabel.substr(settingsFileLabel.size() - 17);
-						}
-						pitchPanelLabels[static_cast<std::size_t>(
-						    PitchSettingsNameCellIndex)] = settingsFileLabel;
+						    m_uiTelemetry.pitchInformationVisible ? m_uiTelemetry.presetName : L"--";
 						EmitProjectedOrientedPanelTextOverlay(
 						    projectionState,
 						    width,
@@ -6814,6 +6715,33 @@ namespace BaseballSimulatorVR::Xr
 						    {
 							    appendTriangle(p0, p1, p2, color);
 						    },textContext);
+
+						UiPanelLocalRect presetNameRect{};
+						if (Common::BuildPitchPresetNameRect(pitchPanelLayout,presetNameRect))
+						{
+							const std::wstring presetLabel = m_uiTelemetry.pitchSettingsFileCount > 0 &&
+							    !m_uiTelemetry.pitchSettingsFileName.empty()
+							    ? Common::BuildPitchPresetLabel(m_uiTelemetry.pitchSettingsFileName) : L"設定ファイルなし";
+							double totalAdvance = 0.;
+							for (const auto scalar : Common::UiText::DecodeUtf16(presetLabel))
+								if (scalar != L'\n') totalAdvance += textContext.atlas.Metrics().Get(
+								    scalar,Common::UiText::GlyphAtlas::FontPixelHeight).advance;
+							const double lineHeight = textContext.atlas.Metrics().Get(
+							    L' ',Common::UiText::GlyphAtlas::FontPixelHeight).lineHeight;
+							const double aspect = (presetNameRect.right - presetNameRect.left) * .94 /
+							    ((presetNameRect.top - presetNameRect.bottom) * .88);
+							const double maximumAdvance = (std::max)(
+							    14. * Common::UiText::GlyphAtlas::FontPixelHeight,
+							    std::sqrt(totalAdvance * lineHeight * aspect));
+							const auto wrappedLabel = Common::WrapPitchPresetLabel(presetLabel,maximumAdvance,
+							    [&](std::uint32_t scalar) { return textContext.atlas.Metrics().Get(
+							        scalar,Common::UiText::GlyphAtlas::FontPixelHeight).advance; });
+							EmitProjectedOrientedPanelTextInRect(projectionState,width,height,pitchPanelLayout,
+							    presetNameRect,wrappedLabel,16,.94,.88,.5,.5,
+							    Common::DebugWorldStyle::MainControlPanelLabelColor,
+							    [&](const ScreenPoint& p0, const ScreenPoint& p1, const ScreenPoint& p2, const float* color)
+							    { appendTriangle(p0,p1,p2,color); },textContext);
+						}
 
 						UiPanelLocalRect sliderTrackRect{};
 						UiPanelLocalRect sliderHitRect{};
@@ -7026,7 +6954,7 @@ namespace BaseballSimulatorVR::Xr
 					        m_trajectoryTrails.Pitch().Points(),
 					        m_uiTelemetry.pitchDistanceMeters);
 					const double pitchMetricsSpeedMetersPerSecond =
-					    m_fieldPresentation.statistics.pitchSpeedMetersPerSecond;
+					    m_uiTelemetry.pitchMetricsSpeedMetersPerSecond;
 					const double pitchMetricsSpeedKilometersPerHour =
 					    pitchMetricsSpeedMetersPerSecond * 3.6;
 					const Physics::Vector3 horizontalSpinAxis{
@@ -7065,14 +6993,12 @@ namespace BaseballSimulatorVR::Xr
 						                : L"\u30be\u30fc\u30f3 OUT";
 					}
 
-					const std::wstring pitchTrajectoryToggleLabel =
-					    m_overlayVisibility.showPitchTrajectory ? L"投球跡 隠" : L"投球跡 表";
+					const std::wstring_view pitchTrajectoryModeLabel =
+					    PitchTrajectoryDisplayLabel(m_overlayVisibility.pitchTrajectoryDisplayMode);
 					const std::wstring battedTrajectoryToggleLabel =
 					    m_overlayVisibility.showBattedTrajectory ? L"打球跡 隠" : L"打球跡 表";
-					const std::wstring zoneToggleLabel =
-					    m_overlayVisibility.showStrikeZone
-					        ? L"\u30be\u30fc\u30f3 \u96a0"
-					        : L"\u30be\u30fc\u30f3 \u8868";
+					const std::wstring_view zoneModeLabel =
+					    StrikeZoneDisplayLabel(m_overlayVisibility.strikeZoneDisplayMode);
 					const std::wstring moundToggleLabel =
 					    m_uiTelemetry.moundHeightOffsetEnabled
 					        ? L"\u30de\u30a6\u30f3\u30c9 Off"
@@ -7089,6 +7015,9 @@ namespace BaseballSimulatorVR::Xr
 					const std::wstring batAngleUpLabel = L"\u89d2\u5ea6 +";
 					const std::wstring batYawDownLabel = L"\u5411\u304d -";
 					const std::wstring batYawUpLabel = L"\u5411\u304d +";
+					const std::wstring batMaterialLabel = m_uiTelemetry.batMaterial == Physics::BatMaterial::Wood
+					    ? L"材質 木製" : m_uiTelemetry.batMaterial == Physics::BatMaterial::Metal
+					    ? L"材質 金属" : L"材質 ウレタン";
 					std::wstring landingLabel = L"\u7740\u5f3e --";
 					if (m_uiTelemetry.hasBattedMetrics &&
 					    m_uiTelemetry.battedMetricsHasGroundContact)
@@ -7158,13 +7087,13 @@ namespace BaseballSimulatorVR::Xr
 					}
 					std::wostringstream pitchTypeSpeedLine{};
 					pitchTypeSpeedLine << std::fixed << std::setprecision(0);
-					pitchTypeSpeedLine << L"\u7403\u7a2e " << m_fieldPresentation.statistics.pitchName
+					pitchTypeSpeedLine << L"\u7403\u7a2e " << m_uiTelemetry.presetName
 					                   << L" / \u7403\u901f "
 					                   << pitchMetricsSpeedKilometersPerHour
 					                   << L"km/h";
 					std::wostringstream spinAxisLine{};
 					spinAxisLine << std::fixed << std::setprecision(0);
-					spinAxisLine << L"\u56de\u8ee2 " << m_fieldPresentation.statistics.pitchSpinRpm
+					spinAxisLine << L"\u56de\u8ee2 " << m_latestBallState.spinRpm
 					             << L"rpm / \u8ef8V " << spinAxisTiltDegrees
 					             << L"\u00b0 H " << spinAxisDirectionDegrees << L"\u00b0";
 					const std::wstring pitchBreakLine =
@@ -7188,11 +7117,18 @@ namespace BaseballSimulatorVR::Xr
 						                  << L"km/h";
 						battedSpeedLine = battedSpeedStream.str();
 					}
-					const std::array<std::wstring, 4> pitchingMetricRows{
-						m_fieldPresentation.statistics.pitchMetricsVisible ? pitchTypeSpeedLine.str() : L"球種 -- / 球速 --",
-						m_fieldPresentation.statistics.pitchMetricsVisible ? spinAxisLine.str() : L"回転 -- / 軸 --",
-						m_fieldPresentation.statistics.pitchMetricsVisible ? pitchBreakLine : L"縦 -- / 横 --",
-						m_fieldPresentation.statistics.pitchMetricsVisible ? pitchZoneLine : L"ゾーン --"
+					std::wostringstream strikeZoneBounds;
+					strikeZoneBounds << std::fixed << std::setprecision(0)
+					    << L"下限 " << m_uiTelemetry.strikeZoneBottomMeters * 100. << L"cm / 上限 "
+					    << m_uiTelemetry.strikeZoneTopMeters * 100. << L"cm / 高さ "
+					    << m_uiTelemetry.strikeZoneHeightMeters * 100. << L"cm";
+					const std::array<std::wstring, 6> pitchingMetricRows{
+						m_uiTelemetry.pitchInformationVisible ? pitchTypeSpeedLine.str() : L"球種 -- / 球速 --",
+						m_uiTelemetry.pitchInformationVisible ? spinAxisLine.str() : L"回転 -- / 軸 --",
+						m_uiTelemetry.pitchInformationVisible ? pitchBreakLine : L"縦 -- / 横 --",
+						m_uiTelemetry.pitchInformationVisible ? pitchZoneLine : L"ゾーン --",
+						Common::BuildStrikeZoneCalibrationUi(m_uiTelemetry.strikeZoneCalibration).statusLine,
+						strikeZoneBounds.str()
 					};
 					const std::array<std::wstring, 4> battingMetricRows{
 						battedSpeedLine,
@@ -7374,9 +7310,9 @@ namespace BaseballSimulatorVR::Xr
 									}
 								}
 
-								const std::array<std::wstring, MetricsControlButtonCount> metricsButtonLabels{
-									pitchTrajectoryToggleLabel,
-									zoneToggleLabel,
+								const std::array<std::wstring_view, MetricsControlButtonCount> metricsButtonLabels{
+									pitchTrajectoryModeLabel,
+									zoneModeLabel,
 									moundToggleLabel,
 									duelPreviewToggleLabel,
 									batHandToggleLabel,
@@ -7385,8 +7321,13 @@ namespace BaseballSimulatorVR::Xr
 									batYawDownLabel,
 									batYawUpLabel,
 									L"\u4f4d\u7f6eR",
-									L"ZoneR",
-									battedTrajectoryToggleLabel
+									L"校正",
+									battedTrajectoryToggleLabel,
+									batMaterialLabel,
+									L"下限−",
+									L"下限＋",
+									L"上限−",
+									L"上限＋"
 								};
 								for (std::size_t buttonIndex = 0;
 								     buttonIndex < metricsControlButtonRects.size();
@@ -7394,11 +7335,11 @@ namespace BaseballSimulatorVR::Xr
 								{
 									const bool isActiveButton =
 									    ((buttonIndex == 0U) &&
-									     m_overlayVisibility.showPitchTrajectory) ||
+									     m_overlayVisibility.pitchTrajectoryDisplayMode != Common::PitchTrajectoryDisplayMode::None) ||
 									    ((buttonIndex == 11U) &&
 									     m_overlayVisibility.showBattedTrajectory) ||
 									    ((buttonIndex == 1U) &&
-									     m_overlayVisibility.showStrikeZone) ||
+									     m_overlayVisibility.strikeZoneDisplayMode != Common::StrikeZoneDisplayMode::None) ||
 									    ((buttonIndex == 2U) &&
 									     m_uiTelemetry.moundHeightOffsetEnabled) ||
 									    ((buttonIndex == 3U) &&
@@ -7671,24 +7612,23 @@ namespace BaseballSimulatorVR::Xr
 					    Common::DebugWorldStyle::UiLaserColor.data());
 					appendMarker(
 					    laserEnd,
-					    Common::DebugWorldStyle::PlateMarkerHalfSizePixels + 1,
+					    Common::DebugWorldStyle::UiLaserHitHalfSizePixels,
 					    Common::DebugWorldStyle::UiLaserHitColor.data());
 				}
 			}
 
 			if (!hasVisibleCoverage)
 			{
-				m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryTrail& trail) {
-for (const Physics::Vector3& trailPoint : trail.Points())
-				{
-					const ScreenPoint screenPoint =
-					    Common::ProjectLegacyWorldToScreen(trailPoint, width, height);
-					appendMarker(
-					    screenPoint,
-					    Common::DebugWorldStyle::TrailHalfSizePixels,
-					    Common::DebugWorldStyle::TrailColor.data());
-				}
-});
+				m_trajectoryTrails.ForEachVisible(m_overlayVisibility, [&](const Common::TrajectoryRenderSpan& span) {
+					auto color = Common::DebugWorldStyle::TrailColor;
+					color[3] = span.persistentZone ? 1.0F : color[3] * span.fadeScale;
+					for (const Physics::Vector3& trailPoint : span.points)
+					{
+						const ScreenPoint screenPoint =
+						    Common::ProjectLegacyWorldToScreen(trailPoint, width, height);
+						appendMarker(screenPoint, Common::DebugWorldStyle::TrailHalfSizePixels, color.data());
+					}
+				});
 
 				const ScreenPoint ballScreenPoint =
 				    Common::ProjectLegacyWorldToScreen(
@@ -7697,7 +7637,7 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 				        height);
 				if (m_fieldPresentation.ballVisible) appendMarker(
 				    ballScreenPoint,
-				    Common::DebugWorldStyle::BallHalfSizePixels,
+				    Common::LegacyBallMarkerHalfSizePixels(m_latestBallState.properties.radiusMeters),
 				    Common::DebugWorldStyle::BallColor.data());
 				if (hasVisibleCoverage)
 				{

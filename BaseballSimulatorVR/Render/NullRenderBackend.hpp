@@ -2,6 +2,7 @@
 
 #include "IRenderBackend.hpp"
 #include "../Common/PhaseTrajectoryTrails.hpp"
+#include "../Common/GdiAlphaTriangleRasterizer.hpp"
 
 #include <deque>
 #include <optional>
@@ -42,5 +43,6 @@ namespace BaseballSimulatorVR::Render
 		Common::RenderQualitySettings m_renderQuality{};
 		std::optional<Physics::Vector3> m_duelZonePassMarker{};
 		std::optional<Common::BatOverlayState> m_batOverlayState{};
+		Common::GdiAlphaTriangleRasterizer m_alphaTriangleRasterizer{};
 	};
 } // namespace BaseballSimulatorVR::Render

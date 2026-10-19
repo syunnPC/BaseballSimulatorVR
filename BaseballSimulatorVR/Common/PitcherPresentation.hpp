@@ -15,8 +15,24 @@ namespace BaseballSimulatorVR::Common
 	inline constexpr double ReferencePitcherSpeedMetersPerSecond = 145.0 / 3.6;
 	[[nodiscard]] inline double PitcherArmSpeedScale(double fastestPresetSpeedMetersPerSecond)
 	{
-		return std::clamp(fastestPresetSpeedMetersPerSecond / ReferencePitcherSpeedMetersPerSecond,
-		    .25, 2.0);
+		return std::clamp(
+		    fastestPresetSpeedMetersPerSecond / ReferencePitcherSpeedMetersPerSecond, .25, 2.0);
+	}
+
+	enum class PitcherDeliveryStyle { Overhand, Sidearm, Submarine, UnderhandToss };
+	inline constexpr double SubmarineReleaseHeightLimitMeters = .65;
+	inline constexpr double SidearmReleaseHeightLimitMeters = 1.50;
+	inline constexpr double PitcherArmSegmentMeters = .38;
+	inline constexpr double PitcherLegSegmentMeters = .54;
+
+	[[nodiscard]] inline PitcherDeliveryStyle GetPitcherDeliveryStyle(const PitcherPresentationState& state)
+	{
+		if (state.underhandToss) return PitcherDeliveryStyle::UnderhandToss;
+		if (state.releasePositionWorld.y <= state.moundHeightMeters + SubmarineReleaseHeightLimitMeters)
+			return PitcherDeliveryStyle::Submarine;
+		if (state.releasePositionWorld.y <= state.moundHeightMeters + SidearmReleaseHeightLimitMeters)
+			return PitcherDeliveryStyle::Sidearm;
+		return PitcherDeliveryStyle::Overhand;
 	}
 
 	struct PitcherPose final
@@ -40,7 +56,7 @@ namespace BaseballSimulatorVR::Common
 		};
 		// Right-handed delivery facing +Z. The final arm acceleration ends at
 		// the simulation release point; every pose is grounded on the mound.
-		static constexpr std::array<Keyframe, 7> frames{
+		static constexpr std::array<Keyframe, 7> overhandFrames{
 		    {{-1.2, {0, .91, -.12}, {0, 1.39, -.12}, {-.08, 1.25, .12}, {.05, 1.25, .13},
 		         {.16, .07, .03}, {-.15, .07, -.14}},
 		        {-.85, {.02, .95, -.20}, {.03, 1.43, -.23}, {-.06, 1.42, .02}, {.06, 1.43, .06},
@@ -55,17 +71,70 @@ namespace BaseballSimulatorVR::Common
 		            {.18, .07, .87}, {-.18, .53, .45}},
 		        {.6, {.01, .87, .43}, {.01, 1.37, .49}, {-.22, .96, .66}, {.25, 1.00, .70},
 		            {.18, .07, .87}, {-.17, .07, .33}}}};
+		static constexpr std::array<Keyframe, 7> underhandFrames{
+		    {{-1.2, {0, .91, -.08}, {0, 1.40, -.06}, {-.20, 1.00, .18}, {.18, 1.02, .18},
+		         {.16, .07, .03}, {-.15, .07, -.12}},
+		        {-.85, {0, .91, -.08}, {0, 1.40, -.06}, {-.28, .80, -.10}, {.22, 1.05, .20},
+		            {.16, .07, .03}, {-.15, .07, -.12}},
+		        {-.42, {0, .90, -.04}, {0, 1.38, -.01}, {-.32, .58, -.30}, {.22, 1.04, .22},
+		            {.16, .07, .16}, {-.15, .07, -.12}},
+		        {-.12, {0, .90, .02}, {0, 1.37, .06}, {-.31, .62, .15}, {.21, 1.03, .23},
+		            {.18, .07, .30}, {-.15, .07, -.10}},
+		        {0, {0, .91, .06}, {0, 1.38, .15}, {-.30, .82, .45}, {.20, 1.04, .24},
+		            {.18, .07, .30}, {-.15, .07, -.08}},
+		        {.22, {0, .92, .10}, {0, 1.40, .16}, {-.28, 1.10, .62}, {.20, 1.05, .25},
+		            {.18, .07, .30}, {-.15, .10, -.02}},
+		        {.6, {0, .92, .10}, {0, 1.41, .14}, {-.20, .96, .35}, {.19, 1.04, .24},
+		            {.18, .07, .30}, {-.15, .07, .03}}}};
+		static constexpr std::array<Keyframe, 7> sidearmFrames{
+		    {{-1.2, {0, .91, -.12}, {0, 1.40, -.12}, {-.10, 1.28, .13}, {.08, 1.28, .15},
+		         {.17, .07, .02}, {-.16, .07, -.16}},
+		        {-.85, {.04, .94, -.22}, {.02, 1.43, -.27}, {-.22, 1.38, -.03}, {.10, 1.35, .10},
+		            {.25, .55, .15}, {-.16, .07, -.16}},
+		        {-.42, {.05, .85, -.06}, {-.10, 1.32, -.15}, {-.69, 1.24, -.42}, {.34, 1.24, .45},
+		            {.25, .12, .74}, {-.16, .07, -.16}},
+		        {-.12, {.04, .82, .12}, {-.17, 1.25, .29}, {-.83, 1.22, .15}, {.23, 1.12, .55},
+			            {.25, .07, .89}, {-.16, .08, -.10}},
+		        {0, {.03, .84, .20}, {-.12, 1.26, .49}, {-.78, 1.20, .82}, {.18, 1.16, .64},
+			            {.25, .07, .89}, {-.16, .10, -.02}},
+		        {.22, {.08, .78, .36}, {.08, 1.14, .69}, {.40, .91, .99}, {.22, .99, .75},
+			            {.25, .07, .89}, {-.27, .39, .35}},
+		        {.6, {.06, .87, .42}, {.02, 1.36, .48}, {-.12, 1.03, .65}, {.23, 1.07, .73},
+			            {.25, .07, .89}, {-.20, .07, .40}}}};
+		static constexpr std::array<Keyframe, 7> submarineFrames{
+		    {{-1.2, {0, .91, -.12}, {0, 1.40, -.10}, {-.18, 1.14, .18}, {.16, 1.16, .20},
+		         {.18, .07, .02}, {-.16, .07, -.17}},
+		        {-.85, {.05, .86, -.21}, {-.04, 1.34, -.23}, {-.36, 1.07, -.14}, {.22, 1.18, .19},
+		            {.27, .42, .19}, {-.16, .07, -.17}},
+		        {-.42, {.08, .71, -.04}, {-.17, 1.02, .28}, {-.66, .56, -.13}, {.26, .90, .63},
+		            {.29, .10, .80}, {-.16, .07, -.15}},
+		        {-.12, {.08, .65, .15}, {-.19, .64, .61}, {-.59, .19, .26}, {.19, .64, .82},
+		            {.29, .07, 1.00}, {-.16, .09, -.04}},
+		        {0, {.08, .66, .24}, {-.12, .55, .70}, {-.42, .18, .94}, {.14, .62, .93},
+		            {.29, .07, 1.00}, {-.16, .11, .05}},
+		        {.22, {.06, .68, .40}, {.12, .76, .91}, {.38, .67, 1.19}, {.25, .80, .98},
+		            {.29, .07, 1.00}, {-.29, .40, .42}},
+		        {.6, {.03, .88, .47}, {.02, 1.36, .56}, {-.15, .93, .79}, {.23, 1.02, .78},
+		            {.29, .07, 1.00}, {-.20, .07, .45}}}};
+		const auto style = GetPitcherDeliveryStyle(state);
+		const auto& frames = style == PitcherDeliveryStyle::UnderhandToss ? underhandFrames :
+		    style == PitcherDeliveryStyle::Submarine ? submarineFrames :
+		    style == PitcherDeliveryStyle::Sidearm ? sidearmFrames : overhandFrames;
 		// Keep windup start and release fixed on the delivery clock. Reallocate
 		// windup time so the final forward swing and follow-through use the
 		// preset's fastest-pitch tempo, independent of the current pitch type.
 		const double speedScale = std::clamp(state.armSpeedScale, .25, 2.0);
 		const double swingStart = -.12 / speedScale;
-		const double clockTime = std::clamp(state.secondsFromRelease,
-		    frames.front().time, frames.back().time / speedScale);
-		const double time = speedScale == 1.0 ? clockTime
-		    : (clockTime >= swingStart ? clockTime * speedScale
-		        : frames.front().time + (clockTime - frames.front().time) *
-		            (-.12 - frames.front().time) / (swingStart - frames.front().time));
+		const double clockTime = std::clamp(
+		    state.secondsFromRelease, frames.front().time, frames.back().time / speedScale);
+		const double time =
+		    speedScale == 1.0
+		        ? clockTime
+		        : (clockTime >= swingStart
+		                  ? clockTime * speedScale
+		                  : frames.front().time + (clockTime - frames.front().time) *
+		                                              (-.12 - frames.front().time) /
+		                                              (swingStart - frames.front().time));
 		std::size_t index = 0;
 		while ((index + 2 < frames.size()) && (time > frames[index + 1].time))
 		{
@@ -78,48 +147,83 @@ namespace BaseballSimulatorVR::Common
 		const auto blend = [smooth](const Vector3& p, const Vector3& q)
 		{ return p + (q - p) * smooth; };
 		PitcherPose pose{};
-		// Adapt the body to the configured release height without translating
-		// feet below/above the mound surface.
-		pose.scale = (state.releasePositionWorld.y - state.moundHeightMeters) / 1.82;
-		const Vector3 base{state.releasePositionWorld.x + .42 * pose.scale, state.moundHeightMeters,
-		    state.releasePositionWorld.z - .72 * pose.scale};
+		const double releaseHeight = state.releasePositionWorld.y - state.moundHeightMeters;
+		pose.scale = style == PitcherDeliveryStyle::Overhand ? std::clamp(releaseHeight / 1.82, 1., 1.2) : 1.;
+		const auto& releaseFrame = frames[4];
+		const Vector3 base{
+		    state.releasePositionWorld.x - releaseFrame.hand.x * pose.scale,
+		    state.moundHeightMeters,
+		    state.releasePositionWorld.z - releaseFrame.hand.z * pose.scale};
 		const auto world = [&](const Vector3& p) { return base + p * pose.scale; };
 		pose.pelvis = world(blend(a.pelvis, b.pelvis));
 		pose.chest = world(blend(a.chest, b.chest));
-		pose.head = pose.chest + Vector3{0, .32, -.02} * pose.scale;
-		pose.rightShoulder = pose.chest + Vector3{-.23, .06, 0} * pose.scale;
-		pose.leftShoulder = pose.chest + Vector3{.23, .06, 0} * pose.scale;
+		const double enteringStride = std::clamp((time + .85) / .43, 0., 1.);
+		const double deliveryWeight = enteringStride * enteringStride * (3. - 2. * enteringStride);
+		const double highExtension = style == PitcherDeliveryStyle::Overhand ?
+		    std::clamp((releaseHeight - 1.82 * pose.scale) / .316, 0., 1.) : 0.;
+		const double crouch = style == PitcherDeliveryStyle::Sidearm ?
+		    std::clamp(1.20 - releaseHeight, 0., .55) * .5 * deliveryWeight : 0.;
+		const double bodyLift = highExtension * .18 * pose.scale - crouch;
+		pose.pelvis.y += bodyLift;
+		pose.chest += Vector3{0., bodyLift, highExtension * .10 * pose.scale};
+		const auto torsoDirection = Physics::NormalizeOrZero(pose.chest - pose.pelvis);
+		pose.chest = pose.pelvis + torsoDirection * (.53 * pose.scale);
+		const auto lateral = Physics::NormalizeOrZero(Vector3{1., 0., 0.} -
+		    torsoDirection * torsoDirection.x);
+		pose.head = pose.chest + (torsoDirection * .14 + Vector3{0., .18, -.02}) * pose.scale;
+		pose.rightShoulder = pose.chest + (torsoDirection * .06 - lateral * .23) * pose.scale;
+		pose.leftShoulder = pose.chest + (torsoDirection * .06 + lateral * .23) * pose.scale;
 		pose.rightHand = world(blend(a.hand, b.hand));
+		pose.rightHand.y += (releaseHeight - releaseFrame.hand.y * pose.scale) * deliveryWeight;
 		pose.leftHand = world(blend(a.glove, b.glove));
-		pose.heldBall = pose.rightHand;
 		pose.rightHip = pose.pelvis + Vector3{-.13, 0, 0} * pose.scale;
 		pose.leftHip = pose.pelvis + Vector3{.13, 0, 0} * pose.scale;
 		pose.rightFoot = world(blend(a.rightFoot, b.rightFoot));
 		pose.leftFoot = world(blend(a.leftFoot, b.leftFoot));
+		pose.leftFoot.z -= highExtension * .22 * pose.scale;
+		const auto reachableHand = [&](const Vector3& shoulder, const Vector3& target)
+		{
+			const auto delta = target - shoulder;
+			const double distance = Physics::Length(delta);
+			const double reach = 2. * PitcherArmSegmentMeters * pose.scale - 1e-6;
+			return distance > reach ? shoulder + delta * (reach / distance) : target;
+		};
+		pose.rightHand = reachableHand(pose.rightShoulder, pose.rightHand);
+		pose.leftHand = reachableHand(pose.leftShoulder, pose.leftHand);
+		pose.heldBall = pose.rightHand;
 		const auto joint =
 		    [](const Vector3& start, const Vector3& end, const Vector3& bend, const double length)
 		{
 			const Vector3 delta = end - start;
 			const double distance = Physics::Length(delta);
 			const Vector3 axis = Physics::NormalizeOrZero(delta);
-			const Vector3 normal = Physics::NormalizeOrZero(bend - axis * Physics::Dot(bend, axis));
+			auto perpendicular = bend - axis * Physics::Dot(bend, axis);
+			if (Physics::Length(perpendicular) < 1e-6)
+			{
+				const Vector3 seed = std::abs(axis.y) < .9 ? Vector3{0., 1., 0.} : Vector3{1., 0., 0.};
+				perpendicular = seed - axis * Physics::Dot(seed, axis);
+			}
+			const Vector3 normal = Physics::NormalizeOrZero(perpendicular);
 			const double height =
 			    std::sqrt((std::max)(0.0, length * length - distance * distance * .25));
 			return (start + end) * .5 + normal * height;
 		};
-		pose.rightElbow =
-		    joint(pose.rightShoulder, pose.rightHand, {-.8, 0, -.5}, .36 * pose.scale);
-		pose.leftElbow = joint(pose.leftShoulder, pose.leftHand, {.8, -.2, 0}, .34 * pose.scale);
-		pose.rightKnee = joint(pose.rightHip, pose.rightFoot, {0, 0, .9}, .48 * pose.scale);
-		pose.leftKnee = joint(pose.leftHip, pose.leftFoot, {0, .4, 1}, .48 * pose.scale);
+		const auto throwingBend = style == PitcherDeliveryStyle::Submarine ? Vector3{-.7, .3, -.4} :
+		    style == PitcherDeliveryStyle::Sidearm ? Vector3{-.7, .25, -.6} : Vector3{-.8, 0., -.5};
+		pose.rightElbow = joint(pose.rightShoulder, pose.rightHand, throwingBend,
+		    PitcherArmSegmentMeters * pose.scale);
+		pose.leftElbow = joint(pose.leftShoulder, pose.leftHand, {.8, -.2, 0}, PitcherArmSegmentMeters * pose.scale);
+		pose.rightKnee = joint(pose.rightHip, pose.rightFoot, {0, .2, .9}, PitcherLegSegmentMeters * pose.scale);
+		pose.leftKnee = joint(pose.leftHip, pose.leftFoot, {0, .4, 1}, PitcherLegSegmentMeters * pose.scale);
 		if (state.throwsLeftHanded)
 		{
-			for (auto* point : { &pose.pelvis, &pose.chest, &pose.head,
-			         &pose.rightShoulder, &pose.rightElbow, &pose.rightHand,
-			         &pose.leftShoulder, &pose.leftElbow, &pose.leftHand,
-			         &pose.rightHip, &pose.rightKnee, &pose.rightFoot,
-			         &pose.leftHip, &pose.leftKnee, &pose.leftFoot, &pose.heldBall })
+			for (auto* point : {&pose.pelvis, &pose.chest, &pose.head, &pose.rightShoulder,
+			         &pose.rightElbow, &pose.rightHand, &pose.leftShoulder, &pose.leftElbow,
+			         &pose.leftHand, &pose.rightHip, &pose.rightKnee, &pose.rightFoot,
+			         &pose.leftHip, &pose.leftKnee, &pose.leftFoot, &pose.heldBall})
+			{
 				point->x = 2.0 * state.releasePositionWorld.x - point->x;
+			}
 			std::swap(pose.rightShoulder, pose.leftShoulder);
 			std::swap(pose.rightElbow, pose.leftElbow);
 			std::swap(pose.rightHand, pose.leftHand);
@@ -170,7 +274,9 @@ namespace BaseballSimulatorVR::Common
 			const auto index = static_cast<std::uint32_t>(mesh.vertices.size());
 			auto position = p;
 			if (state.throwsLeftHanded)
+			{
 				position.x = 2.0 * state.releasePositionWorld.x - position.x;
+			}
 			mesh.vertices.push_back(position);
 			return index;
 		};
@@ -179,7 +285,10 @@ namespace BaseballSimulatorVR::Common
 		{
 			// Reflection reverses orientation. Restore outward winding before
 			// computing world-light shading for the reflected surface.
-			if (state.throwsLeftHanded) std::swap(j, k);
+			if (state.throwsLeftHanded)
+			{
+				std::swap(j, k);
+			}
 			const auto& a = mesh.vertices[i];
 			const auto& b = mesh.vertices[j];
 			const auto& c = mesh.vertices[k];
@@ -333,7 +442,8 @@ namespace BaseballSimulatorVR::Common
 		    .012 * s, .012 * s, red);
 		if (state.secondsFromRelease < 0.0)
 		{
-			ellipsoid(pose.heldBall, {.037, .037, .037}, ball);
+			const double radius = state.heldBallRadiusMeters;
+			ellipsoid(pose.heldBall, {radius, radius, radius}, ball);
 		}
 	}
 	class PitcherWorldMeshCache final
@@ -341,17 +451,19 @@ namespace BaseballSimulatorVR::Common
 	  public:
 		[[nodiscard]] const IndexedWorldMesh& Get(PitcherPresentationState state)
 		{
-			state.secondsFromRelease = std::clamp(
-			    state.secondsFromRelease, -PitcherWindupSeconds,
+			state.secondsFromRelease = std::clamp(state.secondsFromRelease, -PitcherWindupSeconds,
 			    PitcherFollowThroughSeconds / std::clamp(state.armSpeedScale, .25, 2.0));
 			const auto same = [](const auto& a, const auto& b)
 			{
 				return a.visible == b.visible && a.throwsLeftHanded == b.throwsLeftHanded &&
-				       a.armSpeedScale == b.armSpeedScale && a.secondsFromRelease == b.secondsFromRelease &&
+				       a.armSpeedScale == b.armSpeedScale &&
+				       a.secondsFromRelease == b.secondsFromRelease &&
 				       a.releasePositionWorld.x == b.releasePositionWorld.x &&
 				       a.releasePositionWorld.y == b.releasePositionWorld.y &&
 				       a.releasePositionWorld.z == b.releasePositionWorld.z &&
-				       a.moundHeightMeters == b.moundHeightMeters;
+				       a.moundHeightMeters == b.moundHeightMeters &&
+				       a.heldBallRadiusMeters == b.heldBallRadiusMeters &&
+				       a.underhandToss == b.underhandToss;
 			};
 			if (!m_valid || !same(state, m_state))
 			{

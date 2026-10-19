@@ -222,6 +222,21 @@ void RunDesktopRenderResizeTests()
 	renderFrame();
 	checkSize(800, 450);
 	Tests::Check(IsWindowVisible(window.handle) == FALSE, "Integration test never displays its native window");
+	{
+		BaseballSimulatorVR::Common::OverlayVisibilitySettings hidden{};
+		hidden.showFloorMesh = hidden.showBattedTrajectory = false;
+		hidden.strikeZoneDisplayMode = BaseballSimulatorVR::Common::StrikeZoneDisplayMode::None;
+		hidden.pitchTrajectoryDisplayMode = BaseballSimulatorVR::Common::PitchTrajectoryDisplayMode::None;
+		backend.SetOverlayVisibility(hidden);
+		backend.SetFieldPresentationState({});
+		auto away = mirrorView;
+		away.position.z = -50.0;
+		backend.SetDesktopMirrorView(away);
+		renderFrame();
+		Tests::Check(backend.GetBackendName().find(L"dp:empty-world-shader") != std::wstring_view::npos &&
+		    backend.GetDesktopRenderStatus().atlasVertexCount == 0,
+		    "Looking away from a world path never reprojects it into a different legacy chart or center reticle");
+	}
 	Tests::Check(DestroyWindow(window.handle) != FALSE, "Remove the desktop target window");
 	window.handle = nullptr;
 	backend.BeginFrame();

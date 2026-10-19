@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Vector3.hpp"
+#include "BallProperties.hpp"
+#include "BatMaterial.hpp"
 
 namespace BaseballSimulatorVR::Physics
 {
@@ -16,17 +18,22 @@ namespace BaseballSimulatorVR::Physics
 	struct BatBallCollisionInput final
 	{
 		Vector3 ballVelocityWorld{};
+		BallProperties ballProperties{};
 		Vector3 ballAngularVelocityWorld{}; // radians / second, including incoming pitch spin
 		// Velocity AT CONTACT before impact, including angular velocity cross lever arm.
 		Vector3 batContactVelocityWorld{};
 		// Points from bat to ball. Both directions are normalized by the solver.
 		Vector3 collisionNormal{};
 		Vector3 batAxisDirectionWorld{};
+		// From the axis point at contactDistanceFromHandleMeters to the physical
+		// bat surface. Perpendicular to the bat axis; zero at an end-face center.
+		Vector3 batSurfaceOffsetWorld{};
+		// Distance along the complete bat, from the knob face (0) to the tip (L).
 		double contactDistanceFromHandleMeters{ 0.0 };
 		double batLengthMeters{ 0.84 };
+		// Maximum barrel radius used to scale the whole bat's axial inertia.
 		double batRadiusMeters{ 0.035 };
-		// Normal COR at 160 mph closing speed; not apparent COR/collision efficiency.
-		double restitutionAtReferenceSpeed{ DefaultBatBallRestitution };
+		BatMaterial batMaterial{ BatMaterial::Wood };
 	};
 
 	struct BatBallCollisionResult final
@@ -43,7 +50,7 @@ namespace BaseballSimulatorVR::Physics
 		double collisionEfficiency{ 0.0 };
 	};
 
-	// Free rigid wood bat model with measured inertia and speed-dependent COR.
+	// Free rigid bat inertia with material, contact-position and speed-dependent COR.
 	// Research references are listed in README.md.
 	// Separating/tangential contacts or invalid input produce no impulse. Oblique
 	// approaching impacts exchange tangential momentum and ball spin at the surface.

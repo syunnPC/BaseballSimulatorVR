@@ -1,5 +1,6 @@
 #include "TestSupport.hpp"
 #include "../BaseballSimulatorVR/Common/StrikeZoneCalibration.hpp"
+#include "../BaseballSimulatorVR/Common/StrikeZoneSettings.hpp"
 
 #include <array>
 #include <cmath>
@@ -38,11 +39,21 @@ void RunStrikeZoneCalibrationTests()
 	Tests::Check(near(EstimatePlayerHeightFromEyeHeight(standingEyeHeight), 1.8),
 	             "Standing eye height converts to full height");
 	const auto adultZone = ComputeStrikeZoneFromPlayerHeight(1.8);
-	Tests::Check(near(adultZone.bottomMeters, 0.486) && near(adultZone.heightMeters, 0.477),
+	Tests::Check(near(adultZone.bottomMeters, 0.504) && near(adultZone.heightMeters, 0.756),
 	             "Adult zone uses the documented height fractions");
 	const auto childZone = ComputeStrikeZoneFromPlayerHeight(1.0);
-	Tests::Check(near(childZone.bottomMeters, 0.270) && near(childZone.heightMeters, 0.265),
-	             "Short player zone preserves proportional height below 0.40 meters");
+	Tests::Check(near(childZone.bottomMeters, 0.280) && near(childZone.heightMeters, 0.420),
+	             "Short player zone preserves proportional standing body boundaries");
+	const auto representative = ComputeStrikeZoneFromPlayerHeight(1.7058);
+	Tests::Check(std::abs(representative.bottomMeters + representative.heightMeters - 1.2029) < .02 &&
+	    representative.bottomMeters > .27 * 1.7058,
+	    "Standing upper boundary approximates the AIST torso midpoint while the knee boundary is slightly higher than ABS");
+	for (double height : {1.0, 1.2, 1.5, 1.8, 2.0, 2.5})
+	{
+		const auto estimated = ComputeStrikeZoneFromPlayerHeight(height);
+		Tests::Check(IsValidStrikeZoneSettings({estimated.bottomMeters, estimated.heightMeters, .44}),
+		    "Every supported player height produces a persistable zone without clamping");
+	}
 
 	const std::array invalidHeights{
 		0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
@@ -146,10 +157,29 @@ void RunStrikeZoneCalibrationTests()
 	}
 	calibrator.Reset();
 	const auto smallestPlayer = FeedStable(calibrator, EyeHeightToFullHeightFraction, 0.0);
-	Tests::Check(smallestPlayer && near(smallestPlayer->strikeZone.heightMeters, 0.265),
+	Tests::Check(smallestPlayer && near(smallestPlayer->strikeZone.heightMeters, 0.420),
 	             "The lower supported standing-height boundary calibrates without clamping");
 	calibrator.Reset();
 	const auto tallestPlayer = FeedStable(calibrator, 2.5 * EyeHeightToFullHeightFraction, 0.0);
 	Tests::Check(tallestPlayer && near(tallestPlayer->playerHeightMeters, 2.5),
 	             "The upper supported standing-height boundary calibrates");
+	calibrator.Reset();
+	(void)calibrator.AddSample(Sample(standingEyeHeight, 0.0));
+	calibrator.UseManualZone();
+	Tests::Check(calibrator.IsComplete() && calibrator.GetSampleCount() == 0 &&
+	    calibrator.GetProgress().status == StrikeZoneCalibrationStatus::Manual &&
+	    !FeedStable(calibrator, standingEyeHeight, 1.0),
+	    "A manual adjustment stops an unfinished calibration from overwriting the chosen zone");
+	calibrator.UseSavedZone();
+	Tests::Check(calibrator.GetProgress().status == StrikeZoneCalibrationStatus::Saved &&
+	    !FeedStable(calibrator, standingEyeHeight, 5.0),
+	    "Restored player settings stay active until an explicit recalibration");
+	calibrator.Reset();
+	Tests::Check(FeedStable(calibrator, standingEyeHeight, 9.0).has_value(),
+	    "Explicit recalibration resumes height acquisition after manual or saved settings");
+	StrikeZoneRuntimeSettings boundary{.5, .205, .44};
+	Tests::Check(AdjustStrikeZoneBoundary(boundary, true, -.01) &&
+	    IsValidStrikeZoneSettings(boundary) && near(boundary.bottomMeters, .5) &&
+	    near(boundary.heightMeters, .2) && !AdjustStrikeZoneBoundary(boundary, true, -.01),
+	    "Reaching the minimum manual zone height remains valid at floating-point boundaries");
 }

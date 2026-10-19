@@ -28,7 +28,7 @@ namespace
 	{
 		Physics::PitchPhysicsEngine engine;
 		Physics::BallState state;
-		state.aerodynamicsModel = Physics::BallAerodynamicsModel::BattedBall;
+		state.aerodynamicsModel = Physics::BallAerodynamicsModel::Physical;
 		state.position = {0, 1, 0};
 		const double angle = angleDegrees * std::numbers::pi / 180.;
 		state.velocity = {0, speed * std::sin(angle), -speed * std::cos(angle)};
@@ -165,7 +165,7 @@ namespace
 		state.position = {};
 		state.velocity = {0, 0, 40};
 		state.spinRpm = 0;
-		state.aerodynamicsModel = Physics::BallAerodynamicsModel::BattedBall;
+		state.aerodynamicsModel = Physics::BallAerodynamicsModel::Physical;
 		for (int n = 0; n < 500; ++n)
 		{
 			state = weightless.Step(state, parameters, std::chrono::duration<double>(.001));
@@ -180,7 +180,7 @@ namespace
 		batted.velocity = {0, 20, -40};
 		batted.spinAxis = {1, 0, 0};
 		batted.spinRpm = 2500;
-		batted.aerodynamicsModel = Physics::BallAerodynamicsModel::BattedBall;
+		batted.aerodynamicsModel = Physics::BallAerodynamicsModel::Physical;
 		const auto nominal = engine.Step(batted, parameters, std::chrono::duration<double>(.01));
 		auto unrelatedProfile = parameters;
 		unrelatedProfile.spinAxis = {0, 0, 1};
@@ -196,7 +196,7 @@ namespace
 		                 Near(nominal.velocity, ignoredProfile.velocity),
 		    "A batted ball cannot inherit pitch-specific drag, lift, table, seam, or spin "
 		    "configuration");
-		Tests::Check(nominal.aerodynamicsModel == Physics::BallAerodynamicsModel::BattedBall &&
+		Tests::Check(nominal.aerodynamicsModel == Physics::BallAerodynamicsModel::Physical &&
 		                 nominal.spinRpm == batted.spinRpm &&
 		                 Near(nominal.spinAxis, batted.spinAxis),
 		    "Integrator preserves the selected aerodynamic model and physical spin state");
@@ -259,7 +259,7 @@ namespace
 		contact.velocity = {0, 25, -43.301270189};
 		contact.spinAxis = {1, 0, 0};
 		contact.spinRpm = 2500;
-		contact.aerodynamicsModel = Physics::BallAerodynamicsModel::BattedBall;
+		contact.aerodynamicsModel = Physics::BallAerodynamicsModel::Physical;
 		simulation.SetBallState(contact);
 		const auto& saved = simulation.GetPitchParameters();
 		Tests::Check(Near(saved.initialVelocity, delivered.initialVelocity) &&
@@ -271,7 +271,7 @@ namespace
 		simulation.Tick(std::chrono::duration<double>(.001));
 		Tests::Check(simulation.GetBallState().velocity.z > contact.velocity.z &&
 		                 simulation.GetBallState().aerodynamicsModel ==
-		                     Physics::BallAerodynamicsModel::BattedBall,
+		                     Physics::BallAerodynamicsModel::Physical,
 		    "Service advances the contacted ball with its selected physical mode");
 		simulation.Reset(delivered);
 		Tests::Check(simulation.GetBallState().aerodynamicsModel ==

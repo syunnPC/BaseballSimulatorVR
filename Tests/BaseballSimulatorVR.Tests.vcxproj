@@ -60,6 +60,10 @@
     <ClCompile Include="SessionLogTests.cpp" />
     <ClCompile Include="FrameStatisticsTests.cpp" />
     <ClCompile Include="BundledSettingsTests.cpp" />
+    <ClCompile Include="BeginnerPresetTests.cpp" />
+    <ClCompile Include="PitchPresetUiTests.cpp" />
+    <ClCompile Include="HomePlateGeometryTests.cpp" />
+    <ClCompile Include="PitchFlightAnalysisTests.cpp" />
     <ClCompile Include="PitchDeliveryTests.cpp" />
     <ClCompile Include="BatBallCollisionTests.cpp" />
     <ClCompile Include="SweptBatCollisionTests.cpp" />
@@ -71,7 +75,13 @@
     <ClCompile Include="D3d12RenderFrameTests.cpp" />
     <ClCompile Include="SceneGeometryTests.cpp" />
     <ClCompile Include="TrajectoryTrailTests.cpp" />
+    <ClCompile Include="TrajectoryMeshTests.cpp" />
     <ClCompile Include="BattedBallFlightTests.cpp" />
+    <ClCompile Include="TossPhysicsTests.cpp" />
+    <ClCompile Include="BallRenderingTests.cpp" />
+    <ClCompile Include="StrikeZoneCalibrationUiTests.cpp" />
+    <ClCompile Include="MetricsPanelControlsTests.cpp" />
+    <ClCompile Include="UiPointerInputTests.cpp" />
     <ClCompile Include="DesktopRenderResizeTests.cpp" />
     <ClCompile Include="ApplicationSimulationTests.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Core\FrameStatistics.cpp" />
@@ -81,6 +91,7 @@
     <ClCompile Include="..\BaseballSimulatorVR\Physics\PitchPhysicsEngine.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Physics\BatBallCollision.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Simulation\PitchSimulationService.cpp" />
+    <ClCompile Include="..\BaseballSimulatorVR\Simulation\PitchFlightAnalysis.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Render\Dx12RenderBackend.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Core\Application.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\UI\DesktopHudViewModel.cpp" />

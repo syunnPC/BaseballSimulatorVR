@@ -20,6 +20,9 @@ namespace
 		previous.velocity = parameters.initialVelocity;
 		previous.spinAxis = parameters.spinAxis;
 		previous.spinRpm = parameters.spinRpm;
+		previous.properties = parameters.ballProperties;
+		previous.aerodynamicsModel = parameters.usePhysicalAerodynamics
+		    ? BallAerodynamicsModel::Physical : BallAerodynamicsModel::PitchProfile;
 		for (int step = 0; step < 2000; ++step)
 		{
 			BallState current = engine.Step(previous, parameters, std::chrono::duration<double>(0.001));
@@ -36,12 +39,14 @@ namespace
 		throw std::runtime_error("Pitch must reach home plate within 2 simulated seconds");
 	}
 
-	void CheckDifficultyPresets(const std::filesystem::path& sourceRoot)
+	void CheckTrainingPresets(const std::filesystem::path& sourceRoot)
 	{
 		using namespace BaseballSimulatorVR;
 		struct Pitch { std::wstring_view name; double kmh, horizontal, vertical, rpm; };
-		struct Level { std::wstring_view name; std::vector<Pitch> pitches; };
+		struct Level { std::wstring_view name; std::vector<Pitch> pitches; double releaseHeightMeters{ 1.8 }; };
 		const std::array levels{
+			Level{L"VeryEasy", {{L"ストレート",110,0,.40,2300}, {L"スライダー",100,.20,-.05,2500},
+				{L"カーブ",90,.25,-.35,2600}, {L"シンカー",100,-.30,-.10,2200}}},
 			Level{L"Easy", {{L"ストレート",135,0,.40,2300}, {L"カーブ",110,.25,-.35,2600},
 				{L"スライダー",115,.20,-.05,2500}}},
 			Level{L"Normal", {{L"ストレート",145,0,.40,2300}, {L"チェンジアップ",120,-.25,.12,1600},
@@ -52,37 +57,42 @@ namespace
 			Level{L"Expert", {{L"ストレート",165,0,.40,2300}, {L"ツーシーム",165,-.30,.25,2200},
 				{L"シュート",155,-.40,.18,2100}, {L"チェンジアップ",145,-.25,.12,1600},
 				{L"スライダー",145,.20,-.05,2500}, {L"フォーク",135,0,.02,900},
-				{L"カーブ",135,.25,-.35,2600}, {L"カット",160,.10,.25,2400}, {L"スイーパー",140,.40,.05,2600}}}
+				{L"カーブ",135,.25,-.35,2600}, {L"カット",160,.10,.25,2400}, {L"スイーパー",140,.40,.05,2600}}},
+			Level{L"Challenge1", {{L"ストレート",120,0,.40,2300}, {L"カーブ",100,.25,-.35,2600},
+				{L"シンカー",110,-.30,-.10,2200}}, .1},
+			Level{L"Challenge2", {{L"ツーシーム",170,-.30,.25,2200}}}
 		};
 		Data::PitchPresetJsonStorage storage;
 		std::wstring error;
 		for (const auto& level : levels)
 		{
-			const std::wstring prefix = L"PitchSettings.Difficulty." + std::wstring{level.name};
+			const std::wstring prefix = (level.name.starts_with(L"Challenge")
+				? L"PitchSettings." : L"PitchSettings.Difficulty.") + std::wstring{level.name};
 			const auto right = storage.LoadPitchSettings((sourceRoot / (prefix + L".RHP.json")).wstring(), error);
 			const auto left = storage.LoadPitchSettings((sourceRoot / (prefix + L".LHP.json")).wstring(), error);
-			Tests::Check(right && left, "Each difficulty includes a loadable right- and left-handed preset");
+			Tests::Check(right && left, "Each training set includes a loadable right- and left-handed preset");
 			Tests::Check(!right->pitcherThrowsLeftHanded && left->pitcherThrowsLeftHanded,
-				"Difficulty handedness reaches the production runtime setting");
+				"Preset handedness reaches the production runtime setting");
 			Tests::Check(right->pitchProfiles.size() == level.pitches.size() &&
-				left->pitchProfiles.size() == level.pitches.size(), "Difficulty repertoire has exactly the requested pitches");
+				left->pitchProfiles.size() == level.pitches.size(), "Training repertoire has exactly the requested pitches");
 			Tests::Check(right->randomPitchProfileEnabled && left->randomPitchProfileEnabled &&
 				right->activePitchProfileIndex == 0 && left->activePitchProfileIndex == 0,
-				"Difficulty starts with the fastball and enables uniform random repertoire selection");
+				"Training preset starts with its first profile and enables uniform random repertoire selection");
 			for (std::size_t i = 0; i < level.pitches.size(); ++i)
 			{
 				const auto& expected = level.pitches[i];
 				const auto& r = right->pitchProfiles[i].pitchParameters;
 				const auto& l = left->pitchProfiles[i].pitchParameters;
 				Tests::Check(right->pitchProfiles[i].name == expected.name && left->pitchProfiles[i].name == expected.name,
-					"Difficulty profiles preserve the requested pitch labels and order");
+					"Training profiles preserve the requested pitch labels and order");
 				Tests::Check(std::abs(Physics::Length(r.initialVelocity) * 3.6 - expected.kmh) < 1e-9 &&
 					std::abs(Physics::Length(l.initialVelocity) * 3.6 - expected.kmh) < 1e-9,
 					"Every requested release speed is converted from km/h to m/s exactly");
 				Tests::Check(r.initialVelocity.x == 0 && r.initialVelocity.y == 0 &&
 					l.initialVelocity.x == 0 && l.initialVelocity.y == 0 &&
-					r.releaseHeightMeters == 1.8 && l.releaseHeightMeters == 1.8,
-					"Difficulty files retain the single-speed schema and common release height");
+					r.releaseHeightMeters == level.releaseHeightMeters &&
+					l.releaseHeightMeters == level.releaseHeightMeters,
+					"Training profiles retain exact speeds and the preset release height");
 				Tests::Check(std::abs(Physics::Length(r.spinAxis) - 1) < 1e-9 &&
 					std::abs(Physics::Length(l.spinAxis) - 1) < 1e-9 &&
 					r.spinAxis.x == l.spinAxis.x && r.spinAxis.y == -l.spinAxis.y &&
@@ -90,6 +100,8 @@ namespace
 					"Axial spin vectors mirror horizontally without reversing vertical Magnus force");
 				Tests::Check(r.spinRpm == expected.rpm && l.spinRpm == expected.rpm &&
 					r.liftCoefficient == l.liftCoefficient && r.dragCoefficient == l.dragCoefficient &&
+					!r.usePhysicalAerodynamics && !l.usePhysicalAerodynamics &&
+					!r.underhandToss && !l.underhandToss &&
 					!r.useCoefficientTable && !l.useCoefficientTable &&
 					!r.enableSeamPerturbation && !l.enableSeamPerturbation,
 					"Fitted pitch shapes use matching coefficients without table or seam overrides");
@@ -109,13 +121,69 @@ namespace
 			for (const auto* settings : {&*right, &*left})
 			{
 				const auto& root = settings->pitchParameters;
-				const auto& fastball = settings->pitchProfiles.front().pitchParameters;
-				Tests::Check(Physics::Length(root.initialVelocity - fastball.initialVelocity) < 1e-12 &&
-					Physics::Length(root.spinAxis - fastball.spinAxis) < 1e-12 &&
-					root.spinRpm == fastball.spinRpm && root.liftCoefficient == fastball.liftCoefficient &&
-					root.dragCoefficient == fastball.dragCoefficient && !root.useCoefficientTable &&
+				const auto& initialProfile = settings->pitchProfiles.front().pitchParameters;
+				Tests::Check(Physics::Length(root.initialVelocity - initialProfile.initialVelocity) < 1e-12 &&
+					Physics::Length(root.spinAxis - initialProfile.spinAxis) < 1e-12 &&
+					root.releaseHeightMeters == initialProfile.releaseHeightMeters &&
+					root.spinRpm == initialProfile.spinRpm && root.liftCoefficient == initialProfile.liftCoefficient &&
+					root.dragCoefficient == initialProfile.dragCoefficient && !root.useCoefficientTable &&
 					settings->environmentSettingsFile == L"EnvironmentSettings.user.json",
-					"Root pitch matches the initial fastball and retains the user's environment");
+					"Root pitch matches the initial profile including its release height and retains the user's environment");
+			}
+		}
+	}
+
+	void CheckSlowFastballPresets(const std::filesystem::path& sourceRoot)
+	{
+		using namespace BaseballSimulatorVR;
+		Data::PitchPresetJsonStorage storage;
+		Data::RuntimeSettingsJsonStorage runtimeStorage;
+		std::wstring error;
+		constexpr std::array<double, 4> speedsKmh{70, 80, 90, 100};
+		for (const std::wstring_view kind : {L"Baseball", L"Softball"})
+		{
+			const std::wstring environmentName = L"EnvironmentSettings.SlowFastball." + std::wstring(kind) + L".json";
+			const auto environment = runtimeStorage.LoadEnvironment((sourceRoot / environmentName).wstring(), error);
+			const double radius = kind == L"Baseball" ? .037 : .0485;
+			const double mass = kind == L"Baseball" ? .145 : .190;
+			Tests::Check(environment && environment->pitchDistanceMeters == 18.44 &&
+			    environment->moundHeightOffsetMeters == .18 && !environment->enableMoundHeightOffset &&
+			    environment->ballProperties.radiusMeters == radius &&
+			    environment->ballProperties.massKilograms == mass &&
+			    environment->ballProperties.restitutionAtReferenceSpeed == .45,
+			    "Slow fastballs retain the normal distance and mound with their selected ball properties");
+			std::array<Physics::Vector3, 4> rightHandedVelocities{};
+			for (const std::wstring_view hand : {L"RHP", L"LHP"})
+			{
+				const auto path = sourceRoot / (L"PitchSettings.SlowFastball." + std::wstring(kind) + L"." + std::wstring(hand) + L".json");
+				const auto settings = storage.LoadPitchSettings(path.wstring(), error);
+				Tests::Check(settings && settings->pitchProfiles.size() == speedsKmh.size() &&
+				    settings->environmentSettingsFile == environmentName && settings->randomPitchProfileEnabled &&
+				    settings->activePitchProfileIndex == 0 && settings->pitcherThrowsLeftHanded == (hand == L"LHP"),
+				    "Each ball has a right- and left-handed uniform four-speed fastball preset");
+				for (std::size_t index = 0; index < speedsKmh.size(); ++index)
+				{
+					const auto& profile = settings->pitchProfiles[index];
+					auto parameters = profile.pitchParameters;
+					Tests::Check(profile.name == L"ストレート " + std::to_wstring(static_cast<int>(speedsKmh[index])) + L"km/h" &&
+					    std::abs(Physics::Length(parameters.initialVelocity) * 3.6 - speedsKmh[index]) < 1e-9 &&
+					    parameters.releaseHeightMeters == 1.8 && parameters.usePhysicalAerodynamics &&
+					    !parameters.underhandToss && parameters.spinAxis.x == -1 &&
+					    parameters.spinAxis.y == 0 && parameters.spinAxis.z == 0 && parameters.spinRpm == 2300 &&
+					    !parameters.useCoefficientTable && !parameters.enableSeamPerturbation,
+					    "The selectable profiles contain only overhand backspin fastballs at 70, 80, 90 and 100 km/h");
+					parameters.ballProperties = environment->ballProperties;
+					const auto crossing = SimulatePlateCrossing(parameters);
+					Tests::Check(std::abs(crossing.position.y - 1.05) < 1e-6 &&
+					    std::abs(crossing.position.x) < 1e-12 && crossing.velocity.y < 0,
+					    "Every untargeted physical fastball reaches the normal-distance strike-zone centre while descending");
+					if (hand == L"RHP") rightHandedVelocities[index] = parameters.initialVelocity;
+					else Tests::Check(Physics::Length(parameters.initialVelocity - rightHandedVelocities[index]) < 1e-12,
+					    "Changing pitcher handedness preserves the vertical backspin fastball flight");
+				}
+				Tests::Check(Physics::Length(settings->pitchParameters.initialVelocity -
+				    settings->pitchProfiles.front().pitchParameters.initialVelocity) < 1e-12,
+				    "The root pitch matches the initial 70 km/h profile");
 			}
 		}
 	}
@@ -127,7 +195,8 @@ void RunBundledSettingsTests(const std::filesystem::path& sourceRoot)
 	std::wstring error;
 	Data::PitchPresetJsonStorage pitchStorage;
 	Data::RuntimeSettingsJsonStorage runtimeStorage;
-	CheckDifficultyPresets(sourceRoot);
+	CheckTrainingPresets(sourceRoot);
+	CheckSlowFastballPresets(sourceRoot);
 	for (const auto& entry : std::filesystem::directory_iterator(sourceRoot))
 	{
 		const auto name = entry.path().filename().wstring();

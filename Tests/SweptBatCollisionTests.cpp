@@ -71,6 +71,7 @@ void RunSweptBatCollisionTests()
 	responseInput.ballVelocityWorld = {};
 	responseInput.batContactVelocityWorld = rotation->batContactVelocity;
 	responseInput.collisionNormal = rotation->normal;
+	responseInput.batSurfaceOffsetWorld = rotation->normal * responseInput.batRadiusMeters;
 	responseInput.batAxisDirectionWorld = rotation->batAxis;
 	responseInput.batLengthMeters = 1.0;
 	responseInput.contactDistanceFromHandleMeters = rotation->batFraction;
@@ -82,6 +83,7 @@ void RunSweptBatCollisionTests()
 	responseInput.ballVelocityWorld = { -24.0, 0.0, 0.0 };
 	responseInput.batContactVelocityWorld = separating->batContactVelocity;
 	responseInput.collisionNormal = separating->normal;
+	responseInput.batSurfaceOffsetWorld = separating->normal * responseInput.batRadiusMeters;
 	responseInput.batAxisDirectionWorld = separating->batAxis;
 	responseInput.contactDistanceFromHandleMeters = separating->batFraction;
 	Tests::Check(!ResolveBatBallCollision(responseInput).hasImpulse,
@@ -145,4 +147,96 @@ void RunSweptBatCollisionTests()
 	    "Nonfinite position cannot create a contact");
 	Tests::Check(!FindSweptBatContact({ -1.0, 0.5, 0.0 }, { 1.0, 0.5, 0.0 }, bat, bat, 0.0, 0.01),
 	    "Zero radius cannot create a contact");
+
+	constexpr double barrelRadius = .035;
+	constexpr double ballRadius = .01;
+	const auto barrelHit = FindSweptBatProfileContact({ -.2, .8, 0.0 }, { .2, .8, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(barrelHit && Near(barrelHit->frameFraction, .3875, 1e-7) &&
+	    Near(barrelHit->batSurfacePosition.x, -barrelRadius, 1e-8) && Near(barrelHit->batFraction, .8),
+	    "Profile CCD hits the true cylindrical barrel surface at first entry");
+	Tests::Check(barrelHit && Near(Length(barrelHit->batSurfaceOffset), barrelRadius) &&
+	    Near(Dot(barrelHit->batSurfaceOffset, barrelHit->batAxis), 0.0),
+	    "Profile contact carries the actual perpendicular surface lever arm");
+	const auto handleMiss = FindSweptBatProfileContact({ -.2, .15, .03 }, { .2, .15, .03 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(!handleMiss, "A ball beside the narrow grip does not strike an imaginary barrel-width handle");
+	const auto concentricProfile = FindSweptBatProfileContact({ 0.0, .8, 0.0 }, { 0.0, .8, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(concentricProfile && Near(concentricProfile->frameFraction, 0.0) &&
+	    Near(Length(concentricProfile->normal), 1.0),
+	    "A stationary ball initially inside the bat receives a real nearest-surface normal");
+	const double handleSlope = barrelRadius * (.34 - .32) / (.2 - .1);
+	const double handleEntryRadius = BatRadiusAtFraction(.15, barrelRadius) +
+	    ballRadius * std::sqrt(1.0 + handleSlope * handleSlope);
+	const auto handleHit = FindSweptBatProfileContact({ -.2, .15, 0.0 }, { .2, .15, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(handleHit && Near(handleHit->frameFraction, (.2 - handleEntryRadius) / .4, 1e-7) &&
+	    Length(handleHit->batSurfaceOffset) < barrelRadius * .35 && handleHit->normal.y < 0.0,
+	    "Thin handle contact respects its local radius and the taper surface normal");
+	const double taperSlope = barrelRadius * (.84 - .67) / (.55 - .48);
+	const double taperEntryRadius = BatRadiusAtFraction(.515, barrelRadius) +
+	    ballRadius * std::sqrt(1.0 + taperSlope * taperSlope);
+	const auto taperHit = FindSweptBatProfileContact({ -.2, .515, 0.0 }, { .2, .515, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(taperHit && Near(taperHit->frameFraction, (.2 - taperEntryRadius) / .4, 1e-7) &&
+	    Near(taperHit->normal.y / taperHit->normal.x, taperSlope, 1e-6),
+	    "The conical taper uses its slanted closest surface instead of axial radius sampling");
+	const auto knobHit = FindSweptBatProfileContact({ 0.0, -.1, 0.0 }, { 0.0, .1, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(knobHit && Near(knobHit->frameFraction, .45, 1e-7) &&
+	    Near(knobHit->batFraction, 0.0) && Near(knobHit->normal.y, -1.0) &&
+	    Near(Length(knobHit->batSurfaceOffset), 0.0),
+	    "The flat knob face starts exactly at the configured bat endpoint");
+	Tests::Check(!FindSweptBatProfileContact({ -.2, -.02, 0.0 }, { .2, -.02, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01),
+	    "The knob does not gain an invented rounded cap beyond the configured length");
+	Tests::Check(!FindSweptBatProfileContact({ -.2, 1.02, 0.0 }, { .2, 1.02, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01),
+	    "The rounded profile tip remains bounded by the configured bat endpoint");
+	const auto tipHit = FindSweptBatProfileContact({ 0.0, 1.1, 0.0 }, { 0.0, .9, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(tipHit && Near(tipHit->frameFraction, .45, 1e-6) && Near(tipHit->batFraction, 1.0, 1e-6),
+	    "An axial tip strike contacts the actual end of the silhouette");
+	const auto profileTangent = FindSweptBatProfileContact({ -.2, .8, .045 }, { .2, .8, .045 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(profileTangent && Near(profileTangent->frameFraction, .5, 1e-6),
+	    "A grazing profile contact is retained without sign-changing penetration");
+	const auto taperTangent = FindSweptBatProfileContact({ -.2, .515, taperEntryRadius },
+	    { .2, .515, taperEntryRadius }, bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(taperTangent && Near(taperTangent->frameFraction, .5, 1e-6),
+	    "An even-multiplicity grazing root on a slanted taper is retained");
+	const double tipSlope = barrelRadius * (.80 - .94) / (.990 - .980);
+	const double tipEntryRadius = BatRadiusAtFraction(.985, barrelRadius) +
+	    ballRadius * std::sqrt(1.0 + tipSlope * tipSlope);
+	const auto tipTangent = FindSweptBatProfileContact({ -.2, .985, tipEntryRadius },
+	    { .2, .985, tipEntryRadius }, bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(tipTangent && Near(tipTangent->frameFraction, .5, 1e-6),
+	    "The shrinking rounded tip retains a grazing contact on its true profile");
+	Tests::Check(!FindSweptBatProfileContact({ -.2, .8, .04501 }, { .2, .8, .04501 },
+	    bat, bat, barrelRadius, ballRadius, .01),
+	    "A close barrel-profile pass remains a miss");
+	const auto profileFast = FindSweptBatProfileContact({ -10.0, .8, 0.0 }, { 10.0, .8, 0.0 },
+	    bat, bat, barrelRadius, ballRadius, .01);
+	Tests::Check(profileFast && Near(profileFast->frameFraction, .49775, 1e-7),
+	    "A high-speed ball cannot tunnel through the profiled barrel");
+	const auto movingProfile = FindSweptBatProfileContact({ 0.0, .8, 0.0 }, { 0.0, .8, 0.0 },
+	    approachingStart, approachingEnd, barrelRadius, ballRadius, .01);
+	Tests::Check(movingProfile && Near(movingProfile->frameFraction, .4775, 1e-7) &&
+	    Near(movingProfile->batContactVelocity.x, 200.0),
+	    "The finite profile sweep retains real material velocity when striking a stationary ball");
+	const auto rotatingProfile = FindSweptBatProfileContact(stationaryBall, stationaryBall,
+	    bat, rotated, barrelRadius, ballRadius, .01);
+	Tests::Check(rotatingProfile && rotatingProfile->frameFraction > .4 && rotatingProfile->frameFraction < .5 &&
+	    Near(Length(rotatingProfile->ballPosition - rotatingProfile->batSurfacePosition), ballRadius, 1e-7),
+	    "A rotating tapered bat produces a true surface contact with a stationary ball");
+	const auto commonProfile = FindSweptBatProfileContact({ -.2, .8, 0.0 },
+	    Vector3{ .2, .8, 0.0 } + commonMotion, bat, translatedBat, barrelRadius, ballRadius, .01);
+	Tests::Check(commonProfile && barrelHit && Near(commonProfile->frameFraction, barrelHit->frameFraction, 1e-7),
+	    "Profile time of impact is invariant under large common frame translation");
+	Tests::Check(!FindSweptBatProfileContact({ -.2, .8, 0.0 }, { .2, .8, 0.0 },
+	    bat, bat, barrelRadius, 0.0, .01) &&
+	    !FindSweptBatProfileContact({ nan, .8, 0.0 }, { .2, .8, 0.0 },
+	        bat, bat, barrelRadius, ballRadius, .01),
+	    "Profile CCD rejects invalid ball geometry and nonfinite motion");
 }

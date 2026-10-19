@@ -6,7 +6,7 @@ namespace BaseballSimulatorVR::Common::RuntimeLimits
 	constexpr int DuelZoneRows = 5;
 	constexpr int DuelZoneCount = DuelZoneColumns * DuelZoneRows;
 
-	constexpr double MinimumPitchDistanceMeters = 16.0;
+	constexpr double MinimumPitchDistanceMeters = 5.0;
 	constexpr double MaximumPitchDistanceMeters = 21.0;
 
 	constexpr double MinimumDuelPitchIntervalSeconds = 5.0;

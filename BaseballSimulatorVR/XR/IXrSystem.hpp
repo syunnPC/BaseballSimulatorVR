@@ -26,9 +26,9 @@ enum class UiCommandType {
   SetPresetSlider,
   SetPresetCurveball,
   SetPresetChangeup,
-  TogglePitchTrajectoryVisibility,
+  CyclePitchTrajectoryDisplayMode,
   ToggleBattedTrajectoryVisibility,
-  ToggleStrikeZoneVisibility,
+  CycleStrikeZoneDisplayMode,
   AdjustDuelIntervalDown,
   AdjustDuelIntervalUp,
   AdjustPlaybackSpeedDown,
@@ -52,12 +52,17 @@ enum class UiCommandType {
   ToggleRandomPitchProfile,
   TogglePlaybackPause,
   ToggleBatHandedness,
+  CycleBatMaterial,
   AdjustBatAngleDown,
   AdjustBatAngleUp,
   AdjustBatYawDown,
   AdjustBatYawUp,
   SetPlaybackSpeedPercent,
-  RecalibrateStrikeZone
+  RecalibrateStrikeZone,
+  AdjustStrikeZoneBottomDown,
+  AdjustStrikeZoneBottomUp,
+  AdjustStrikeZoneTopDown,
+  AdjustStrikeZoneTopUp
 };
 
 enum class UiOperationMode {
@@ -86,9 +91,11 @@ struct UiTelemetry final {
   std::wstring pitchSettingsFileName{L"PitchSettings.user.json"};
   int pitchSettingsFileCount{0};
   bool randomPitchProfileEnabled{true};
+  bool pitchInformationVisible{true};
   std::uint32_t duelTargetZoneMask{0U};
   bool duelPitchPreviewEnabled{true};
   bool batUseRightHand{true};
+  Physics::BatMaterial batMaterial{Physics::BatMaterial::Wood};
   double batLengthMeters{0.84};
   double batRadiusMeters{0.035};
   double batAngleOffsetDegrees{0.0};
@@ -100,6 +107,10 @@ struct UiTelemetry final {
   double battedFirstGroundDistanceMeters{0.0};
   double battedMaxHeightMeters{0.0};
   Physics::Vector3 battedLaunchVelocity{};
+  Common::StrikeZoneCalibrationProgress strikeZoneCalibration{};
+  double strikeZoneBottomMeters{0.55};
+  double strikeZoneTopMeters{1.55};
+  double strikeZoneHeightMeters{1.0};
 };
 
 struct HandPoseState final {

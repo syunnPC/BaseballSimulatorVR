@@ -8,10 +8,10 @@
 
 namespace BaseballSimulatorVR::Common
 {
-	// Height proportions used by MLB's 2026 ABS system. HMD-derived standing
-	// height remains an estimate, not a measurement of the batter's anatomy.
-	inline constexpr double StrikeZoneBottomHeightFraction = 0.270;
-	inline constexpr double StrikeZoneTopHeightFraction = 0.535;
+	// Standing anatomical approximations: below the knee, and shoulder/waist midpoint.
+	// HMD height cannot measure individual knee, shoulder or waist landmarks.
+	inline constexpr double StrikeZoneBottomHeightFraction = 0.280;
+	inline constexpr double StrikeZoneTopHeightFraction = 0.700;
 	inline constexpr double EyeHeightToFullHeightFraction = 0.93;
 	inline constexpr double MinimumCalibratedPlayerHeightMeters = 1.00;
 	inline constexpr double MaximumCalibratedPlayerHeightMeters = 2.50;
@@ -66,6 +66,23 @@ namespace BaseballSimulatorVR::Common
 		double playerHeightMeters{ 0.0 };
 		StrikeZoneFromHeight strikeZone{};
 	};
+	enum class StrikeZoneCalibrationStatus
+	{
+		WaitingForFloor,
+		WaitingForTracking,
+		InvalidHeight,
+		Moving,
+		Steady,
+		Complete,
+		Manual,
+		Saved
+	};
+	struct StrikeZoneCalibrationProgress final
+	{
+		StrikeZoneCalibrationStatus status{ StrikeZoneCalibrationStatus::WaitingForFloor };
+		double stableDurationSeconds{};
+		double fraction{};
+	};
 
 	class StrikeZoneHeightCalibrator final
 	{
@@ -79,6 +96,19 @@ namespace BaseballSimulatorVR::Common
 		{
 			m_isComplete = false;
 			ClearWindow();
+			m_status = StrikeZoneCalibrationStatus::WaitingForFloor;
+		}
+		void UseManualZone() noexcept
+		{
+			m_isComplete = true;
+			ClearWindow();
+			m_status = StrikeZoneCalibrationStatus::Manual;
+		}
+		void UseSavedZone() noexcept
+		{
+			m_isComplete = true;
+			ClearWindow();
+			m_status = StrikeZoneCalibrationStatus::Saved;
 		}
 
 		[[nodiscard]] bool IsComplete() const noexcept { return m_isComplete; }
@@ -86,6 +116,14 @@ namespace BaseballSimulatorVR::Common
 		[[nodiscard]] double GetStableDurationSeconds() const noexcept
 		{
 			return m_sampleCount == 0 ? 0.0 : m_lastTimeSeconds - m_startTimeSeconds;
+		}
+		[[nodiscard]] StrikeZoneCalibrationProgress GetProgress() const noexcept
+		{
+			const double duration = GetStableDurationSeconds();
+			const double fraction = m_isComplete ? 1.0 : (std::min)(
+			    std::clamp(duration / RequiredStableDurationSeconds, 0.0, 1.0),
+			    std::clamp(static_cast<double>(m_sampleCount) / RequiredSampleCount, 0.0, 1.0));
+			return { m_status, (std::min)(duration, RequiredStableDurationSeconds), fraction };
 		}
 
 		// Returns a result once per Reset(). A new calibration leaves applying the
@@ -98,12 +136,23 @@ namespace BaseballSimulatorVR::Common
 				return std::nullopt;
 			}
 			const double playerHeight = EstimatePlayerHeightFromEyeHeight(sample.heightMeters);
-			if (!sample.isFloorReferenced || !sample.isPositionTracked ||
-			    !std::isfinite(sample.sampleTimeSeconds) ||
-			    (playerHeight < MinimumCalibratedPlayerHeightMeters) ||
+			if (!sample.isFloorReferenced)
+			{
+				ClearWindow();
+				m_status = StrikeZoneCalibrationStatus::WaitingForFloor;
+				return std::nullopt;
+			}
+			if (!sample.isPositionTracked || !std::isfinite(sample.sampleTimeSeconds))
+			{
+				ClearWindow();
+				m_status = StrikeZoneCalibrationStatus::WaitingForTracking;
+				return std::nullopt;
+			}
+			if ((playerHeight < MinimumCalibratedPlayerHeightMeters) ||
 			    (playerHeight > MaximumCalibratedPlayerHeightMeters))
 			{
 				ClearWindow();
+				m_status = StrikeZoneCalibrationStatus::InvalidHeight;
 				return std::nullopt;
 			}
 
@@ -121,7 +170,9 @@ namespace BaseballSimulatorVR::Common
 				    (gap <= 0.0) || (gap > MaximumSampleGapSeconds + 1e-9) ||
 				    (range > MaximumHeightRangeMeters + 1e-9))
 				{
+					const bool moved = range > MaximumHeightRangeMeters + 1e-9;
 					ClearWindow();
+					m_recoveringFromMotion = moved;
 				}
 			}
 
@@ -138,6 +189,9 @@ namespace BaseballSimulatorVR::Common
 			++m_sampleCount;
 			m_meanHeightMeters += (sample.heightMeters - m_meanHeightMeters) /
 			                      static_cast<double>(m_sampleCount);
+			if (GetStableDurationSeconds() >= 0.5) m_recoveringFromMotion = false;
+			m_status = m_recoveringFromMotion ? StrikeZoneCalibrationStatus::Moving
+			                                  : StrikeZoneCalibrationStatus::Steady;
 			if ((m_sampleCount < RequiredSampleCount) ||
 			    (GetStableDurationSeconds() + 1e-9 < RequiredStableDurationSeconds))
 			{
@@ -145,6 +199,7 @@ namespace BaseballSimulatorVR::Common
 			}
 
 			m_isComplete = true;
+			m_status = StrikeZoneCalibrationStatus::Complete;
 			const double calibratedHeight = EstimatePlayerHeightFromEyeHeight(m_meanHeightMeters);
 			return StrikeZoneHeightCalibration{
 				m_meanHeightMeters, calibratedHeight,
@@ -159,9 +214,12 @@ namespace BaseballSimulatorVR::Common
 			m_startTimeSeconds = 0.0;
 			m_lastTimeSeconds = 0.0;
 			m_meanHeightMeters = 0.0;
+			m_recoveringFromMotion = false;
 		}
 
 		bool m_isComplete{ false };
+		bool m_recoveringFromMotion{ false };
+		StrikeZoneCalibrationStatus m_status{ StrikeZoneCalibrationStatus::WaitingForFloor };
 		std::size_t m_sampleCount{ 0 };
 		std::uint64_t m_referenceSpaceRevision{ 0 };
 		double m_startTimeSeconds{ 0.0 };

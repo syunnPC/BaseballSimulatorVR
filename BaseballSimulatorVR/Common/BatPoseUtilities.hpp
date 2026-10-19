@@ -9,7 +9,6 @@
 
 namespace BaseballSimulatorVR::Common
 {
-	inline constexpr double BatHandleStartOffsetMeters = 0.08;
 	struct BatOrientation final
 	{
 		Physics::Vector3 axis{};

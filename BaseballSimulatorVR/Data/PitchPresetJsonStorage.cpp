@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <limits>
+#include <numbers>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -159,8 +160,11 @@ namespace BaseballSimulatorVR::Data
 		{
 			if (fieldName == "initialSpeedMetersPerSecond")
 			{
-				return "Initial speed [m/s], direction fixed toward home plate.";
+				return "Initial forward speed toward home plate [m/s].";
 			}
+			if (fieldName == "launchElevationDegrees") return "Initial upward launch angle [deg].";
+			if (fieldName == "usePhysicalAerodynamics") return "Use physical drag and lift for pitched flight.";
+			if (fieldName == "underhandToss") return "Use an underhand toss delivery.";
 			if (fieldName == "releaseHeightMeters")
 			{
 				return "Pitch release height [m] before mound offset.";
@@ -232,8 +236,30 @@ namespace BaseballSimulatorVR::Data
 			{
 				return false;
 			}
-			parameters.initialVelocity =
-			    Physics::Vector3{ 0.0, 0.0, std::abs(initialSpeedMetersPerSecond) };
+			const auto readOptionalNumber = [&](const std::string_view name, double& value)
+			{
+				const auto result = Common::JsonKeyValueParser::ReadDoubleResult(jsonText, BuildPrefixedKey(prefix, name));
+				if (result.status == Common::JsonKeyValueParser::KeyReadStatus::Missing) return true;
+				if (!result.value) return false;
+				value = *result.value;
+				return true;
+			};
+			const auto readOptionalBool = [&](const std::string_view name, bool& value)
+			{
+				const auto result = Common::JsonKeyValueParser::ReadBoolResult(jsonText, BuildPrefixedKey(prefix, name));
+				if (result.status == Common::JsonKeyValueParser::KeyReadStatus::Missing) return true;
+				if (!result.value) return false;
+				value = *result.value;
+				return true;
+			};
+			if (!readOptionalNumber("launchElevationDegrees", parameters.launchElevationDegrees) ||
+			    !readOptionalBool("usePhysicalAerodynamics", parameters.usePhysicalAerodynamics) ||
+			    !readOptionalBool("underhandToss", parameters.underhandToss) ||
+			    parameters.launchElevationDegrees < -75.0 || parameters.launchElevationDegrees > 75.0)
+				return false;
+			parameters.initialVelocity = Physics::Vector3{ 0.0,
+			    std::abs(initialSpeedMetersPerSecond) * std::tan(parameters.launchElevationDegrees * std::numbers::pi / 180.0),
+			    std::abs(initialSpeedMetersPerSecond) };
 			if (!TryReadDouble(
 			        jsonText, BuildPrefixedKey(prefix, "spinAxisX"), parameters.spinAxis.x) ||
 			    !TryReadDouble(
@@ -309,6 +335,9 @@ namespace BaseballSimulatorVR::Data
 			};
 
 			addNumber("initialSpeedMetersPerSecond", std::abs(pitchParameters.initialVelocity.z));
+			addNumber("launchElevationDegrees", pitchParameters.launchElevationDegrees);
+			addBool("usePhysicalAerodynamics", pitchParameters.usePhysicalAerodynamics);
+			addBool("underhandToss", pitchParameters.underhandToss);
 			addNumber("releaseHeightMeters", pitchParameters.releaseHeightMeters);
 			addNumber("spinAxisX", pitchParameters.spinAxis.x);
 			addNumber("spinAxisY", pitchParameters.spinAxis.y);
