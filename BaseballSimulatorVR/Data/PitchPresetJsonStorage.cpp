@@ -12,6 +12,7 @@
 #include <numbers>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace BaseballSimulatorVR::Data
@@ -360,13 +361,6 @@ namespace BaseballSimulatorVR::Data
 	{
 		errorMessage.clear();
 
-		std::ofstream outputFile{ std::filesystem::path(filePath) };
-		if (!outputFile.is_open())
-		{
-			errorMessage = L"Failed to open preset JSON file for writing.";
-			return false;
-		}
-
 		std::vector<std::string> entries{};
 		entries.reserve(32U + (settings.pitchProfiles.size() * 48U));
 		AppendPitchParameterEntries(&entries, "", settings.pitchParameters);
@@ -408,6 +402,33 @@ namespace BaseballSimulatorVR::Data
 		    std::string{ "\"randomPitchProfileEnabled\": " } +
 		    (settings.randomPitchProfileEnabled ? "true" : "false"));
 
+		// Validate every string before opening the file so conversion errors preserve it.
+		std::vector<std::string> profileNames{};
+		profileNames.reserve(settings.pitchProfiles.size());
+		for (const PitchProfileEntry& profile : settings.pitchProfiles)
+		{
+			std::string profileName{ "Pitch" };
+			if (!profile.name.empty())
+			{
+				const std::optional<std::string> profileNameUtf8 =
+				    TryConvertWideToUtf8(profile.name);
+				if (!profileNameUtf8.has_value())
+				{
+					errorMessage = L"Failed to convert pitch profile name to UTF-8.";
+					return false;
+				}
+				profileName = *profileNameUtf8;
+			}
+			profileNames.push_back(std::move(profileName));
+		}
+
+		std::ofstream outputFile{ std::filesystem::path(filePath) };
+		if (!outputFile.is_open())
+		{
+			errorMessage = L"Failed to open preset JSON file for writing.";
+			return false;
+		}
+
 		outputFile.imbue(std::locale::classic());
 		outputFile << "{\n";
 		for (const std::string& entry : entries)
@@ -422,24 +443,12 @@ namespace BaseballSimulatorVR::Data
 		     ++profileIndex)
 		{
 			const PitchProfileEntry& profile = settings.pitchProfiles[profileIndex];
-			std::string profileName{ "Pitch" };
-			if (!profile.name.empty())
-			{
-				const std::optional<std::string> profileNameUtf8 =
-				    TryConvertWideToUtf8(profile.name);
-				if (!profileNameUtf8.has_value())
-				{
-					errorMessage = L"Failed to convert pitch profile name to UTF-8.";
-					return false;
-				}
-				profileName = *profileNameUtf8;
-			}
 
 			std::vector<std::string> profileEntries{};
 			profileEntries.reserve(48U);
 			profileEntries.push_back(
 			    "\"_comment_name\": \"Pitch profile display name used in UI/logs.\"");
-			profileEntries.push_back("\"name\": \"" + EscapeJsonString(profileName) + "\"");
+			profileEntries.push_back("\"name\": \"" + EscapeJsonString(profileNames[profileIndex]) + "\"");
 			AppendPitchParameterEntries(&profileEntries, "", profile.pitchParameters);
 
 			outputFile << "    {\n";
@@ -462,6 +471,7 @@ namespace BaseballSimulatorVR::Data
 		outputFile << "  ]\n";
 		outputFile << "}\n";
 
+		outputFile.close();
 		if (!outputFile.good())
 		{
 			errorMessage = L"Failed while writing preset JSON file.";

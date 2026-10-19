@@ -5,6 +5,7 @@
 #include "../Common/StrikeZoneSettings.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -124,6 +125,18 @@ namespace BaseballSimulatorVR::Data
 			errorMessage = L"Environment ball radius, mass or restitution is out of range.";
 			return false;
 		}
+		if (!std::isfinite(settings.pitchDistanceMeters) ||
+		    !std::isfinite(settings.moundHeightOffsetMeters) ||
+		    !std::isfinite(settings.windVelocity.x) || !std::isfinite(settings.windVelocity.y) ||
+		    !std::isfinite(settings.windVelocity.z) || !std::isfinite(settings.windShearFactor) ||
+		    !std::isfinite(settings.batRadiusMeters) || !std::isfinite(settings.batLengthMeters) ||
+		    !std::isfinite(settings.batAngleOffsetDegrees) ||
+		    !std::isfinite(settings.batYawOffsetDegrees) ||
+		    !std::isfinite(settings.groundFanRadiusMeters))
+		{
+			errorMessage = L"Environment numeric settings must be finite.";
+			return false;
+		}
 
 		std::ofstream outputFile{ std::filesystem::path(filePath) };
 		if (!outputFile.is_open())
@@ -180,6 +193,7 @@ namespace BaseballSimulatorVR::Data
 		outputFile << "  \"integratorType\": \""
 		           << Physics::GetPitchIntegratorToken(settings.integratorType) << "\"\n";
 		outputFile << "}\n";
+		outputFile.close();
 		if (!outputFile.good())
 		{
 			errorMessage = L"Failed while writing environment settings JSON.";
@@ -385,6 +399,12 @@ namespace BaseballSimulatorVR::Data
 			errorMessage = L"Play settings strike zone is out of range.";
 			return false;
 		}
+		if (!std::isfinite(settings.duelPitchIntervalSeconds) ||
+		    !std::isfinite(settings.playbackSpeedPercent))
+		{
+			errorMessage = L"Play settings pitch interval and playback speed must be finite.";
+			return false;
+		}
 
 		std::ofstream outputFile{ std::filesystem::path(filePath) };
 		if (!outputFile.is_open())
@@ -465,6 +485,7 @@ namespace BaseballSimulatorVR::Data
 		}
 		outputFile << "\n}\n";
 
+		outputFile.close();
 		if (!outputFile.good())
 		{
 			errorMessage = L"Failed while writing play settings JSON.";

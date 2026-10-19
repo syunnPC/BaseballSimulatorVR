@@ -905,6 +905,10 @@ namespace BaseballSimulatorVR::Core
 			}
 
 			ballState->position.y = groundContactHeight;
+			if (ballState->velocity.y > 0.0)
+			{
+				return;
+			}
 			if (ballState->velocity.y < GroundBounceVelocityThreshold)
 			{
 				ballState->velocity.y =
@@ -1800,6 +1804,11 @@ namespace BaseballSimulatorVR::Core
 		        : Physics::Vector3{ 0.0,
 		              initialSpeed * std::tan(m_activePitchParameters.launchElevationDegrees * std::numbers::pi / 180.0),
 		              initialSpeed };
+		if (!preserveDirectionalVelocityForCurrentPitch)
+		{
+			m_trajectoryZoneBiasLateral = 0.0;
+			m_trajectoryZoneBiasVertical = 0.0;
+		}
 		m_activePitchParameters.ballProperties = m_environmentSettings.ballProperties;
 		m_activePitchParameters.integratorType =
 		    m_environmentSettings.integratorType;
@@ -1826,6 +1835,15 @@ namespace BaseballSimulatorVR::Core
 			};
 		}
 
+		if (!preserveDirectionalVelocityForCurrentPitch &&
+		    m_operationMode == OperationMode::PitchTrajectory &&
+		    HasDuelTargetZoneSelection())
+		{
+			// Refresh applies the solved velocity with preservation enabled and
+			// performs the reset once, after updating the selected target.
+			RefreshPitchTrajectoryFromZoneSelection(L"pitch_config");
+			return;
+		}
 		ResetPitchSimulation();
 
 		std::wostringstream pitchLog{};
@@ -3771,11 +3789,6 @@ namespace BaseballSimulatorVR::Core
 		ApplyPitchParameterChangesAndLog(
 		    L"pitch_profile",
 		    profileNote);
-		if ((m_operationMode == OperationMode::PitchTrajectory) &&
-		    HasDuelTargetZoneSelection())
-		{
-			RefreshPitchTrajectoryFromZoneSelection(L"profile_select");
-		}
 		SaveUserPresetToJson();
 	}
 

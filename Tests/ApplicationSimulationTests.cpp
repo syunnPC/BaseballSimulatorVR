@@ -251,6 +251,22 @@ namespace BaseballSimulatorVR::Core
 			             "Ground response and first-ground-contact statistics use the same offset plane");
 			Tests::Check(SamePosition(bounced.position, app->m_pitchSimulationService.GetBallState().position),
 			             "Ground response writes its corrected position back into the simulation");
+			app->m_playbackPaused = true;
+			app->m_lastSimulationDeltaSeconds = 0.0;
+			const auto paused = UpdateBall(*app);
+			Tests::Check(SamePosition(paused.position, bounced.position) &&
+			    SamePosition(paused.velocity, bounced.velocity),
+			    "Pausing at ground contact preserves the ball's outgoing bounce velocity");
+			app->m_playbackPaused = false;
+			const auto betweenTicks = UpdateBall(*app);
+			Tests::Check(SamePosition(betweenTicks.position, bounced.position) &&
+			    SamePosition(betweenTicks.velocity, bounced.velocity),
+			    "A presentation frame without a physics tick cannot cancel an existing bounce");
+			app->m_lastSimulationDeltaSeconds = 0.001;
+			app->AdvancePitchSimulation(std::chrono::duration<double>(0.001));
+			const auto resumed = UpdateBall(*app);
+			Tests::Check(resumed.position.y > bounced.position.y && resumed.velocity.y > 0.0,
+			    "The ball resumes its upward flight after a paused bounce");
 		}
 
 		static void TestGroundCarryInterpolationAndFirstBounce()
@@ -1406,11 +1422,18 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_runtimeSettingsJsonStorage.SaveEnvironment(
 			    (output.path / "EnvironmentSettings.Regular.json").wstring(), {}, error),
 			    "Restore the regular environment fixture");
+			app->HandleXrUiCommand({Xr::UiCommandType::SetDuelTargetZone, 4});
 			app->SelectPitchSettingsFileByOffset(1, L"test_regular_restore");
 			Tests::Check(Near(app->m_environmentSettings.pitchDistanceMeters, 18.44) &&
 			    Near(app->m_pitchSimulationService.GetBallState().properties.radiusMeters, .037) &&
 			    !app->BuildFieldPresentationState().pitcher.underhandToss,
 			    "Switching back restores the regular environment, baseball and overhand form");
+			CheckTrajectoryTargetsZone(*app, 4,
+			    "Switching pitch files retargets the selected zone using the newly loaded environment");
+			app->HandleXrUiCommand({Xr::UiCommandType::ClearDuelTargetZoneBias});
+			Tests::Check(SamePosition(app->m_activePitchParameters.initialVelocity,
+			    app->m_pitchProfiles[static_cast<std::size_t>(app->m_activePitchProfileIndex)].pitchParameters.initialVelocity),
+			    "Clearing a target after a file switch restores the new profile's base launch direction");
 		}
 
 		static Physics::Vector3 SimulateZoneCrossing(const Baseball::PitchParameters& parameters,
@@ -1435,6 +1458,55 @@ namespace BaseballSimulatorVR::Core
 				}
 			}
 			throw std::runtime_error("Targeted pitch did not reach home plate within two seconds");
+		}
+
+		static void CheckTrajectoryTargetsZone(Application& app, const int zone, const std::string_view message)
+		{
+			auto crossing = SimulateZoneCrossing(app.m_activePitchParameters,
+			    app.m_environmentSettings.pitchDistanceMeters, app.m_environmentSettings.moundHeightOffsetMeters);
+			crossing.y += app.m_environmentSettings.moundHeightOffsetMeters;
+			const double cellWidth = Common::GetStrikeZoneHalfWidthMeters() * 2.0 / 3.0;
+			const double cellHeight = (Common::GetStrikeZoneTopMeters() - Common::GetStrikeZoneBottomMeters()) / 3.0;
+			const double left = -Common::GetStrikeZoneHalfWidthMeters() - cellWidth + (zone % 5) * cellWidth;
+			const double top = Common::GetStrikeZoneTopMeters() + cellHeight - (zone / 5) * cellHeight;
+			Tests::Check(crossing.x >= left - 1e-8 && crossing.x <= left + cellWidth + 1e-8 &&
+			    crossing.y >= top - cellHeight - 1e-8 && crossing.y <= top + 1e-8, message);
+		}
+
+		static void TestTrajectoryTargetAfterParameterChanges()
+		{
+			Tests::TempDirectory output;
+			auto app = MakeApplication();
+			app->m_userDataDirectoryPath = output.path.wstring();
+			app->ApplyPreset(Data::PitchPresetType::Fastball);
+			app->m_activePitchParameters.launchElevationDegrees = 2.0;
+			app->ApplyPitchParameterChanges();
+			const std::array<Xr::UiCommand, 4> changes{{
+			    {Xr::UiCommandType::AdjustForwardSpeedUp},
+			    {Xr::UiCommandType::AdjustSpinUp},
+			    {Xr::UiCommandType::SetPresetSlider},
+			    {Xr::UiCommandType::SelectPitchProfile, 2}
+			}};
+			for (const auto& command : changes)
+			{
+				app->HandleXrUiCommand({Xr::UiCommandType::SetDuelTargetZone, 4});
+				Tests::Check(std::abs(app->m_trajectoryZoneBiasLateral) > 1e-6,
+				    "The selected outside zone requires a lateral correction before changing pitch parameters");
+				app->HandleXrUiCommand(command);
+				CheckTrajectoryTargetsZone(*app, 4,
+				    "Speed, spin, preset and profile changes keep the trajectory inside its selected zone");
+				const auto& parameters = app->m_activePitchParameters;
+				const Physics::Vector3 baseVelocity{0.0,
+				    parameters.initialVelocity.z * std::tan(parameters.launchElevationDegrees * std::numbers::pi / 180.0),
+				    parameters.initialVelocity.z};
+				Tests::Check(SamePosition(baseVelocity,
+				    app->m_pitchProfiles[static_cast<std::size_t>(app->m_activePitchProfileIndex)].pitchParameters.initialVelocity),
+				    "Retargeting leaves the stored profile's base speed and elevation free of zone corrections");
+				app->HandleXrUiCommand({Xr::UiCommandType::ClearDuelTargetZoneBias});
+				Tests::Check(SamePosition(app->m_activePitchParameters.initialVelocity, baseVelocity) &&
+				    Near(app->m_trajectoryZoneBiasLateral, 0.0) && Near(app->m_trajectoryZoneBiasVertical, 0.0),
+				    "Clearing a target after changing pitch parameters restores its base direction without stale corrections");
+			}
 		}
 
 		static void TestSlowFastballFilesAndZoneTargeting(const std::filesystem::path& sourceRoot)
@@ -1777,6 +1849,7 @@ namespace BaseballSimulatorVR::Core
 			TestPitcherHandednessAndPresetTempoLifecycle();
 			TestRequiredSettingsProvisioning();
 			TestTossFileSwitchingAndBallProperties();
+			TestTrajectoryTargetAfterParameterChanges();
 			TestSlowFastballFilesAndZoneTargeting(sourceRoot);
 			TestAdditionalTrainingPresets(sourceRoot);
 			TestBeginnerSoftballZoneTargeting(sourceRoot);
