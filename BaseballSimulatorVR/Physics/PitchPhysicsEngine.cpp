@@ -294,7 +294,7 @@ namespace BaseballSimulatorVR::Physics
 				throw std::invalid_argument("Unknown ball aerodynamics model");
 		}
 
-		const Vector3 velocityDirection = NormalizeOrZero(relativeAirVelocity);
+		const Vector3 velocityDirection = relativeAirVelocity / speed;
 		const Vector3 normalizedSpinAxis = NormalizeOrZero(
 		    FiniteOrZero(currentState.spinAxis));
 		const double spinFactor = std::clamp(
@@ -336,15 +336,17 @@ namespace BaseballSimulatorVR::Physics
 		}
 		const Vector3 dragAcceleration =
 		    -velocityDirection * (dragCoefficient * speedSquared);
-		const Vector3 magnusDirection = NormalizeOrZero(Cross(normalizedSpinAxis, velocityDirection));
+		// Keep the transverse spin fraction so Magnus lift fades continuously toward gyrospin.
+		const Vector3 magnusDirection = Cross(normalizedSpinAxis, velocityDirection);
 		const Vector3 magnusAcceleration = magnusDirection * (liftCoefficient * speed * spinFactor);
 
 		Vector3 seamSideAcceleration{};
 		if (pitchParameters.enableSeamPerturbation && hasMeaningfulSpin)
 		{
-			const Vector3 seamSideDirection = NormalizeOrZero(
-			    normalizedSpinAxis -
-			    (velocityDirection * Dot(normalizedSpinAxis, velocityDirection)));
+			// This remains a heuristic seam perturbation. Keep its projection magnitude
+			// to avoid a discontinuous side force when the spin approaches the air direction.
+			const Vector3 seamSideDirection = normalizedSpinAxis -
+			    (velocityDirection * Dot(normalizedSpinAxis, velocityDirection));
 			seamSideAcceleration = seamSideDirection * (liftCoefficient * speed * SeamSideForceScale * seamAmplitude * seamWave);
 		}
 

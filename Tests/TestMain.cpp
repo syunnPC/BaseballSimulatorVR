@@ -9,6 +9,7 @@ void RunJsonParserTests();
 void RunSessionLogTests();
 void RunFrameStatisticsTests();
 void RunPitchDeliveryTests();
+void RunPitchAerodynamicsTests();
 void RunBatBallCollisionTests();
 void RunSweptBatCollisionTests();
 void RunFieldPresentationTests();
@@ -50,6 +51,7 @@ int wmain(int argc, wchar_t** argv)
 		{ "Session log and CSV export", RunSessionLogTests },
 		{ "Frame statistics", RunFrameStatisticsTests },
 		{ "Pitch delivery and release timing", RunPitchDeliveryTests },
+		{ "Transverse pitch spin and continuous seam perturbation", RunPitchAerodynamicsTests },
 		{ "Bat-ball impact physics", RunBatBallCollisionTests },
 		{ "Synchronized bat sweep and grip geometry", RunSweptBatCollisionTests },
 		{ "Pitcher and outfield statistics geometry", RunFieldPresentationTests },
