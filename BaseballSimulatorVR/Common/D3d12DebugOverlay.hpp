@@ -29,10 +29,18 @@ struct PSInput
 	float4 color : COLOR;
 };
 
+// position = (NDC x, NDC y, normalized linear view depth). Rebuild clip
+// space so z/w is the perspective depth the rasterizer can interpolate
+// correctly and colors are perspective-correct (see ClipDepthFromNormalizedDepth).
+static const float NearClip = 0.05f;
+static const float FarClip = 400.0f;
+
 PSInput VSMain(VSInput inputVertex)
 {
 	PSInput outputVertex;
-	outputVertex.position = float4(inputVertex.position, 1.0f);
+	const float w = NearClip + saturate(inputVertex.position.z) * (FarClip - NearClip);
+	outputVertex.position = float4(inputVertex.position.xy * w,
+	    FarClip / (FarClip - NearClip) * (w - NearClip), w);
 	outputVertex.color = inputVertex.color;
 	return outputVertex;
 }
@@ -42,6 +50,9 @@ float4 PSMain(PSInput inputPixel) : SV_Target
 	return inputPixel.color;
 }
 )";
+
+	static_assert(DebugWorldLayout::NearClipMeters == 0.05 && DebugWorldLayout::FarClipMeters == 400.0,
+	    "ShaderSource hard-codes the clip range");
 
 	struct Vertex final
 	{

@@ -17,6 +17,13 @@ namespace Tests
 {
 	// A deterministic offscreen WARP target exercises the production shaders
 	// without an OpenXR session or a visible desktop window.
+	[[nodiscard]] inline bool AllowsNonWarpAdapter()
+	{
+		char value[8]{};
+		std::size_t length = 0;
+		return getenv_s(&length, value, "BASEBALLSIM_TEST_ALLOW_NON_WARP") == 0 && length > 1 && value[0] == '1';
+	}
+
 	class GpuTestContext final
 	{
 	  public:
@@ -29,7 +36,14 @@ namespace Tests
 			Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
 			Check(SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))), "Create offscreen DXGI factory");
 			Microsoft::WRL::ComPtr<IDXGIAdapter> warp;
-			Check(SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))), "Acquire deterministic WARP adapter");
+			if (FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) && AllowsNonWarpAdapter())
+			{
+				// Opt-in for environments without WARP (e.g. wine + vkd3d); pixel
+				// expectations assume WARP's rasterization rules.
+				Microsoft::WRL::ComPtr<IDXGIAdapter1> first;
+				if (SUCCEEDED(factory->EnumAdapters1(0, &first))) (void)first.As(&warp);
+			}
+			Check(warp != nullptr, "Acquire deterministic WARP adapter");
 			Check(SUCCEEDED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))),
 			      "Create offscreen D3D12 device");
 			D3D12_COMMAND_QUEUE_DESC queueDescription{};

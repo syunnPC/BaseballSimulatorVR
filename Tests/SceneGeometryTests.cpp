@@ -256,6 +256,73 @@ namespace
 		                 .Project({0, 0, -1}, &point),
 		    "An invalid view cannot reuse a previously prepared projection");
 	}
+
+	void CheckNearPlaneClippingAndPerspectiveDepth()
+	{
+		Common::ViewProjectionState view;
+		view.isValid = true;
+		view.position = {0., .03, 0.};
+		view.fovLeftRadians = -.8;
+		view.fovRightRadians = .8;
+		view.fovUpRadians = .8;
+		view.fovDownRadians = -.8;
+		const Common::PreparedWorldProjection projection(view, 1024, 1024,
+		    Common::DebugWorldLayout::NearClipMeters, Common::DebugWorldLayout::FarClipMeters);
+		Common::IndexedWorldMesh mesh;
+		mesh.vertices = {{-1., 0., 1.}, {1., 0., 1.}, {0., 0., -3.}};
+		mesh.triangles = {{{0, 2, 1}, {1.F, 1.F, 1.F, 1.F}}};
+		Common::WorldMeshProjectionWorkspace workspace;
+		std::size_t count = 0;
+		double minimumDepth = 1.;
+		workspace.Emit(mesh, projection, [&](const auto& a, const auto& b, const auto& c, const float*)
+		    {
+			    ++count;
+			    for (const auto& point : {a, b, c})
+			    {
+				    Tests::Check(std::isfinite(point.x) && std::isfinite(point.y),
+				        "Near-clipped floor faces project finite vertices");
+				    minimumDepth = (std::min)(minimumDepth, static_cast<double>(point.depth));
+			    }
+		    });
+		Tests::Check(count > 0 && minimumDepth < 1e-6,
+		    "A floor face extending behind the eye keeps its visible part up to the near plane");
+
+		// The rasterizer interpolates z/w affinely in screen space. With the
+		// rebuilt clip depth an interior point gets exactly its own depth.
+		view.position = {};
+		const Common::PreparedWorldProjection flat(view, 1024, 1024,
+		    Common::DebugWorldLayout::NearClipMeters, Common::DebugWorldLayout::FarClipMeters);
+		const std::array<BaseballSimulatorVR::Physics::Vector3, 3> corners{
+		    BaseballSimulatorVR::Physics::Vector3{-2., -1., -1.}, BaseballSimulatorVR::Physics::Vector3{3., -1., -60.}, BaseballSimulatorVR::Physics::Vector3{-1., 2., -20.}};
+		const BaseballSimulatorVR::Physics::Vector3 interior = corners[0] * .6 + corners[1] * .3 + corners[2] * .1;
+		std::array<Common::ScreenPoint, 3> projected{};
+		Common::ScreenPoint center{};
+		for (std::size_t i = 0; i < corners.size(); ++i)
+			Tests::Check(flat.Project(corners[i], &projected[i], false), "Depth test corners are visible");
+		Tests::Check(flat.Project(interior, &center, false), "Depth test interior point is visible");
+		const auto area = [](const Common::ScreenPoint& a, const Common::ScreenPoint& b, const Common::ScreenPoint& c)
+		{ return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); };
+		const double total = area(projected[0], projected[1], projected[2]);
+		const std::array<double, 3> barycentric{area(center, projected[1], projected[2]) / total,
+		    area(projected[0], center, projected[2]) / total, area(projected[0], projected[1], center) / total};
+		const auto hardwareDepth = [](const Common::ScreenPoint& point)
+		{
+			const auto clip = Common::ClipDepthFromNormalizedDepth(point.depth,
+			    Common::DebugWorldLayout::NearClipMeters, Common::DebugWorldLayout::FarClipMeters);
+			return static_cast<double>(clip.z) / clip.w;
+		};
+		double interpolated = 0.;
+		double linear = 0.;
+		for (std::size_t i = 0; i < 3; ++i)
+		{
+			interpolated += barycentric[i] * hardwareDepth(projected[i]);
+			linear += barycentric[i] * projected[i].depth;
+		}
+		Tests::Check(std::abs(interpolated - hardwareDepth(center)) < 2e-6,
+		    "Screen-affine interpolation of the clip depth reproduces the interior point's depth");
+		Tests::Check(std::abs(linear - center.depth) > 1e-3,
+		    "Interpolating normalized linear depth directly would mis-order large triangles");
+	}
 } // namespace
 
 void RunSceneGeometryTests()
@@ -270,4 +337,5 @@ void RunSceneGeometryTests()
 	}
 	CheckCacheInvalidation();
 	CheckIndexedProjection();
+	CheckNearPlaneClippingAndPerspectiveDepth();
 }

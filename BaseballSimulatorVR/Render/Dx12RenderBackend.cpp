@@ -1580,10 +1580,10 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 			constexpr float whiteUv = 1.5F / Common::UiText::GlyphAtlas::Width;
 			for (const auto& vertex : alphaScratch)
 			{
-				const float clipW = static_cast<float>(Common::DebugWorldLayout::NearClipMeters +
-				    vertex.position[2] * (Common::DebugWorldLayout::FarClipMeters - Common::DebugWorldLayout::NearClipMeters));
-				alphaVertices.push_back({ { vertex.position[0] * clipW, vertex.position[1] * clipW,
-				    vertex.position[2] * clipW, clipW }, { whiteUv, whiteUv },
+				const auto clip = Common::ClipDepthFromNormalizedDepth(vertex.position[2],
+				    Common::DebugWorldLayout::NearClipMeters, Common::DebugWorldLayout::FarClipMeters);
+				alphaVertices.push_back({ { vertex.position[0] * clip.w, vertex.position[1] * clip.w,
+				    clip.z, clip.w }, { whiteUv, whiteUv },
 				    { vertex.color[0], vertex.color[1], vertex.color[2], vertex.color[3] } });
 			}
 		};
