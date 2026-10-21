@@ -1825,6 +1825,9 @@ namespace BaseballSimulatorVR::Core
 				initialSpeed
 			};
 		}
+		m_pitcherArmSpeedScale = ComputeFastestPresetArmSpeedScale(
+		    m_pitchProfiles,
+		    m_activePitchParameters);
 
 		ResetPitchSimulation();
 
