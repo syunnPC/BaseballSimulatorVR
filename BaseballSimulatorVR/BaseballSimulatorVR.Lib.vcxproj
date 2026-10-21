@@ -66,6 +66,13 @@
     <ClInclude Include="Common\HomePlateGeometry.hpp" />
     <ClInclude Include="Common\IndexedWorldMesh.hpp" />
     <ClInclude Include="Common\JsonKeyValueParser.hpp" />
+    <ClInclude Include="Common\AppLog.hpp" />
+    <ClInclude Include="Common\AtomicFileWriter.hpp" />
+    <ClInclude Include="Common\CrashReporting.hpp" />
+    <ClInclude Include="Common\JsonWriter.hpp" />
+    <ClInclude Include="Common\TextConversion.hpp" />
+    <ClInclude Include="Data\JsonSettingsReader.hpp" />
+    <ClInclude Include="Data\PresetCatalog.hpp" />
     <ClInclude Include="Common\MathUtilities.hpp" />
     <ClInclude Include="Common\MetricsPanelControls.hpp" />
     <ClInclude Include="Common\OverlayVisibilitySettings.hpp" />
@@ -117,9 +124,13 @@
     <ClInclude Include="XR\NullXrSystem.hpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Common\AppLog.cpp" />
+    <ClCompile Include="Common\AtomicFileWriter.cpp" />
+    <ClCompile Include="Common\CrashReporting.cpp" />
     <ClCompile Include="Core\Application.cpp" />
     <ClCompile Include="Core\FrameStatistics.cpp" />
     <ClCompile Include="Data\PitchPresetJsonStorage.cpp" />
+    <ClCompile Include="Data\PresetCatalog.cpp" />
     <ClCompile Include="Data\PresetRepository.cpp" />
     <ClCompile Include="Data\RuntimeSettingsJsonStorage.cpp" />
     <ClCompile Include="Data\SessionLogRepository.cpp" />

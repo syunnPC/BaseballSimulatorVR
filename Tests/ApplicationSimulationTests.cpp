@@ -796,6 +796,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(Near(Common::GetStrikeZoneBottomMeters(), 0.336) &&
 			    Near(Common::GetStrikeZoneTopMeters(), 0.84),
 			    "Calibration updates the geometry used by rendering and zone decisions");
+			app->FlushPendingSettingsSaves(true);
 			Tests::Check(std::filesystem::exists(output.path / "PlaySettings.user.json") &&
 			    !std::filesystem::exists(output.path / "environment.json"),
 			    "Completed calibration persists the player's zone without creating or modifying an environment file");
@@ -827,6 +828,7 @@ namespace BaseballSimulatorVR::Core
 			for (const auto expected : {PitchDisplay::Full, PitchDisplay::ZoneOnly, PitchDisplay::None})
 			{
 				app->HandleKeyDown('1');
+				app->FlushPendingSettingsSaves(true);
 				Tests::Check(app->m_overlayVisibility.pitchTrajectoryDisplayMode == expected &&
 				    app->m_overlayVisibility.showBattedTrajectory &&
 				    app->m_overlayVisibility.strikeZoneDisplayMode == ZoneDisplay::None &&
@@ -840,6 +842,7 @@ namespace BaseballSimulatorVR::Core
 			for (const auto expected : {ZoneDisplay::Plane, ZoneDisplay::Box, ZoneDisplay::None})
 			{
 				app->HandleKeyDown('2');
+				app->FlushPendingSettingsSaves(true);
 				Tests::Check(app->m_overlayVisibility.strikeZoneDisplayMode == expected &&
 				    app->m_overlayVisibility.pitchTrajectoryDisplayMode == PitchDisplay::None &&
 				    xr->overlayVisibility.strikeZoneDisplayMode == expected &&
@@ -875,6 +878,7 @@ namespace BaseballSimulatorVR::Core
 				    !app->m_overlayVisibility.showBattedTrajectory,
 				    "Operation mode changes preserve both display modes and the independent batted preference");
 			}
+			app->FlushPendingSettingsSaves(true);
 			const auto json = Tests::ReadFile(settingsPath);
 			Tests::Check(json.find("\"pitchTrajectoryDisplayMode\"") != std::string::npos &&
 			    json.find("\"strikeZoneDisplayMode\"") != std::string::npos &&
@@ -914,6 +918,7 @@ namespace BaseballSimulatorVR::Core
 				    app->m_batOverlayState->material == material &&
 				    app->BuildXrUiTelemetry().batMaterial == material,
 				    "XR and keyboard material commands cycle all three bats and update the existing presentation");
+				app->FlushPendingSettingsSaves(true);
 				auto restored = MakeApplication();
 				restored->m_userDataDirectoryPath = output.path.wstring();
 				Tests::Check(restored->LoadPlaySettingsFromJson() && restored->m_batMaterial == material,
@@ -1137,61 +1142,82 @@ namespace BaseballSimulatorVR::Core
 			    "A new delivery clears the old bat contact marker and incoming flight report together");
 		}
 
-		static void TestRequiredSettingsProvisioning()
+		static void TestRequiredSettingsProvisioning(const std::filesystem::path& sourceRoot)
 		{
 			Tests::TempDirectory output;
-			const auto bundled = output.path / "bundled";
 			const auto user = output.path / "user";
-			Tests::Check(std::filesystem::create_directory(bundled) &&
-			    std::filesystem::create_directory(user), "Create isolated bundled and user settings roots");
-			const std::array<std::string_view, 33> names{
-			    "PitchSettings.user.json", "PitchSettings.Yamamoto.json",
-			    "PitchSettings.Difficulty.VeryEasy.RHP.json", "PitchSettings.Difficulty.VeryEasy.LHP.json",
-			    "PitchSettings.Challenge1.RHP.json", "PitchSettings.Challenge1.LHP.json",
-			    "PitchSettings.Challenge2.RHP.json", "PitchSettings.Challenge2.LHP.json",
-			    "PitchSettings.Difficulty.Easy.RHP.json", "PitchSettings.Difficulty.Easy.LHP.json",
-			    "PitchSettings.Difficulty.Normal.RHP.json", "PitchSettings.Difficulty.Normal.LHP.json",
-			    "PitchSettings.Difficulty.Hard.RHP.json", "PitchSettings.Difficulty.Hard.LHP.json",
-			    "PitchSettings.Difficulty.Expert.RHP.json", "PitchSettings.Difficulty.Expert.LHP.json",
-			    "EnvironmentSettings.user.json", "PlaySettings.user.json",
-			    "PitchSettings.Toss.Baseball.json", "PitchSettings.Toss.Softball.json",
-			    "EnvironmentSettings.Toss.Baseball.json", "EnvironmentSettings.Toss.Softball.json",
-			    "PitchSettings.SlowFastball.Baseball.RHP.json", "PitchSettings.SlowFastball.Baseball.LHP.json",
-			    "PitchSettings.SlowFastball.Softball.RHP.json", "PitchSettings.SlowFastball.Softball.LHP.json",
-			    "EnvironmentSettings.SlowFastball.Baseball.json", "EnvironmentSettings.SlowFastball.Softball.json",
-			    "PitchSettings.Beginner.Softball.RHP.json", "PitchSettings.Beginner.Softball.LHP.json",
-			    "PitchSettings.Beginner.BigBreak.Softball.RHP.json", "PitchSettings.Beginner.BigBreak.Softball.LHP.json",
-			    "EnvironmentSettings.Beginner.Softball.json" };
-			for (const auto name : names)
-			{
-				std::ofstream stream(bundled / name);
-				stream << "bundled " << name;
-			}
+			const auto bundled = sourceRoot / "Presets";
 			auto app = MakeApplication();
 			app->m_bundledContentDirectoryPath = bundled.wstring();
 			app->m_userDataDirectoryPath = user.wstring();
 			std::wstring error;
-			Tests::Check(app->EnsureRequiredUserSettingsFiles(error),
-			    "A new installation provisions all difficulty, toss and slow-fastball settings");
-			for (const auto name : names)
-				Tests::Check(Tests::ReadFile(user / name) == "bundled " + std::string(name),
-				    "First-run provisioning copies each bundled file without changing its contents");
+			Tests::Check(app->EnsureRequiredUserSettingsFiles(error) && app->m_startupNotices.empty(),
+			    "A new installation creates the user directory and its settings silently");
+			const auto seededPlay = app->m_runtimeSettingsJsonStorage.LoadPlay(
+			    (user / "PlaySettings.user.json").wstring(), error);
+			Tests::Check(seededPlay && seededPlay->settingsLayoutVersion == Data::CurrentSettingsLayoutVersion &&
+			    Tests::ReadFile(user / "EnvironmentSettings.user.json") ==
+			        Tests::ReadFile(bundled / "Environment" / "EnvironmentSettings.default.json") &&
+			    Tests::ReadFile(user / "PitchSettings.user.json") ==
+			        Tests::ReadFile(bundled / "Pitch" / "PitchSettings.default.json"),
+			    "Only the three user files are created, from the bundled *.default.json templates");
+			std::size_t userFiles = 0;
+			for (const auto& entry : std::filesystem::directory_iterator(user))
+				userFiles += entry.is_regular_file() && entry.path().extension() == L".json" ? 1U : 0U;
+			Tests::Check(userFiles == 3U, "Bundled presets are no longer copied into the user directory");
+			Tests::Check(app->m_settingsLayoutVersion == Data::CurrentSettingsLayoutVersion,
+			    "The settings layout version is recorded");
+
 			{
-				std::ofstream existing(user / names[0]);
+				std::ofstream existing(user / "PitchSettings.user.json");
 				existing << "user modified";
 			}
+			Tests::Check(app->EnsureRequiredUserSettingsFiles(error) &&
+			    Tests::ReadFile(user / "PitchSettings.user.json") == "user modified",
+			    "Provisioning never overwrites an existing user settings file");
+
+			// Upgrade from the old layout: every bundled preset had been copied (and rewritten) here.
+			Tests::TempDirectory legacy;
+			for (const auto name : {L"PitchSettings.Difficulty.Easy.RHP.json", L"PitchSettings.Difficulty.Easy.LHP.json",
+			         L"PitchSettings.Yamamoto.json", L"EnvironmentSettings.Toss.Baseball.json"})
 			{
-				std::ofstream existing(user / names[3]);
-				existing << "custom left-handed preset";
+				std::ofstream stale(legacy.path / name);
+				stale << "{\"stale\": true}";
 			}
-			Tests::Check(std::filesystem::remove(user / names[8]), "Remove one preset to emulate an incomplete installation");
-			Tests::Check(app->EnsureRequiredUserSettingsFiles(error),
-			    "An existing installation fills missing difficulty presets");
-			Tests::Check(Tests::ReadFile(user / names[0]) == "user modified" &&
-			    Tests::ReadFile(user / names[3]) == "custom left-handed preset",
-			    "Provisioning never overwrites existing user settings or modified difficulty files");
-			Tests::Check(Tests::ReadFile(user / names[8]) == "bundled " + std::string(names[8]),
-			    "Provisioning restores exactly the missing difficulty file from bundled content");
+			{
+				std::ofstream custom(legacy.path / "PitchSettings.MyOwn.json");
+				custom << "{\"mine\": true}";
+			}
+			auto upgraded = MakeApplication();
+			upgraded->m_bundledContentDirectoryPath = bundled.wstring();
+			upgraded->m_userDataDirectoryPath = legacy.path.wstring();
+			Tests::Check(upgraded->EnsureRequiredUserSettingsFiles(error) && upgraded->m_startupNotices.size() == 1U,
+			    "The first start after the upgrade explains the preset migration once");
+			Tests::Check(!std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.RHP.json") &&
+			    !std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.LHP.json") &&
+			    !std::filesystem::exists(legacy.path / "PitchSettings.Yamamoto.json") &&
+			    !std::filesystem::exists(legacy.path / "EnvironmentSettings.Toss.Baseball.json") &&
+			    std::filesystem::exists(legacy.path / "PitchSettings.MyOwn.json") &&
+			    std::filesystem::exists(legacy.path / "PitchSettings.user.json"),
+			    "Stale provisioned copies of bundled presets move out of the way; user files stay");
+			std::size_t backedUp = 0;
+			for (const auto& entry : std::filesystem::recursive_directory_iterator(legacy.path / "LegacyPresetBackup"))
+				backedUp += entry.is_regular_file() ? 1U : 0U;
+			Tests::Check(backedUp == 4U, "Every moved copy is kept in LegacyPresetBackup");
+			const auto play = upgraded->m_runtimeSettingsJsonStorage.LoadPlay(
+			    (legacy.path / "PlaySettings.user.json").wstring(), error);
+			Tests::Check(play && play->settingsLayoutVersion == Data::CurrentSettingsLayoutVersion,
+			    "The migration is recorded in PlaySettings");
+			{
+				std::ofstream customized(legacy.path / "PitchSettings.Yamamoto.json");
+				customized << "{\"customized\": true}";
+			}
+			auto restarted = MakeApplication();
+			restarted->m_bundledContentDirectoryPath = bundled.wstring();
+			restarted->m_userDataDirectoryPath = legacy.path.wstring();
+			Tests::Check(restarted->EnsureRequiredUserSettingsFiles(error) && restarted->m_startupNotices.empty() &&
+			    std::filesystem::exists(legacy.path / "PitchSettings.Yamamoto.json"),
+			    "Later customizations of a bundled preset are kept as user overrides");
 		}
 
 		static void TestPitcherHandednessAndPresetTempoLifecycle()
@@ -1461,18 +1487,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::TempDirectory output;
 			auto app = MakeApplication();
 			app->m_userDataDirectoryPath = output.path.wstring();
-			for (const std::wstring_view kind : {L"Baseball", L"Softball"})
-			{
-				const std::wstring environment = L"EnvironmentSettings.SlowFastball." + std::wstring(kind) + L".json";
-				Tests::Check(std::filesystem::copy_file(sourceRoot / environment, output.path / environment),
-				    "Copy the shipped normal-distance slow-fastball environment into an isolated user directory");
-				for (const std::wstring_view hand : {L"RHP", L"LHP"})
-				{
-					const std::wstring name = L"PitchSettings.SlowFastball." + std::wstring(kind) + L"." + std::wstring(hand) + L".json";
-					Tests::Check(std::filesystem::copy_file(sourceRoot / name, output.path / name),
-					    "Copy the shipped right- or left-handed slow-fastball preset for application testing");
-				}
-			}
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
 			for (const std::wstring_view kind : {L"Baseball", L"Softball"})
 			{
 				const double radius = kind == L"Baseball" ? .037 : .0485;
@@ -1480,7 +1495,7 @@ namespace BaseballSimulatorVR::Core
 				for (const std::wstring_view hand : {L"RHP", L"LHP"})
 				{
 					const std::wstring name = L"PitchSettings.SlowFastball." + std::wstring(kind) + L"." + std::wstring(hand) + L".json";
-					Tests::Check(app->LoadUserPresetFromJsonFile((output.path / name).wstring()) &&
+					Tests::Check(app->LoadUserPresetFromJsonFile(name) &&
 					    app->LoadEnvironmentSettingsFromJson() && app->m_pitchProfiles.size() == 4 &&
 					    app->m_randomPitchProfileEnabled && app->m_pitcherThrowsLeftHanded == (hand == L"LHP") &&
 					    Near(app->m_environmentSettings.pitchDistanceMeters, 18.44) &&
@@ -1536,17 +1551,18 @@ namespace BaseballSimulatorVR::Core
 			Tests::TempDirectory output;
 			auto app = MakeApplication();
 			app->m_userDataDirectoryPath = output.path.wstring();
-			Tests::Check(std::filesystem::copy_file(sourceRoot / "EnvironmentSettings.user.json",
-			    output.path / "EnvironmentSettings.user.json"), "Copy the standard environment for additional training presets");
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
+			Tests::Check(std::filesystem::copy_file(sourceRoot / "Presets" / "Environment" / "EnvironmentSettings.default.json",
+			    output.path / "EnvironmentSettings.user.json"), "Seed the standard user environment for additional training presets");
 			for (const auto kind : {L"Difficulty.VeryEasy", L"Challenge1", L"Challenge2"})
 			for (const auto hand : {L"RHP", L"LHP"})
 			{
 				const bool lowRelease = std::wstring_view{kind} == L"Challenge1";
 				const double releaseHeight = lowRelease ? .1 : 1.8;
 				const std::wstring name = L"PitchSettings." + std::wstring{kind} + L"." + hand + L".json";
-				Tests::Check(std::filesystem::copy_file(sourceRoot / name, output.path / name) &&
-				    app->LoadUserPresetFromJsonFile((output.path / name).wstring()) && app->LoadEnvironmentSettingsFromJson(),
-				    "The additional training preset loads through the application with its referenced environment");
+				Tests::Check(app->LoadUserPresetFromJsonFile(name) && app->LoadEnvironmentSettingsFromJson() &&
+				    app->m_environmentSettingsFilePath == (output.path / "EnvironmentSettings.user.json").wstring(),
+				    "The additional training preset loads through the application with the user's environment");
 				const double mound = app->m_environmentSettings.moundHeightOffsetMeters;
 				app->m_operationMode = Application::OperationMode::BattingDuel;
 				for (int profile = 0; profile < static_cast<int>(app->m_pitchProfiles.size()); ++profile)
@@ -1582,11 +1598,9 @@ namespace BaseballSimulatorVR::Core
 		static void TestBeginnerSoftballZoneTargeting(const std::filesystem::path& sourceRoot)
 		{
 			Tests::TempDirectory output;
-			const std::wstring environment = L"EnvironmentSettings.Beginner.Softball.json";
-			Tests::Check(std::filesystem::copy_file(sourceRoot / environment, output.path / environment),
-			    "Copy the shipped beginner softball environment for application targeting tests");
 			auto app = MakeApplication();
 			app->m_userDataDirectoryPath = output.path.wstring();
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
 			constexpr std::array<double, 6> speedsKmh{90, 75, 80, 85, 85, 80};
 			for (const bool bigBreak : {false, true})
 			{
@@ -1594,8 +1608,7 @@ namespace BaseballSimulatorVR::Core
 				{
 					const std::wstring name = std::wstring(L"PitchSettings.Beginner.") +
 					    (bigBreak ? L"BigBreak." : L"") + L"Softball." + (leftHanded ? L"LHP.json" : L"RHP.json");
-					Tests::Check(std::filesystem::copy_file(sourceRoot / name, output.path / name) &&
-					    app->LoadUserPresetFromJsonFile((output.path / name).wstring()) && app->LoadEnvironmentSettingsFromJson() &&
+					Tests::Check(app->LoadUserPresetFromJsonFile(name) && app->LoadEnvironmentSettingsFromJson() &&
 					    app->m_pitchProfiles.size() == 6 && app->m_randomPitchProfileEnabled,
 					    "Both handedness choices load all six beginner softball pitches for normal and large breaks");
 					for (int profile = 0; profile < 6; ++profile)
@@ -1644,17 +1657,20 @@ namespace BaseballSimulatorVR::Core
 			    L"EnvironmentSettings.user.json", L"EnvironmentSettings.Toss.Baseball.json",
 			    L"EnvironmentSettings.Toss.Softball.json", L"EnvironmentSettings.SlowFastball.Baseball.json",
 			    L"EnvironmentSettings.SlowFastball.Softball.json"};
+			Tests::Check(std::filesystem::copy_file(sourceRoot / "Presets" / "Environment" / "EnvironmentSettings.default.json",
+			    output.path / "EnvironmentSettings.user.json"), "Seed the player's environment from the bundled default");
+			const auto environmentPathFor = [&](const std::wstring_view name)
+			{
+				return name == L"EnvironmentSettings.user.json" ? output.path / name
+				                                                : sourceRoot / "Presets" / "Environment" / name;
+			};
 			std::array<std::string, 5> environmentContents{};
 			for (std::size_t index = 0; index < presets.size(); ++index)
-			{
-				Tests::Check(std::filesystem::copy_file(sourceRoot / presets[index], output.path / presets[index]) &&
-				    std::filesystem::copy_file(sourceRoot / environments[index], output.path / environments[index]),
-				    "Copy normal, toss and slow-fastball settings into the isolated player directory");
-				environmentContents[index] = Tests::ReadFile(output.path / environments[index]);
-			}
+				environmentContents[index] = Tests::ReadFile(environmentPathFor(environments[index]));
 			TestXrSystem* xr = nullptr;
 			auto app = MakeApplication(&xr);
 			app->m_userDataDirectoryPath = output.path.wstring();
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
 			app->m_strikeZoneSettings.widthMeters = .46;
 			app->BeginStrikeZoneCalibration(L"test_player_zone");
 			for (int frame = 0; frame <= 270; ++frame)
@@ -1666,13 +1682,14 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_strikeZoneCalibrator.IsComplete(), "Calibrate the player zone before switching presets");
 			for (const auto preset : presets)
 			{
-				Tests::Check(app->LoadUserPresetFromJsonFile((output.path / preset).wstring()) &&
+				Tests::Check(app->LoadUserPresetFromJsonFile(preset) &&
 				    app->LoadEnvironmentSettingsFromJson() && Near(app->m_strikeZoneSettings.bottomMeters, .336) &&
 				    Near(app->m_strikeZoneSettings.heightMeters, .504) &&
 				    Near(app->m_strikeZoneSettings.widthMeters, .46) &&
 				    Near(Common::GetStrikeZoneBottomMeters(), .336) && Near(Common::GetStrikeZoneTopMeters(), .84),
 				    "Normal, toss and slow-fastball environment loads preserve the calibrated player zone");
 			}
+			app->FlushPendingSettingsSaves(true);
 			{
 				auto restarted = MakeApplication();
 				restarted->m_userDataDirectoryPath = output.path.wstring();
@@ -1684,6 +1701,7 @@ namespace BaseballSimulatorVR::Core
 				    "A completed automatic calibration survives restart as the saved player zone");
 			}
 			app->BeginStrikeZoneCalibration(L"test_cancel_pending_calibration");
+			app->FlushPendingSettingsSaves(true);
 			{
 				auto restarted = MakeApplication();
 				restarted->m_userDataDirectoryPath = output.path.wstring();
@@ -1730,13 +1748,14 @@ namespace BaseballSimulatorVR::Core
 			{
 				app->m_strikeZoneSettings = test.initial;
 				app->HandleXrUiCommand({test.command});
+				app->FlushPendingSettingsSaves(true);
 				std::wstring error;
 				const auto saved = app->m_runtimeSettingsJsonStorage.LoadPlay((output.path / "PlaySettings.user.json").wstring(), error);
 				Tests::Check(Near(Common::GetStrikeZoneBottomMeters(), test.bottom) && Near(Common::GetStrikeZoneTopMeters(), test.top),
 				    "Manual commands enforce floor, ceiling and height bounds while keeping the opposite edge fixed");
 				Tests::Check(saved && saved->strikeZoneConfigured && Near(saved->strikeZoneBottomMeters, test.bottom) &&
 				    Near(saved->strikeZoneBottomMeters + saved->strikeZoneHeightMeters, test.top),
-				    "Every clamped boundary adjustment remains valid and is persisted immediately");
+				    "Every clamped boundary adjustment remains valid and is persisted on the next settings flush");
 			}
 			SetUpTee(*app);
 			app->m_strikeZoneSettings = {.5, .8, .44};
@@ -1759,10 +1778,11 @@ namespace BaseballSimulatorVR::Core
 			    "Moving the zone during a tee hit never respawns the active ball");
 			const auto savedZone = app->m_strikeZoneSettings;
 			for (const auto preset : presets)
-				Tests::Check(app->LoadUserPresetFromJsonFile((output.path / preset).wstring()) &&
+				Tests::Check(app->LoadUserPresetFromJsonFile(preset) &&
 				    app->LoadEnvironmentSettingsFromJson() && Near(app->m_strikeZoneSettings.bottomMeters, savedZone.bottomMeters) &&
 				    Near(app->m_strikeZoneSettings.heightMeters, savedZone.heightMeters),
 				    "Manual player boundaries survive every normal, toss and slow-fastball preset load");
+			app->FlushPendingSettingsSaves(true);
 			auto restarted = MakeApplication(&xr);
 			restarted->m_userDataDirectoryPath = output.path.wstring();
 			Tests::Check(restarted->LoadPlaySettingsFromJson() &&
@@ -1770,8 +1790,13 @@ namespace BaseballSimulatorVR::Core
 			    Near(Common::GetStrikeZoneTopMeters(), savedZone.bottomMeters + savedZone.heightMeters),
 			    "An application restart restores the player's independent strike-zone boundaries");
 			for (std::size_t index = 0; index < environments.size(); ++index)
-				Tests::Check(Tests::ReadFile(output.path / environments[index]) == environmentContents[index],
+			{
+				Tests::Check(Tests::ReadFile(environmentPathFor(environments[index])) == environmentContents[index],
 				    "Calibration and manual player-zone changes never modify preset environment files");
+				Tests::Check(environments[index] == L"EnvironmentSettings.user.json" ||
+				    !std::filesystem::exists(output.path / environments[index]),
+				    "Player-zone changes never create customized copies of bundled environments");
+			}
 		}
 
 		static void TestBatVelocitySourcesAndHaptics()
@@ -1871,7 +1896,7 @@ namespace BaseballSimulatorVR::Core
 			TestIndependentTrajectoryCommandsAndPersistence();
 			TestBatMaterialSelectionAndPersistence();
 			TestPitcherHandednessAndPresetTempoLifecycle();
-			TestRequiredSettingsProvisioning();
+			TestRequiredSettingsProvisioning(sourceRoot);
 			TestTossFileSwitchingAndBallProperties();
 			TestSlowFastballFilesAndZoneTargeting(sourceRoot);
 			TestAdditionalTrainingPresets(sourceRoot);

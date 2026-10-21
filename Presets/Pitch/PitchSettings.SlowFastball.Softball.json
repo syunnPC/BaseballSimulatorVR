@@ -1,5 +1,9 @@
 {
-  "_comment_preset": "Softball fastballs, 70-100 km/h release speed, LHP.",
+  "_comment_displayName": "Preset name shown in the pitch panel; the throwing hand is appended.",
+  "displayName": "低速ストレート\nソフトボール",
+  "_comment_mirrorForLeftHandedPitcher": "Also offer the opposite-hand variant: spin axis Y/Z and lateral velocity are mirrored, pitcherThrowsLeftHanded is flipped.",
+  "mirrorForLeftHandedPitcher": true,
+  "_comment_preset": "Softball fastballs, 70-100 km/h release speed, RHP. The left-handed variant is generated at load time (mirrorForLeftHandedPitcher).",
   "initialSpeedMetersPerSecond": 19.206308276252425,
   "launchElevationDegrees": 8.976287903192706,
   "releaseHeightMeters": 1.8,
@@ -17,7 +21,7 @@
   "seamPerturbationFrequencyHz": 0.0,
   "seamPerturbationPhase": 0.0,
   "environmentSettingsFile": "EnvironmentSettings.SlowFastball.Softball.json",
-  "pitcherThrowsLeftHanded": true,
+  "pitcherThrowsLeftHanded": false,
   "activePitchProfileIndex": 0,
   "randomPitchProfileEnabled": true,
   "pitchProfiles": [

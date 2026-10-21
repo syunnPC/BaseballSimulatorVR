@@ -1,5 +1,6 @@
 #include "TestSupport.hpp"
 #include "../BaseballSimulatorVR/Data/PitchPresetJsonStorage.hpp"
+#include "../BaseballSimulatorVR/Data/PresetCatalog.hpp"
 #include "../BaseballSimulatorVR/Data/RuntimeSettingsJsonStorage.hpp"
 #include "../BaseballSimulatorVR/Physics/PitchPhysicsEngine.hpp"
 #include "../BaseballSimulatorVR/Physics/SweptBatCollision.hpp"
@@ -78,10 +79,10 @@ namespace
 void RunBeginnerPresetTests(const std::filesystem::path& sourceRoot)
 {
 	using namespace BaseballSimulatorVR;
-	Data::PitchPresetJsonStorage storage;
+	const Data::PresetCatalog catalog{ sourceRoot / L"Presets", {} };
 	Data::RuntimeSettingsJsonStorage runtimeStorage;
 	std::wstring error;
-	const auto environmentPath = sourceRoot / L"EnvironmentSettings.Beginner.Softball.json";
+	const auto environmentPath = sourceRoot / L"Presets" / L"Environment" / L"EnvironmentSettings.Beginner.Softball.json";
 	const auto environment = runtimeStorage.LoadEnvironment(environmentPath.wstring(), error);
 	Tests::Check(environment && environment->pitchDistanceMeters == 18.44 &&
 	    environment->moundHeightOffsetMeters == .18 && !environment->enableMoundHeightOffset &&
@@ -106,8 +107,9 @@ void RunBeginnerPresetTests(const std::filesystem::path& sourceRoot)
 		{
 			const std::wstring prefix = big ? L"PitchSettings.Beginner.BigBreak.Softball."
 			    : L"PitchSettings.Beginner.Softball.";
-			const auto settings = storage.LoadPitchSettings(
-			    (sourceRoot / (prefix + (hand == 0 ? L"RHP.json" : L"LHP.json"))).wstring(), error);
+			const auto entry = catalog.FindPitchSettings(prefix + (hand == 0 ? L"RHP.json" : L"LHP.json"));
+			Tests::Check(entry.has_value(), "Both beginner hands are offered by the preset catalog");
+			const auto settings = catalog.LoadPitchSettings(*entry, error);
 			Tests::Check(settings && settings->pitchProfiles.size() == names.size() &&
 			    settings->environmentSettingsFile == L"EnvironmentSettings.Beginner.Softball.json" &&
 			    settings->pitcherThrowsLeftHanded == (hand == 1) &&

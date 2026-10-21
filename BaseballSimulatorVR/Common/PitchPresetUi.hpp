@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -40,38 +41,22 @@ namespace BaseballSimulatorVR::Common
 		return rect.top > rect.bottom;
 	}
 
-	[[nodiscard]] inline std::wstring BuildPitchPresetLabel(const std::wstring_view fileName)
+	// Label of a pitch settings entry: the preset's "displayName" from its JSON file, followed by the
+	// throwing hand for presets that offer both hands (mirrorForLeftHandedPitcher).
+	[[nodiscard]] inline std::wstring BuildPitchPresetLabel(
+	    const std::wstring_view displayName, const std::optional<bool> pitcherThrowsLeftHanded)
 	{
-		constexpr std::wstring_view prefix = L"PitchSettings.", suffix = L".json";
-		if (!fileName.starts_with(prefix) || !fileName.ends_with(suffix) ||
-		    fileName.size() <= prefix.size() + suffix.size()) return std::wstring{fileName};
-		const auto stem = fileName.substr(prefix.size(), fileName.size() - prefix.size() - suffix.size());
-		if (stem == L"sample") return L"サンプル設定";
-		if (stem == L"user") return L"ユーザー設定";
-		if (stem == L"Yamamoto") return L"山本由伸\n硬式野球 / 右投げ";
-		if (stem == L"Toss.Baseball") return L"トス\n硬式野球";
-		if (stem == L"Toss.Softball") return L"トス\nソフトボール";
-		constexpr std::array<std::pair<std::wstring_view,std::wstring_view>, 11> categories{{
-			{L"Difficulty.VeryEasy", L"難易度 ベリーイージー"},
-			{L"Challenge1", L"チャレンジ1"},
-			{L"Challenge2", L"チャレンジ2"},
-			{L"Beginner.Softball", L"初心者 / 標準変化\nソフトボール"},
-			{L"Beginner.BigBreak.Softball", L"初心者 / 大きな変化\nソフトボール"},
-			{L"SlowFastball.Baseball", L"低速ストレート\n硬式野球"},
-			{L"SlowFastball.Softball", L"低速ストレート\nソフトボール"},
-			{L"Difficulty.Easy", L"難易度 かんたん"},
-			{L"Difficulty.Normal", L"難易度 標準"},
-			{L"Difficulty.Hard", L"難易度 難しい"},
-			{L"Difficulty.Expert", L"難易度 上級"},
-		}};
-		for (const auto& [key,label] : categories)
-		{
-			if (stem.size() != key.size() + 4 || !stem.starts_with(key) || stem[key.size()] != L'.') continue;
-			const auto hand = stem.substr(key.size() + 1);
-			if (hand == L"LHP") return std::wstring{label} + L" / 左投げ";
-			if (hand == L"RHP") return std::wstring{label} + L" / 右投げ";
-		}
-		return std::wstring{fileName};
+		std::wstring label{ displayName };
+		if (pitcherThrowsLeftHanded.has_value())
+			label += *pitcherThrowsLeftHanded ? L" / 左投げ" : L" / 右投げ";
+		return label;
+	}
+
+	// The application publishes the finished label (above) in UiTelemetry::pitchSettingsFileName, so
+	// the XR panel shows it unchanged. Display names live in the preset JSON files, not in code.
+	[[nodiscard]] inline std::wstring BuildPitchPresetLabel(const std::wstring_view label)
+	{
+		return std::wstring{ label };
 	}
 
 	template <class TAdvance>

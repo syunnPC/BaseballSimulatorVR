@@ -32,51 +32,18 @@ void RunPitchPresetUiTests()
 	Common::ConfigureExpandedPitchPanel(panel);
 	Tests::Check(Common::BuildPitchPresetNameRect(panel,name),"Restore production preset layout");
 
-	for (const auto hand : {L"RHP",L"LHP"})
-	{
-		const std::wstring expectedHand = std::wstring_view{hand} == L"RHP" ? L"右投げ" : L"左投げ";
-		for (const auto variant : {L"Beginner.Softball.",L"Beginner.BigBreak.Softball."})
-		{
-			const auto label = Common::BuildPitchPresetLabel(std::wstring{L"PitchSettings."} + variant + hand + L".json");
-			Tests::Check(label.find(L"初心者") != std::wstring::npos && label.find(L"ソフトボール") != std::wstring::npos &&
-			    label.find(expectedHand) != std::wstring::npos,
-			    "Both beginner variants identify training level, ball type and throwing hand");
-			Tests::Check(label.find(std::wstring_view{variant}.starts_with(L"Beginner.BigBreak") ?
-			    L"大きな変化" : L"標準変化") != std::wstring::npos,
-			    "Normal and large beginner breaking pitches remain distinguishable");
-		}
-		for (const auto ball : {L"Baseball",L"Softball"})
-		{
-			const auto label = Common::BuildPitchPresetLabel(std::wstring{L"PitchSettings.SlowFastball."} + ball + L"." + hand + L".json");
-			Tests::Check(label.find(L"低速ストレート") != std::wstring::npos && label.find(expectedHand) != std::wstring::npos &&
-			    label.find(std::wstring_view{ball} == L"Baseball" ? L"硬式野球" : L"ソフトボール") != std::wstring::npos,
-			    "Slow fastball labels preserve ball type and throwing hand");
-		}
-		for (const auto difficulty : {L"VeryEasy",L"Easy",L"Normal",L"Hard",L"Expert"})
-		{
-			const auto label = Common::BuildPitchPresetLabel(std::wstring{L"PitchSettings.Difficulty."} + difficulty + L"." + hand + L".json");
-			Tests::Check(label.find(L"難易度") != std::wstring::npos && label.find(expectedHand) != std::wstring::npos,
-			    "Every bundled difficulty identifies the throwing hand");
-		}
-		Tests::Check(Common::BuildPitchPresetLabel(std::wstring{L"PitchSettings.Difficulty.VeryEasy."} + hand + L".json") ==
-		    L"難易度 ベリーイージー / " + expectedHand,
-		    "The very easy preset displays its Japanese name and throwing hand");
-		for (const auto challenge : {L"Challenge1", L"Challenge2"})
-		{
-			const auto label = Common::BuildPitchPresetLabel(std::wstring{L"PitchSettings."} + challenge + L"." + hand + L".json");
-			Tests::Check(label == std::wstring{std::wstring_view{challenge} == L"Challenge1" ? L"チャレンジ1 / " : L"チャレンジ2 / "} + expectedHand,
-			    "Challenge presets display distinct Japanese labels with their throwing hand");
-		}
-	}
-	Tests::Check(Common::BuildPitchPresetLabel(L"PitchSettings.Toss.Baseball.json") == L"トス\n硬式野球" &&
-	    Common::BuildPitchPresetLabel(L"PitchSettings.Toss.Softball.json") == L"トス\nソフトボール",
-	    "Toss labels distinguish both ball types");
+	// Preset names come from each JSON file's displayName (bundled labels are checked in
+	// BundledSettingsTests); the UI appends the hand for presets that offer both hands.
+	Tests::Check(Common::BuildPitchPresetLabel(L"難易度 標準", false) == L"難易度 標準 / 右投げ" &&
+	    Common::BuildPitchPresetLabel(L"難易度 標準", true) == L"難易度 標準 / 左投げ" &&
+	    Common::BuildPitchPresetLabel(L"トス\nソフトボール", std::nullopt) == L"トス\nソフトボール",
+	    "Preset labels append the throwing hand only for presets offering both hands");
 
 	const std::wstring unknown = L"PitchSettings.Custom.Unrecognized." + std::wstring(180,L'W') + L".日本語.\U0001F94E.json";
 	Tests::Check(Common::BuildPitchPresetLabel(unknown) == unknown &&
-	    Common::BuildPitchPresetLabel(L"PitchSettings.Beginner.Extra.Softball.RHP.json") == L"PitchSettings.Beginner.Extra.Softball.RHP.json" &&
-	    Common::BuildPitchPresetLabel(L"PitchSettings.json") == L"PitchSettings.json",
-	    "Unknown and malformed names retain their complete filename");
+	    Common::BuildPitchPresetLabel(std::wstring_view{L"初心者 / 標準変化\nソフトボール / 左投げ"}) ==
+	        L"初心者 / 標準変化\nソフトボール / 左投げ",
+	    "Published labels and files without a displayName are shown unchanged");
 	Ui::GlyphAtlas atlas;
 	Ui::TextLayoutCache layouts;
 	const auto wrapped = Common::WrapPitchPresetLabel(unknown,900.,[&](std::uint32_t scalar)

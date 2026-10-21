@@ -75,6 +75,7 @@
     <ClCompile Include="UiPointerInputTests.cpp" />
     <ClCompile Include="DesktopRenderResizeTests.cpp" />
     <ClCompile Include="ApplicationSimulationTests.cpp" />
+    <ClCompile Include="ApplicationSettingsTests.cpp" />
   </ItemGroup>
   <!-- Production code is compiled once, in the library the app links as well. -->
   <ItemGroup>

@@ -1,4 +1,6 @@
 {
+  "_comment_displayName": "Preset name shown in the pitch panel.",
+  "displayName": "ユーザー設定",
   "_comment_pitcherThrowsLeftHanded": "Pitcher throws with the left hand when true; right hand when false.",
   "pitcherThrowsLeftHanded": false,
   "_comment_initialSpeedMetersPerSecond": "Initial speed [m/s], direction fixed toward home plate.",
@@ -28,7 +30,7 @@
   "_comment_seamPerturbationPhase": "Seam perturbation phase [rad].",
   "seamPerturbationPhase": 0.0,
   "_comment_environmentSettingsFile": "Referenced environment settings JSON file name.",
-  "environmentSettingsFile": "EnvironmentSettings.sample.json",
+  "environmentSettingsFile": "EnvironmentSettings.user.json",
   "_comment_activePitchProfileIndex": "Selected pitch profile index when random selection is disabled.",
   "activePitchProfileIndex": 0,
   "_comment_randomPitchProfileEnabled": "If true, choose pitch profile randomly.",

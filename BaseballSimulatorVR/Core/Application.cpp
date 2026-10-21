@@ -1,7 +1,10 @@
 #include "Application.hpp"
 
 #include "../Resource.h"
+#include "../Common/AppLog.hpp"
+#include "../Common/AtomicFileWriter.hpp"
 #include "../Common/DebugWorldProjection.hpp"
+#include "../Common/TextConversion.hpp"
 #include "../Common/RuntimeLimits.hpp"
 #include "../Common/ZoneMaskUtilities.hpp"
 #include "../Common/BatPoseUtilities.hpp"
@@ -15,15 +18,18 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <shlobj.h>
 #include <iomanip>
+#include <iterator>
 #include <numbers>
 #include <optional>
 #include <random>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace BaseballSimulatorVR::Core
@@ -56,12 +62,15 @@ namespace BaseballSimulatorVR::Core
 		constexpr auto FixedSimulationStep = std::chrono::duration<double>(1.0 / 1000.0);
 		constexpr auto WindowTitleUpdateInterval = std::chrono::duration<double>(1.0 / 30.0);
 		constexpr auto MaxFrameTime = std::chrono::milliseconds(250);
-		constexpr std::wstring_view PitchSettingsFilePrefix = L"PitchSettings.";
-		constexpr std::wstring_view PitchSettingsJsonFileName = L"PitchSettings.user.json";
+		constexpr std::wstring_view PitchSettingsJsonFileName = Data::PresetLayout::UserPitchSettingsFileName;
 		constexpr std::wstring_view LegacyPitchSettingsJsonFileName = L"PitchPreset.user.json";
-		constexpr std::wstring_view DefaultEnvironmentSettingsJsonFileName = L"EnvironmentSettings.user.json";
-		constexpr std::wstring_view PlaySettingsJsonFileName = L"PlaySettings.user.json";
+		constexpr std::wstring_view DefaultEnvironmentSettingsJsonFileName =
+		    Data::PresetLayout::UserEnvironmentSettingsFileName;
+		constexpr std::wstring_view PlaySettingsJsonFileName = Data::PresetLayout::UserPlaySettingsFileName;
 		constexpr std::wstring_view SessionHistoryDatabaseFileName = L"SessionHistory.sqlite3";
+		constexpr std::wstring_view SettingsLogCategory = L"Settings";
+		// Settings writes are coalesced until no change happened for this long.
+		constexpr auto SettingsSaveDebounceInterval = std::chrono::milliseconds(500);
 
 		constexpr double MinimumForwardSpeed = 5.0;
 		constexpr double MaximumForwardSpeed = 50.0;
@@ -1040,32 +1049,6 @@ namespace BaseballSimulatorVR::Core
 			return absolutePath.lexically_normal();
 		}
 
-		[[nodiscard]] std::wstring ResolvePathRelativeToOwningFile(
-		    const std::wstring_view referencedPath,
-		    const std::wstring_view owningFilePath)
-		{
-			const std::filesystem::path reference{ referencedPath };
-			if (reference.empty())
-			{
-				return {};
-			}
-			if (reference.is_absolute())
-			{
-				return reference.lexically_normal().wstring();
-			}
-
-			const std::filesystem::path normalizedOwningPath =
-			    NormalizePathForStorage(std::filesystem::path{ owningFilePath });
-			if (!normalizedOwningPath.has_parent_path())
-			{
-				return reference.lexically_normal().wstring();
-			}
-
-			return (normalizedOwningPath.parent_path() / reference)
-			    .lexically_normal()
-			    .wstring();
-		}
-
 		[[nodiscard]] std::wstring BuildPitchSettingsPathReference(
 		    const std::wstring_view targetPath,
 		    const std::wstring_view owningFilePath)
@@ -1116,30 +1099,7 @@ namespace BaseballSimulatorVR::Core
 			}
 		}
 
-		[[nodiscard]] bool DirectoryContainsBundledSettings(
-		    const std::filesystem::path& candidateDirectory)
-		{
-			if (candidateDirectory.empty())
-			{
-				return false;
-			}
-
-			std::error_code error{};
-			return std::filesystem::exists(
-			           candidateDirectory / PitchSettingsJsonFileName,
-			           error) &&
-			       !error &&
-			       std::filesystem::exists(
-			           candidateDirectory / DefaultEnvironmentSettingsJsonFileName,
-			           error) &&
-			       !error &&
-			       std::filesystem::exists(
-			           candidateDirectory / PlaySettingsJsonFileName,
-			           error) &&
-			       !error;
-		}
-
-		[[nodiscard]] std::filesystem::path FindBundledContentDirectory(
+		[[nodiscard]] std::filesystem::path FindBundledPresetsDirectory(
 		    const std::filesystem::path& moduleFilePath)
 		{
 			std::vector<std::filesystem::path> candidates{};
@@ -1173,9 +1133,10 @@ namespace BaseballSimulatorVR::Core
 
 			for (const std::filesystem::path& candidate : candidates)
 			{
-				if (DirectoryContainsBundledSettings(candidate))
+				const std::filesystem::path presets = candidate / Data::PresetLayout::PresetsDirectoryName;
+				if (Data::PresetCatalog::IsBundledPresetsDirectory(presets))
 				{
-					return NormalizePathForStorage(candidate);
+					return NormalizePathForStorage(presets);
 				}
 			}
 
@@ -1206,75 +1167,99 @@ namespace BaseballSimulatorVR::Core
 			return localAppDataPath;
 		}
 
-		[[nodiscard]] bool CopyFileIfMissing(
-		    const std::filesystem::path& sourcePath,
-		    const std::filesystem::path& destinationPath,
-		    std::wstring& errorMessage)
+		[[nodiscard]] bool FileExists(const std::filesystem::path& path)
 		{
-			errorMessage.clear();
-
-			std::error_code existsError{};
-			if (std::filesystem::exists(destinationPath, existsError))
-			{
-				return !existsError;
-			}
-			if (existsError)
-			{
-				errorMessage = L"Failed to inspect existing user settings file.";
-				return false;
-			}
-
-			std::error_code sourceExistsError{};
-			if (!std::filesystem::exists(sourcePath, sourceExistsError) ||
-			    sourceExistsError)
-			{
-				errorMessage =
-				    L"Bundled default settings file is missing: " +
-				    sourcePath.wstring();
-				return false;
-			}
-
-			std::error_code createDirectoryError{};
-			std::filesystem::create_directories(
-			    destinationPath.parent_path(),
-			    createDirectoryError);
-			if (createDirectoryError)
-			{
-				const std::string errorText = createDirectoryError.message();
-				errorMessage =
-				    L"Failed to create the user settings directory: " +
-				    std::wstring{ errorText.begin(), errorText.end() };
-				return false;
-			}
-
-			std::error_code copyError{};
-			if (!std::filesystem::copy_file(
-			        sourcePath,
-			        destinationPath,
-			        std::filesystem::copy_options::skip_existing,
-			        copyError))
-			{
-				errorMessage = copyError
-				                   ? L"Failed to copy the bundled default settings file."
-				                   : L"Bundled default settings file was not copied.";
-				return false;
-			}
-
-			return true;
+			std::error_code error{};
+			return !path.empty() && std::filesystem::is_regular_file(path, error) && !error;
 		}
 
-		[[nodiscard]] bool IsPitchSettingsJsonFileName(
-		    const std::wstring_view fileName) noexcept
+		// "PlaySettings.user.json" -> "PlaySettings.user.broken-20261021-153000.json"
+		[[nodiscard]] std::filesystem::path BuildBrokenFilePath(const std::filesystem::path& filePath)
 		{
-			if (!fileName.starts_with(PitchSettingsFilePrefix))
+			SYSTEMTIME time{};
+			GetLocalTime(&time);
+			wchar_t stamp[32]{};
+			(void)swprintf_s(stamp, std::size(stamp), L"%04u%02u%02u-%02u%02u%02u",
+			    static_cast<unsigned>(time.wYear), static_cast<unsigned>(time.wMonth), static_cast<unsigned>(time.wDay),
+			    static_cast<unsigned>(time.wHour), static_cast<unsigned>(time.wMinute),
+			    static_cast<unsigned>(time.wSecond));
+			const std::wstring base = filePath.stem().wstring() + L".broken-" + stamp;
+			std::filesystem::path candidate = filePath.parent_path() / (base + L".json");
+			for (int suffix = 2; FileExists(candidate) && suffix < 100; ++suffix)
+			{
+				candidate = filePath.parent_path() / (base + L"-" + std::to_wstring(suffix) + L".json");
+			}
+			return candidate;
+		}
+
+		[[nodiscard]] std::wstring_view ZoneCallToken(const Common::PitchZoneCall call) noexcept
+		{
+			switch (call)
+			{
+			case Common::PitchZoneCall::Strike:
+				return L"strike";
+			case Common::PitchZoneCall::Ball:
+				return L"ball";
+			case Common::PitchZoneCall::Contact:
+				return L"contact";
+			case Common::PitchZoneCall::Pending:
+			default:
+				return L"";
+			}
+		}
+
+		// Keys whose auto-repeat drives a continuous adjustment; every other key (toggles, mode
+		// switches, file and profile selection, saves) only reacts to the initial press.
+		[[nodiscard]] bool IsRepeatableAdjustmentKey(const WPARAM keyCode, const bool controlPressed) noexcept
+		{
+			if (controlPressed)
 			{
 				return false;
 			}
-			if (fileName.size() < 5)
+			switch (keyCode)
 			{
+			case VK_UP:
+			case VK_DOWN:
+			case VK_LEFT:
+			case VK_RIGHT:
+			case VK_PRIOR:
+			case VK_NEXT:
+			case 'W':
+			case 'S':
+			case 'A':
+			case 'D':
+			case 'T':
+			case 'G':
+			case 'Y':
+			case 'H':
+			case 'U':
+			case 'J':
+			case 'O':
+			case 'P':
+			case VK_OEM_MINUS:
+			case VK_SUBTRACT:
+			case VK_OEM_PLUS:
+			case VK_ADD:
+			case VK_OEM_4:
+			case VK_OEM_6:
+			case VK_OEM_COMMA:
+			case VK_OEM_PERIOD:
+			case VK_OEM_1:
+			case VK_OEM_7:
+			case VK_F7:
+			case VK_F8:
+			case '7':
+			case '8':
+			case VK_NUMPAD2:
+			case VK_NUMPAD3:
+			case VK_NUMPAD4:
+			case VK_NUMPAD6:
+			case VK_NUMPAD8:
+			case VK_NUMPAD9:
+				return true;
+			default:
 				return false;
 			}
-			return fileName.substr(fileName.size() - 5) == L".json";
 		}
 	} // namespace
 
@@ -1410,7 +1395,7 @@ namespace BaseballSimulatorVR::Core
 		                             const std::wstring& diagnosticsMessage,
 		                             const std::wstring& userMessage) -> int
 		{
-			OutputDebugStringW(diagnosticsMessage.c_str());
+			Common::AppLog::Error(L"Startup", diagnosticsMessage);
 			MessageBoxW(
 			    m_windowHandle,
 			    userMessage.c_str(),
@@ -1447,80 +1432,30 @@ namespace BaseballSimulatorVR::Core
 		m_isSessionLogAvailable = sessionLogInitializationResult.succeeded;
 		if (!m_isSessionLogAvailable)
 		{
-			std::wstring logMessage = L"[SessionLog] initialization failed: " +
-			                          sessionLogInitializationResult.errorMessage +
-			                          L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(L"SessionLog",
+			    L"initialization failed: " + sessionLogInitializationResult.errorMessage);
 		}
 
 		ApplyPreset(m_activePresetType);
-		RefreshPitchSettingsFileList();
-		const bool hasPitchSettingsFile =
-		    !m_pitchSettingsFileNames.empty() ||
-		    std::filesystem::exists(ResolveInputFilePath(
-		        LegacyPitchSettingsJsonFileName));
-		if (!hasPitchSettingsFile)
-		{
-			return failStartup(
-			    -8,
-			    L"[Startup] required pitch settings file is missing.\n",
-			    L"Required setting file is missing:\n"
-			    L"  - PitchSettings.*.json (or legacy PitchPreset.user.json)\n"
-			    L"Restore the file and restart.");
-		}
-		if (!LoadUserPresetFromJson())
+		std::wstring settingsErrorMessage{};
+		if (!LoadStartupSettings(settingsErrorMessage))
 		{
 			return failStartup(
 			    -9,
-			    L"[Startup] failed to load required pitch settings JSON.\n",
-			    L"Failed to load required pitch settings.\n"
-			    L"Please fix missing/invalid required fields in PitchSettings.*.json and restart.");
+			    L"[Startup] failed to load required settings: " + settingsErrorMessage + L"\n",
+			    L"Failed to load the required settings:\n" + settingsErrorMessage +
+			        L"\n\nRestore the application's Presets folder and restart.");
 		}
-
-		const std::filesystem::path requiredEnvironmentSettingsFilePath =
-		    m_environmentSettingsFilePath.empty()
-		        ? ResolveUserDataPath(DefaultEnvironmentSettingsJsonFileName)
-		        : ResolveInputFilePath(m_environmentSettingsFilePath);
-		if (!std::filesystem::exists(
-		        requiredEnvironmentSettingsFilePath))
+		if (!m_startupNotices.empty())
 		{
-			const std::wstring diagnostics =
-			    L"[Startup] required environment settings file is missing: " +
-			    requiredEnvironmentSettingsFilePath.wstring() + L"\n";
-			const std::wstring userMessage =
-			    L"Required setting file is missing:\n  - " +
-			    requiredEnvironmentSettingsFilePath.wstring() +
-			    L"\nRestore the file and restart.";
-			return failStartup(-10, diagnostics, userMessage);
-		}
-		if (!LoadEnvironmentSettingsFromJson())
-		{
-			const std::wstring diagnostics =
-			    L"[Startup] failed to load required environment settings JSON: " +
-			    requiredEnvironmentSettingsFilePath.wstring() + L"\n";
-			const std::wstring userMessage =
-			    L"Failed to load required environment settings:\n  - " +
-			    requiredEnvironmentSettingsFilePath.wstring() +
-			    L"\nPlease fix missing/invalid required fields and restart.";
-			return failStartup(-11, diagnostics, userMessage);
-		}
-
-		if (!std::filesystem::exists(ResolveUserDataPath(PlaySettingsJsonFileName)))
-		{
-			return failStartup(
-			    -12,
-			    L"[Startup] required play settings file is missing.\n",
-			    L"Required setting file is missing:\n"
-			    L"  - PlaySettings.user.json\n"
-			    L"Restore the file and restart.");
-		}
-		if (!LoadPlaySettingsFromJson())
-		{
-			return failStartup(
-			    -13,
-			    L"[Startup] failed to load required play settings JSON.\n",
-			    L"Failed to load required play settings.\n"
-			    L"Please fix missing/invalid required fields in PlaySettings.user.json and restart.");
+			// Shown once, before the frame loop starts: which file and key were bad and what was restored.
+			std::wstring notice{};
+			for (const std::wstring& line : m_startupNotices)
+			{
+				notice += line + L"\n\n";
+			}
+			MessageBoxW(m_windowHandle, notice.c_str(), L"BaseballSimulatorVR settings", MB_OK | MB_ICONWARNING);
+			m_startupNotices.clear();
 		}
 
 		ApplyOverlayVisibilityChanges(L"initial");
@@ -1708,6 +1643,7 @@ namespace BaseballSimulatorVR::Core
 				UpdateWindowTitle();
 				titleAccumulator = std::chrono::duration<double>::zero();
 			}
+			FlushPendingSettingsSaves(false);
 			if (!frameTiming.isValid)
 			{
 				// No XR frame paces the loop (session idle or recovering): wait for
@@ -1766,33 +1702,13 @@ namespace BaseballSimulatorVR::Core
 
 	void Application::ApplyPreset(Data::PitchPresetType presetType)
 	{
+		// F1-F4 / XR preset buttons throw one of the built-in pitches transiently: the loaded
+		// pitch profiles, the profile selection and the settings files stay untouched, and
+		// selecting a profile (or the next random duel pitch) returns to the loaded repertoire.
 		m_activePresetType = presetType;
 		m_activePitchParameters = m_presetRepository.LoadPitchParameters(presetType);
-		m_randomPitchProfileEnabled = false;
-		switch (presetType)
-		{
-			case Data::PitchPresetType::Fastball:
-				m_activePitchProfileIndex = 0;
-				break;
-			case Data::PitchPresetType::Slider:
-				m_activePitchProfileIndex = 1;
-				break;
-			case Data::PitchPresetType::Curveball:
-				m_activePitchProfileIndex = 2;
-				break;
-			case Data::PitchPresetType::Changeup:
-				m_activePitchProfileIndex = 3;
-				break;
-			case Data::PitchPresetType::Custom:
-			default:
-				break;
-		}
-		if ((m_activePitchProfileIndex >= 0) &&
-		    (m_activePitchProfileIndex < static_cast<int>(m_pitchProfiles.size())))
-		{
-			m_pitchProfiles[static_cast<std::size_t>(m_activePitchProfileIndex)]
-			    .pitchParameters = m_activePitchParameters;
-		}
+		m_trajectoryZoneBiasLateral = 0.0;
+		m_trajectoryZoneBiasVertical = 0.0;
 		ApplyPitchParameterChangesAndLog(
 		    L"pitch_config",
 		    L"preset_apply");
@@ -1800,6 +1716,7 @@ namespace BaseballSimulatorVR::Core
 
 	void Application::ResetPitchSimulation()
 	{
+		RecordPitchOutcome();
 		m_pendingPitchSamples.clear();
 		// Reset the ball and controller collision history together.
 		m_batPoseState = {};
@@ -1895,7 +1812,8 @@ namespace BaseballSimulatorVR::Core
 		    m_environmentSettings.windShearFactor;
 		m_pitchMetricsSpeedMetersPerSecond =
 		    Physics::Length(m_activePitchParameters.initialVelocity);
-		if ((m_activePitchProfileIndex >= 0) &&
+		if ((m_activePresetType == Data::PitchPresetType::Custom) &&
+		    (m_activePitchProfileIndex >= 0) &&
 		    (m_activePitchProfileIndex < static_cast<int>(m_pitchProfiles.size())))
 		{
 			Data::PitchProfileEntry& activePitchProfile =
@@ -1914,7 +1832,7 @@ namespace BaseballSimulatorVR::Core
 
 		std::wostringstream pitchLog{};
 		pitchLog << std::fixed << std::setprecision(2);
-		pitchLog << L"[PitchConfig] preset=" << m_presetRepository.GetPresetName(m_activePresetType);
+		pitchLog << L"[PitchConfig] preset=" << BuildActivePitchName();
 		pitchLog << L", integrator=" << Physics::GetPitchIntegratorName(m_activePitchParameters.integratorType);
 		pitchLog << L", table=" << (m_activePitchParameters.useCoefficientTable ? L"On" : L"Off");
 		pitchLog << L", speed=" << m_activePitchParameters.initialVelocity.z;
@@ -1936,13 +1854,19 @@ namespace BaseballSimulatorVR::Core
 	    const bool preserveDirectionalVelocityForCurrentPitch)
 	{
 		ApplyPitchParameterChanges(preserveDirectionalVelocityForCurrentPitch);
-		(void)LogPitchEvent(eventType, note);
+		(void)LogPitchEvent(eventType, note, Data::SessionEventCategory::Pitch);
 		UpdateWindowTitle();
 	}
 
-	void Application::HandleKeyDown(WPARAM keyCode)
+	void Application::HandleKeyDown(WPARAM keyCode, const bool isAutoRepeat)
 	{
-		if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+		const bool controlPressed = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		if (isAutoRepeat && !IsRepeatableAdjustmentKey(keyCode, controlPressed))
+		{
+			// Holding a toggle, mode, file or save key must not flip or rewrite it repeatedly.
+			return;
+		}
+		if (controlPressed)
 		{
 			switch (keyCode)
 			{
@@ -2139,7 +2063,7 @@ namespace BaseballSimulatorVR::Core
 			case 'L':
 				if (!LoadUserPresetFromJson())
 				{
-					OutputDebugStringW(L"[PitchPreset] key load skipped: preset file invalid.\n");
+					Common::AppLog::Warning(SettingsLogCategory, L"key load skipped: no loadable pitch settings.");
 				}
 				break;
 			case VK_NUMPAD4:
@@ -2497,7 +2421,7 @@ namespace BaseballSimulatorVR::Core
 		OutputDebugStringW(logMessage.c_str());
 		(void)LogPitchEvent(L"playback_speed", noteText);
 		UpdateWindowTitle();
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::ResetPlaybackSpeedPercent()
@@ -2539,25 +2463,38 @@ namespace BaseballSimulatorVR::Core
 
 	void Application::SaveUserPresetToJson()
 	{
+		// Explicit save (K key). Presets are never rewritten implicitly; saving a read-only bundled
+		// preset (or a generated opposite-hand variant) writes a same-named customized copy into the
+		// user directory, which from then on overrides that entry.
+		const Data::PresetCatalog catalog = BuildPresetCatalog();
+		const Data::PitchSettingsEntry entry = m_activePitchSettingsEntry.value_or(
+		    catalog.DescribeFile(ResolveUserDataPath(PitchSettingsJsonFileName)));
+		const std::filesystem::path pitchSettingsFilePath = catalog.ResolvePitchSaveTarget(entry);
+		const bool keepsBothHands = (pitchSettingsFilePath == entry.sourcePath) && !entry.mirrored &&
+		                            entry.pitcherThrowsLeftHanded.has_value();
+
 		Data::PitchRuntimeSettings settings{};
 		settings.pitchParameters = m_activePitchParameters;
-		settings.environmentSettingsFile =
-		    m_environmentSettingsFilePath.empty()
-		        ? std::wstring{ DefaultEnvironmentSettingsJsonFileName }
-		        : BuildPitchSettingsPathReference(
-		              m_environmentSettingsFilePath,
-		              m_activePitchSettingsFilePath);
+		if (m_environmentSettingsFilePath.empty())
+		{
+			settings.environmentSettingsFile = std::wstring{ DefaultEnvironmentSettingsJsonFileName };
+		}
+		else
+		{
+			const std::filesystem::path environmentPath = ResolveInputFilePath(m_environmentSettingsFilePath);
+			// Bundled environments are referenced by name and resolved through the catalog.
+			settings.environmentSettingsFile = catalog.IsBundledPath(environmentPath)
+			    ? (environmentPath.filename() == Data::PresetLayout::DefaultEnvironmentSettingsFileName
+			              ? std::wstring{ DefaultEnvironmentSettingsJsonFileName }
+			              : environmentPath.filename().wstring())
+			    : BuildPitchSettingsPathReference(environmentPath.wstring(), pitchSettingsFilePath.wstring());
+		}
 		settings.pitchProfiles = m_pitchProfiles;
 		settings.activePitchProfileIndex = m_activePitchProfileIndex;
 		settings.randomPitchProfileEnabled = m_randomPitchProfileEnabled;
 		settings.pitcherThrowsLeftHanded = m_pitcherThrowsLeftHanded;
-		const std::filesystem::path pitchSettingsFilePath =
-		    !m_activePitchSettingsFilePath.empty()
-		        ? ResolveInputFilePath(m_activePitchSettingsFilePath)
-		        : ResolveUserDataPath(std::wstring{
-		              IsPitchSettingsJsonFileName(m_activePitchSettingsFileName)
-		                  ? m_activePitchSettingsFileName
-		                  : std::wstring{ PitchSettingsJsonFileName } });
+		settings.mirrorForLeftHandedPitcher = keepsBothHands;
+		settings.displayName = keepsBothHands ? entry.displayName : entry.BuildLabel();
 
 		std::wstring errorMessage{};
 		if (!m_pitchPresetJsonStorage.SavePitchSettings(
@@ -2565,20 +2502,24 @@ namespace BaseballSimulatorVR::Core
 		        settings,
 		        errorMessage))
 		{
-			std::wstring logMessage = L"[PitchConfig] failed to save pitch settings: " +
-			                          errorMessage + L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(SettingsLogCategory, L"failed to save pitch settings: " + errorMessage);
 			return;
 		}
 
 		m_activePitchSettingsFilePath = pitchSettingsFilePath.wstring();
-		m_activePitchSettingsFileName = pitchSettingsFilePath.filename().wstring();
+		m_activePitchSettingsFileName = keepsBothHands ? entry.id : pitchSettingsFilePath.filename().wstring();
 		RefreshPitchSettingsFileList();
+		m_activePitchSettingsEntry.reset();
+		for (const Data::PitchSettingsEntry& candidate : m_pitchSettingsEntries)
+		{
+			if (candidate.id == m_activePitchSettingsFileName)
+			{
+				m_activePitchSettingsEntry = candidate;
+			}
+		}
 		std::wstring saveNote = L"Saved " + m_activePitchSettingsFileName;
 		(void)LogPitchEvent(L"json_save", saveNote);
-		std::wstring saveLog =
-		    L"[PitchConfig] pitch settings saved to " + m_activePitchSettingsFilePath + L"\n";
-		OutputDebugStringW(saveLog.c_str());
+		Common::AppLog::Info(SettingsLogCategory, L"pitch settings saved to " + m_activePitchSettingsFilePath);
 	}
 
 	void Application::ExportCurrentSessionCsv()
@@ -2592,57 +2533,81 @@ namespace BaseballSimulatorVR::Core
 		    static_cast<UINT>(result ? MB_ICONINFORMATION : MB_ICONERROR));
 	}
 
-	void Application::RefreshPitchSettingsFileList()
+	Data::PresetCatalog Application::BuildPresetCatalog() const
 	{
-		std::vector<std::wstring> discoveredFileNames{};
-		const std::filesystem::path settingsDirectory =
-		    ResolveUserDataPath(L".");
-		if (settingsDirectory.empty())
+		return Data::PresetCatalog{ m_bundledContentDirectoryPath, m_userDataDirectoryPath };
+	}
+
+	std::wstring Application::BuildActivePitchName() const
+	{
+		if ((m_activePresetType == Data::PitchPresetType::Custom) &&
+		    (m_activePitchProfileIndex >= 0) &&
+		    (m_activePitchProfileIndex < static_cast<int>(m_pitchProfiles.size())))
 		{
-			std::wstring logMessage =
-			    L"[PitchConfig] failed to enumerate pitch settings directory.\n";
-			OutputDebugStringW(logMessage.c_str());
-			m_pitchSettingsFileNames.clear();
-			m_activePitchSettingsFileIndex = -1;
+			return m_pitchProfiles[static_cast<std::size_t>(m_activePitchProfileIndex)].name;
+		}
+		return std::wstring{ m_presetRepository.GetPresetName(m_activePresetType) };
+	}
+
+	std::wstring Application::BuildActivePitchSettingsLabel() const
+	{
+		for (const Data::PitchSettingsEntry& entry : m_pitchSettingsEntries)
+		{
+			if (entry.id == m_activePitchSettingsFileName)
+			{
+				return entry.BuildLabel();
+			}
+		}
+		return m_activePitchSettingsFileName;
+	}
+
+	void Application::MarkPlaySettingsDirty()
+	{
+		m_playSettingsDirty = true;
+		m_lastSettingsChangeTime = std::chrono::steady_clock::now();
+	}
+
+	void Application::MarkEnvironmentSettingsDirty()
+	{
+		m_environmentSettingsDirty = true;
+		m_lastSettingsChangeTime = std::chrono::steady_clock::now();
+	}
+
+	void Application::FlushPendingSettingsSaves(const bool force)
+	{
+		if (!m_playSettingsDirty && !m_environmentSettingsDirty)
+		{
 			return;
 		}
-
-		std::error_code iteratorError{};
-		for (std::filesystem::directory_iterator iterator(
-		         settingsDirectory,
-		         std::filesystem::directory_options::skip_permission_denied,
-		         iteratorError);
-		     !iteratorError &&
-		     (iterator != std::filesystem::directory_iterator{});
-		     iterator.increment(iteratorError))
+		if (!force &&
+		    (std::chrono::steady_clock::now() - m_lastSettingsChangeTime < SettingsSaveDebounceInterval))
 		{
-			const std::filesystem::directory_entry& entry = *iterator;
-			std::error_code entryError{};
-			if (!entry.is_regular_file(entryError))
-			{
-				continue;
-			}
-			const std::wstring fileName = entry.path().filename().wstring();
-			if (!IsPitchSettingsJsonFileName(fileName))
-			{
-				continue;
-			}
-			discoveredFileNames.push_back(fileName);
+			return;
 		}
-		if (iteratorError)
+		if (m_environmentSettingsDirty)
 		{
-			const std::string errorText = iteratorError.message();
-			std::wstring logMessage = L"[PitchConfig] pitch settings enumeration warning: " +
-			                          std::wstring{ errorText.begin(), errorText.end() } +
-			                          L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			SaveEnvironmentSettingsToJson();
 		}
+		if (m_playSettingsDirty)
+		{
+			SavePlaySettingsToJson();
+		}
+	}
 
-		std::sort(discoveredFileNames.begin(), discoveredFileNames.end());
-		discoveredFileNames.erase(
-		    std::unique(discoveredFileNames.begin(), discoveredFileNames.end()),
-		    discoveredFileNames.end());
-		m_pitchSettingsFileNames = std::move(discoveredFileNames);
+	void Application::RefreshPitchSettingsFileList()
+	{
+		std::vector<std::wstring> warnings{};
+		m_pitchSettingsEntries = BuildPresetCatalog().EnumeratePitchSettings(&warnings);
+		for (const std::wstring& warning : warnings)
+		{
+			Common::AppLog::Warning(SettingsLogCategory, L"skipping pitch settings " + warning);
+		}
+		m_pitchSettingsFileNames.clear();
+		m_pitchSettingsFileNames.reserve(m_pitchSettingsEntries.size());
+		for (const Data::PitchSettingsEntry& entry : m_pitchSettingsEntries)
+		{
+			m_pitchSettingsFileNames.push_back(entry.id);
+		}
 		m_activePitchSettingsFileIndex = -1;
 
 		if (!m_activePitchSettingsFileName.empty())
@@ -2690,38 +2655,34 @@ namespace BaseballSimulatorVR::Core
 	    const std::wstring_view filePath,
 	    const std::wstring_view loadEventNote)
 	{
-		const std::filesystem::path normalizedPitchSettingsPath =
-		    ResolveInputFilePath(filePath);
+		// Pending environment edits belong to the environment of the current file.
+		FlushPendingSettingsSaves(true);
+		const Data::PresetCatalog catalog = BuildPresetCatalog();
+		// A bare entry name selects a catalog entry (which may be a generated mirror variant);
+		// anything else is an explicit file.
+		std::optional<Data::PitchSettingsEntry> entry{};
+		if (!std::filesystem::path{ filePath }.has_parent_path())
+		{
+			entry = catalog.FindPitchSettings(filePath);
+		}
+		if (!entry.has_value())
+		{
+			entry = catalog.DescribeFile(ResolveInputFilePath(filePath));
+		}
 		std::wstring errorMessage{};
 		const std::optional<Data::PitchRuntimeSettings> loadedSettings =
-		    m_pitchPresetJsonStorage.LoadPitchSettings(
-		        normalizedPitchSettingsPath.wstring(),
-		        errorMessage);
+		    catalog.LoadPitchSettings(*entry, errorMessage);
 		if (!loadedSettings.has_value())
 		{
-			std::wstring logMessage =
-			    L"[PitchConfig] failed to load pitch settings (" +
-			    normalizedPitchSettingsPath.wstring() + L"): " + errorMessage + L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(SettingsLogCategory,
+			    L"failed to load pitch settings (" + entry->sourcePath.wstring() + L"): " + errorMessage);
 			return false;
 		}
 
 		m_activePitchParameters = loadedSettings->pitchParameters;
 		m_pitcherThrowsLeftHanded = loadedSettings->pitcherThrowsLeftHanded;
-		if (!loadedSettings->environmentSettingsFile.empty())
-		{
-			m_environmentSettingsFilePath =
-			    ResolvePathRelativeToOwningFile(
-			        loadedSettings->environmentSettingsFile,
-			        normalizedPitchSettingsPath.wstring());
-		}
-		else
-		{
-			m_environmentSettingsFilePath =
-			    ResolvePathRelativeToOwningFile(
-			        DefaultEnvironmentSettingsJsonFileName,
-			        normalizedPitchSettingsPath.wstring());
-		}
+		m_environmentSettingsFilePath =
+		    catalog.ResolveEnvironmentReference(loadedSettings->environmentSettingsFile, entry->sourcePath).wstring();
 		if (!loadedSettings->pitchProfiles.empty())
 		{
 			m_pitchProfiles = loadedSettings->pitchProfiles;
@@ -2749,20 +2710,14 @@ namespace BaseballSimulatorVR::Core
 		m_randomPitchProfileEnabled =
 		    loadedSettings->randomPitchProfileEnabled;
 		m_pitcherArmSpeedScale = ComputeFastestPresetArmSpeedScale(m_pitchProfiles, loadedSettings->pitchParameters);
-		if ((m_activePitchProfileIndex >= 0) &&
-		    (m_activePitchProfileIndex < static_cast<int>(m_pitchProfiles.size())))
-		{
-			m_activePitchParameters =
-			    m_pitchProfiles[static_cast<std::size_t>(m_activePitchProfileIndex)]
-			        .pitchParameters;
-		}
+		m_activePitchParameters =
+		    m_pitchProfiles[static_cast<std::size_t>(m_activePitchProfileIndex)].pitchParameters;
 		m_activePresetType = Data::PitchPresetType::Custom;
-		const std::wstring loadedFileName =
-		    normalizedPitchSettingsPath.filename().wstring();
-		m_activePitchSettingsFilePath = normalizedPitchSettingsPath.wstring();
-		m_activePitchSettingsFileName = loadedFileName;
+		m_activePitchSettingsFilePath = entry->sourcePath.wstring();
+		m_activePitchSettingsFileName = entry->id;
+		m_activePitchSettingsEntry = entry;
 		RefreshPitchSettingsFileList();
-		const std::wstring loadNote = std::wstring{ L"Loaded " } + loadedFileName;
+		const std::wstring loadNote = L"Loaded " + entry->id;
 		ApplyPitchParameterChangesAndLog(
 		    L"json_load",
 		    loadNote);
@@ -2770,10 +2725,9 @@ namespace BaseballSimulatorVR::Core
 		{
 			(void)LogPitchEvent(L"pitch_settings_file", std::wstring{ loadEventNote });
 		}
-		std::wstring logMessage =
-		    L"[PitchConfig] loaded from " + loadedFileName +
-		    L" (environment=" + m_environmentSettingsFilePath + L")\n";
-		OutputDebugStringW(logMessage.c_str());
+		Common::AppLog::Info(SettingsLogCategory,
+		    L"pitch settings loaded from " + entry->sourcePath.wstring() + L" as " + entry->id +
+		        L" (environment=" + m_environmentSettingsFilePath + L")");
 		return true;
 	}
 
@@ -2793,10 +2747,10 @@ namespace BaseballSimulatorVR::Core
 			return LoadUserPresetFromJsonFile(m_pitchSettingsFileNames.front());
 		}
 
-		if (std::filesystem::exists(ResolveInputFilePath(
-		        LegacyPitchSettingsJsonFileName)))
+		const std::filesystem::path legacyPath = ResolveInputFilePath(LegacyPitchSettingsJsonFileName);
+		if (FileExists(legacyPath))
 		{
-			return LoadUserPresetFromJsonFile(LegacyPitchSettingsJsonFileName);
+			return LoadUserPresetFromJsonFile(legacyPath.wstring());
 		}
 
 		return false;
@@ -2804,105 +2758,67 @@ namespace BaseballSimulatorVR::Core
 
 	void Application::SaveEnvironmentSettingsToJson()
 	{
-		Data::EnvironmentRuntimeSettings settings{};
-		settings.pitchDistanceMeters = m_environmentSettings.pitchDistanceMeters;
-		settings.enableMoundHeightOffset = m_environmentSettings.enableMoundHeightOffset;
-		settings.moundHeightOffsetMeters = m_environmentSettings.moundHeightOffsetMeters;
-		settings.windVelocity = m_environmentSettings.windVelocity;
-		settings.ballProperties = m_environmentSettings.ballProperties;
-		settings.enableHeightDependentWind =
-		    m_environmentSettings.enableHeightDependentWind;
-		settings.windShearFactor = m_environmentSettings.windShearFactor;
-		settings.batRadiusMeters = m_environmentSettings.batRadiusMeters;
-		settings.batLengthMeters = m_environmentSettings.batLengthMeters;
-		settings.batAngleOffsetDegrees =
-		    m_environmentSettings.batAngleOffsetDegrees;
-		settings.batYawOffsetDegrees =
-		    m_environmentSettings.batYawOffsetDegrees;
-		settings.groundFanRadiusMeters =
-		    m_environmentSettings.groundFanRadiusMeters;
-		settings.integratorType = m_environmentSettings.integratorType;
-		const std::wstring environmentSettingsFilePath =
+		m_environmentSettingsDirty = false;
+		const Data::PresetCatalog catalog = BuildPresetCatalog();
+		const std::filesystem::path currentPath =
 		    m_environmentSettingsFilePath.empty()
-		        ? ResolveUserDataPath(DefaultEnvironmentSettingsJsonFileName).wstring()
-		        : ResolveInputFilePath(m_environmentSettingsFilePath).wstring();
+		        ? ResolveUserDataPath(DefaultEnvironmentSettingsJsonFileName)
+		        : ResolveInputFilePath(m_environmentSettingsFilePath);
+		// Bundled environments are read-only: edits go to a same-named copy in the user directory.
+		const std::filesystem::path targetPath = catalog.ResolveEnvironmentSaveTarget(currentPath);
 
 		std::wstring errorMessage{};
 		if (!m_runtimeSettingsJsonStorage.SaveEnvironment(
-		        environmentSettingsFilePath,
-		        settings,
+		        targetPath.wstring(),
+		        m_environmentSettings,
 		        errorMessage))
 		{
-			std::wstring logMessage =
-			    L"[Environment] failed to save settings JSON: " + errorMessage + L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(SettingsLogCategory, L"failed to save environment settings: " + errorMessage);
 			return;
+		}
+		if (targetPath != currentPath)
+		{
+			Common::AppLog::Info(SettingsLogCategory,
+			    L"saved a customized copy of " + currentPath.wstring() + L" as " + targetPath.wstring());
+			m_environmentSettingsFilePath = targetPath.wstring();
 		}
 	}
 
 	bool Application::LoadEnvironmentSettingsFromJson()
 	{
-		std::wstring environmentSettingsFilePath =
+		FlushPendingSettingsSaves(true);
+		const std::filesystem::path environmentSettingsFilePath =
 		    m_environmentSettingsFilePath.empty()
-		        ? ResolveUserDataPath(DefaultEnvironmentSettingsJsonFileName).wstring()
-		        : ResolveInputFilePath(m_environmentSettingsFilePath).wstring();
-		if (!std::filesystem::exists(
-		        std::filesystem::path(environmentSettingsFilePath)))
+		        ? ResolveUserDataPath(DefaultEnvironmentSettingsJsonFileName)
+		        : ResolveInputFilePath(m_environmentSettingsFilePath);
+		if (!FileExists(environmentSettingsFilePath))
 		{
-			const std::wstring logMessage =
-			    L"[Environment] required settings JSON not found: " +
-			    environmentSettingsFilePath + L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(SettingsLogCategory,
+			    L"required environment settings JSON not found: " + environmentSettingsFilePath.wstring());
 			return false;
 		}
 
 		std::wstring errorMessage{};
 		const std::optional<Data::EnvironmentRuntimeSettings> loadedSettings =
 		    m_runtimeSettingsJsonStorage.LoadEnvironment(
-		        environmentSettingsFilePath,
+		        environmentSettingsFilePath.wstring(),
 		        errorMessage);
 		if (!loadedSettings.has_value())
 		{
-			std::wstring logMessage =
-			    L"[Environment] failed to load settings JSON: " + errorMessage +
-			    L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(SettingsLogCategory, L"failed to load environment settings: " + errorMessage);
 			return false;
 		}
 
-		m_environmentSettings.pitchDistanceMeters =
-		    loadedSettings->pitchDistanceMeters;
-		m_environmentSettings.enableMoundHeightOffset =
-		    loadedSettings->enableMoundHeightOffset;
-		m_environmentSettings.moundHeightOffsetMeters =
-		    loadedSettings->moundHeightOffsetMeters;
-		m_environmentSettings.windVelocity = loadedSettings->windVelocity;
-		m_environmentSettings.ballProperties = loadedSettings->ballProperties;
-		m_environmentSettings.enableHeightDependentWind =
-		    loadedSettings->enableHeightDependentWind;
-		m_environmentSettings.windShearFactor =
-		    loadedSettings->windShearFactor;
-		m_environmentSettings.batRadiusMeters =
-		    loadedSettings->batRadiusMeters;
-		m_environmentSettings.batLengthMeters =
-		    loadedSettings->batLengthMeters;
-		m_environmentSettings.batAngleOffsetDegrees =
-		    loadedSettings->batAngleOffsetDegrees;
-		m_environmentSettings.batYawOffsetDegrees =
-		    loadedSettings->batYawOffsetDegrees;
-		m_environmentSettings.groundFanRadiusMeters =
-		    loadedSettings->groundFanRadiusMeters;
-		m_environmentSettings.integratorType = loadedSettings->integratorType;
-		m_environmentSettingsFilePath = environmentSettingsFilePath;
+		m_environmentSettings = *loadedSettings;
+		m_environmentSettingsFilePath = environmentSettingsFilePath.wstring();
 		ApplyEnvironmentSettingsChanges(L"json_environment_load", false);
-		std::wstring logMessage =
-		    L"[Environment] loaded from " + m_environmentSettingsFilePath + L"\n";
-		OutputDebugStringW(logMessage.c_str());
+		Common::AppLog::Info(SettingsLogCategory, L"environment settings loaded from " + m_environmentSettingsFilePath);
 		return true;
 	}
 
 	void Application::SavePlaySettingsToJson()
 	{
+		m_playSettingsDirty = false;
 		Data::PlayRuntimeSettings settings{};
 		settings.duelPitchIntervalSeconds = m_duelPitchIntervalSeconds;
 		settings.playbackSpeedPercent = m_playbackSpeedPercent;
@@ -2922,6 +2838,15 @@ namespace BaseballSimulatorVR::Core
 		settings.duelTargetZoneIndex = Common::FindFirstSelectedZoneIndex(
 		    normalizedZoneMask,
 		    DuelZoneCount);
+		// Presets are read-only, so the pitch selection state is remembered here.
+		settings.selectedPitchSettingsFile = m_activePitchSettingsFileName;
+		if ((m_activePitchProfileIndex >= 0) &&
+		    (m_activePitchProfileIndex < static_cast<int>(m_pitchProfiles.size())))
+		{
+			settings.activePitchProfileIndex = m_activePitchProfileIndex;
+		}
+		settings.randomPitchProfileEnabled = m_randomPitchProfileEnabled;
+		settings.settingsLayoutVersion = Data::CurrentSettingsLayoutVersion;
 
 		std::wstring errorMessage{};
 		if (!m_runtimeSettingsJsonStorage.SavePlay(
@@ -2929,19 +2854,17 @@ namespace BaseballSimulatorVR::Core
 		        settings,
 		        errorMessage))
 		{
-			std::wstring logMessage =
-			    L"[PlayConfig] failed to save settings JSON: " + errorMessage +
-			    L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(SettingsLogCategory, L"failed to save play settings: " + errorMessage);
 			return;
 		}
+		m_settingsLayoutVersion = Data::CurrentSettingsLayoutVersion;
 	}
 
 	bool Application::LoadPlaySettingsFromJson()
 	{
 		const std::filesystem::path playSettingsFilePath =
 		    ResolveUserDataPath(PlaySettingsJsonFileName);
-		if (!std::filesystem::exists(playSettingsFilePath))
+		if (!FileExists(playSettingsFilePath))
 		{
 			return false;
 		}
@@ -2953,13 +2876,11 @@ namespace BaseballSimulatorVR::Core
 		        errorMessage);
 		if (!loadedSettings.has_value())
 		{
-			std::wstring logMessage =
-			    L"[PlayConfig] failed to load settings JSON: " + errorMessage +
-			    L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(SettingsLogCategory, L"failed to load play settings: " + errorMessage);
 			return false;
 		}
 
+		m_settingsLayoutVersion = loadedSettings->settingsLayoutVersion;
 		m_duelPitchIntervalSeconds = std::clamp(
 		    loadedSettings->duelPitchIntervalSeconds,
 		    MinimumDuelPitchIntervalSeconds,
@@ -3023,6 +2944,202 @@ namespace BaseballSimulatorVR::Core
 		return true;
 	}
 
+	bool Application::RecoverBrokenUserSettingsFile(
+	    const std::filesystem::path& filePath,
+	    const std::wstring_view loadError,
+	    const std::function<bool(const std::filesystem::path&)>& isLoadable)
+	{
+		const Data::PresetCatalog catalog = BuildPresetCatalog();
+		if (catalog.IsBundledPath(filePath))
+		{
+			const std::wstring notice = L"The bundled settings file\n  " + filePath.wstring() +
+			    L"\ncould not be loaded:\n  " + std::wstring{ loadError } +
+			    L"\nThe installation may be damaged; reinstall the application.";
+			Common::AppLog::Error(SettingsLogCategory, notice);
+			m_startupNotices.push_back(notice);
+			return false;
+		}
+
+		const std::filesystem::path brokenPath = BuildBrokenFilePath(filePath);
+		if (!MoveFileExW(filePath.c_str(), brokenPath.c_str(), MOVEFILE_WRITE_THROUGH))
+		{
+			const std::wstring notice = L"The settings file\n  " + filePath.wstring() + L"\ncould not be loaded:\n  " +
+			    std::wstring{ loadError } + L"\nand could not be renamed: " +
+			    Common::TextConversion::FormatSystemErrorMessage(GetLastError());
+			Common::AppLog::Error(SettingsLogCategory, notice);
+			m_startupNotices.push_back(notice);
+			return false;
+		}
+
+		std::wstring restoredFrom{};
+		const std::filesystem::path backupPath = Common::BuildBackupFilePath(filePath);
+		if (FileExists(backupPath) && isLoadable(backupPath) &&
+		    CopyFileW(backupPath.c_str(), filePath.c_str(), TRUE))
+		{
+			restoredFrom = L"restored from its last good backup " + backupPath.filename().wstring();
+		}
+		else if (const std::filesystem::path defaultPath = catalog.FindBundledDefaultFor(filePath);
+		         !defaultPath.empty() && CopyFileW(defaultPath.c_str(), filePath.c_str(), TRUE))
+		{
+			restoredFrom = L"restored from the bundled default " + defaultPath.filename().wstring();
+		}
+		else
+		{
+			restoredFrom = L"the bundled preset of the same name is used instead";
+		}
+		const std::wstring notice = L"The settings file\n  " + filePath.wstring() + L"\ncould not be loaded:\n  " +
+		    std::wstring{ loadError } + L"\nIt was renamed to " + brokenPath.filename().wstring() + L" and " +
+		    restoredFrom + L".";
+		Common::AppLog::Error(SettingsLogCategory, notice);
+		m_startupNotices.push_back(notice);
+		return true;
+	}
+
+	bool Application::LoadStartupSettings(std::wstring& fatalErrorMessage)
+	{
+		fatalErrorMessage.clear();
+		const Data::PresetCatalog catalog = BuildPresetCatalog();
+		std::wstring errorMessage{};
+
+		// 1. Play settings first: they remember the selected pitch settings entry.
+		const std::filesystem::path playPath = ResolveUserDataPath(PlaySettingsJsonFileName);
+		const auto isLoadablePlay = [this](const std::filesystem::path& path)
+		{
+			std::wstring ignored{};
+			return m_runtimeSettingsJsonStorage.LoadPlay(path.wstring(), ignored).has_value();
+		};
+		std::optional<Data::PlayRuntimeSettings> play =
+		    m_runtimeSettingsJsonStorage.LoadPlay(playPath.wstring(), errorMessage);
+		if (!play.has_value())
+		{
+			if (RecoverBrokenUserSettingsFile(playPath, errorMessage, isLoadablePlay))
+			{
+				play = m_runtimeSettingsJsonStorage.LoadPlay(playPath.wstring(), errorMessage);
+			}
+			if (!play.has_value())
+			{
+				fatalErrorMessage = playPath.wstring() + L": " + errorMessage;
+				return false;
+			}
+		}
+
+		// 2. User pitch settings files that no longer load are renamed and restored.
+		const auto isLoadablePitch = [this](const std::filesystem::path& path)
+		{
+			std::wstring ignored{};
+			return m_pitchPresetJsonStorage.LoadPitchSettings(path.wstring(), ignored).has_value();
+		};
+		std::error_code iteratorError{};
+		std::vector<std::filesystem::path> userPitchFiles{};
+		for (std::filesystem::directory_iterator iterator(catalog.GetUserDirectory(),
+		         std::filesystem::directory_options::skip_permission_denied, iteratorError);
+		     !iteratorError && iterator != std::filesystem::directory_iterator{}; iterator.increment(iteratorError))
+		{
+			std::error_code entryError{};
+			if (iterator->is_regular_file(entryError) && Data::IsPitchSettingsFileName(iterator->path().filename().wstring()))
+			{
+				userPitchFiles.push_back(iterator->path());
+			}
+		}
+		for (const std::filesystem::path& file : userPitchFiles)
+		{
+			if (!m_pitchPresetJsonStorage.LoadPitchSettings(file.wstring(), errorMessage).has_value())
+			{
+				(void)RecoverBrokenUserSettingsFile(file, errorMessage, isLoadablePitch);
+			}
+		}
+
+		// 3. The remembered pitch settings entry, else the user's file, else the first entry.
+		RefreshPitchSettingsFileList();
+		std::vector<std::wstring> candidates{};
+		if (!play->selectedPitchSettingsFile.empty())
+		{
+			candidates.push_back(play->selectedPitchSettingsFile);
+		}
+		candidates.push_back(std::wstring{ PitchSettingsJsonFileName });
+		candidates.insert(candidates.end(), m_pitchSettingsFileNames.begin(), m_pitchSettingsFileNames.end());
+		bool pitchSettingsLoaded = false;
+		for (const std::wstring& candidate : candidates)
+		{
+			if (std::find(m_pitchSettingsFileNames.begin(), m_pitchSettingsFileNames.end(), candidate) !=
+			        m_pitchSettingsFileNames.end() &&
+			    LoadUserPresetFromJsonFile(candidate, L"startup"))
+			{
+				pitchSettingsLoaded = true;
+				break;
+			}
+		}
+		if (!pitchSettingsLoaded)
+		{
+			const std::filesystem::path legacyPath = ResolveInputFilePath(LegacyPitchSettingsJsonFileName);
+			pitchSettingsLoaded = FileExists(legacyPath) && LoadUserPresetFromJsonFile(legacyPath.wstring(), L"startup");
+		}
+		if (!pitchSettingsLoaded)
+		{
+			fatalErrorMessage = L"No loadable pitch settings (Presets\\Pitch\\PitchSettings.*.json) were found.";
+			return false;
+		}
+		if (play->selectedPitchSettingsFile == m_activePitchSettingsFileName)
+		{
+			if (play->randomPitchProfileEnabled.has_value())
+			{
+				m_randomPitchProfileEnabled = *play->randomPitchProfileEnabled;
+			}
+			const int profileIndex = play->activePitchProfileIndex.value_or(-1);
+			if ((profileIndex >= 0) && (profileIndex < static_cast<int>(m_pitchProfiles.size())) &&
+			    (profileIndex != m_activePitchProfileIndex))
+			{
+				m_activePitchProfileIndex = profileIndex;
+				m_activePitchParameters = m_pitchProfiles[static_cast<std::size_t>(profileIndex)].pitchParameters;
+				ApplyPitchParameterChangesAndLog(L"pitch_profile",
+				    L"profile=" + m_pitchProfiles[static_cast<std::size_t>(profileIndex)].name + L",startup_restore");
+			}
+		}
+
+		// 4. The environment referenced by the pitch settings.
+		std::filesystem::path environmentPath = ResolveInputFilePath(m_environmentSettingsFilePath);
+		if (!FileExists(environmentPath))
+		{
+			const std::wstring notice = L"The environment settings file\n  " + environmentPath.wstring() +
+			    L"\nreferenced by " + m_activePitchSettingsFileName + L" does not exist; " +
+			    std::wstring{ DefaultEnvironmentSettingsJsonFileName } + L" is used instead.";
+			Common::AppLog::Warning(SettingsLogCategory, notice);
+			m_startupNotices.push_back(notice);
+			environmentPath = ResolveUserDataPath(DefaultEnvironmentSettingsJsonFileName);
+			m_environmentSettingsFilePath = environmentPath.wstring();
+		}
+		if (!m_runtimeSettingsJsonStorage.LoadEnvironment(environmentPath.wstring(), errorMessage).has_value())
+		{
+			const auto isLoadableEnvironment = [this](const std::filesystem::path& path)
+			{
+				std::wstring ignored{};
+				return m_runtimeSettingsJsonStorage.LoadEnvironment(path.wstring(), ignored).has_value();
+			};
+			if (!RecoverBrokenUserSettingsFile(environmentPath, errorMessage, isLoadableEnvironment))
+			{
+				fatalErrorMessage = environmentPath.wstring() + L": " + errorMessage;
+				return false;
+			}
+			// A removed user override falls back to the bundled environment of the same name.
+			const std::filesystem::path resolved = catalog.ResolveEnvironmentReference(
+			    environmentPath.filename().wstring(), m_activePitchSettingsFilePath);
+			m_environmentSettingsFilePath = resolved.wstring();
+		}
+		if (!LoadEnvironmentSettingsFromJson())
+		{
+			fatalErrorMessage = L"The environment settings could not be loaded: " + m_environmentSettingsFilePath;
+			return false;
+		}
+
+		// 5. Apply the play settings last; they retarget the zone-dependent pitch state.
+		if (!LoadPlaySettingsFromJson())
+		{
+			fatalErrorMessage = playPath.wstring() + L": the play settings could not be applied.";
+			return false;
+		}
+		return true;
+	}
+
 	bool Application::InitializeStoragePaths(std::wstring& errorMessage)
 	{
 		errorMessage.clear();
@@ -3034,11 +3151,11 @@ namespace BaseballSimulatorVR::Core
 			return false;
 		}
 
-		const std::filesystem::path bundledContentDirectory =
-		    FindBundledContentDirectory(moduleFilePath);
-		if (bundledContentDirectory.empty())
+		const std::filesystem::path bundledPresetsDirectory =
+		    FindBundledPresetsDirectory(moduleFilePath);
+		if (bundledPresetsDirectory.empty())
 		{
-			errorMessage = L"Failed to locate the bundled default settings directory.";
+			errorMessage = L"Failed to locate the bundled Presets folder next to the executable.";
 			return false;
 		}
 
@@ -3058,68 +3175,68 @@ namespace BaseballSimulatorVR::Core
 		    createDirectoryError);
 		if (createDirectoryError)
 		{
-			const std::string errorText = createDirectoryError.message();
 			errorMessage =
 			    L"Failed to create the user data directory: " +
-			    std::wstring{ errorText.begin(), errorText.end() };
+			    Common::TextConversion::DescribeErrorCode(createDirectoryError);
 			return false;
 		}
 
-		m_bundledContentDirectoryPath = bundledContentDirectory.wstring();
+		m_bundledContentDirectoryPath = bundledPresetsDirectory.wstring();
 		m_userDataDirectoryPath = userDataDirectory.wstring();
 		return true;
 	}
 
 	bool Application::EnsureRequiredUserSettingsFiles(
-	    std::wstring& errorMessage) const
+	    std::wstring& errorMessage)
 	{
-		static constexpr std::array<std::wstring_view, 33> RequiredSettingFileNames{
-			PitchSettingsJsonFileName,
-			L"PitchSettings.Yamamoto.json",
-			L"PitchSettings.Difficulty.VeryEasy.RHP.json",
-			L"PitchSettings.Difficulty.VeryEasy.LHP.json",
-			L"PitchSettings.Challenge1.RHP.json",
-			L"PitchSettings.Challenge1.LHP.json",
-			L"PitchSettings.Challenge2.RHP.json",
-			L"PitchSettings.Challenge2.LHP.json",
-			L"PitchSettings.Difficulty.Easy.RHP.json",
-			L"PitchSettings.Difficulty.Easy.LHP.json",
-			L"PitchSettings.Difficulty.Normal.RHP.json",
-			L"PitchSettings.Difficulty.Normal.LHP.json",
-			L"PitchSettings.Difficulty.Hard.RHP.json",
-			L"PitchSettings.Difficulty.Hard.LHP.json",
-			L"PitchSettings.Difficulty.Expert.RHP.json",
-			L"PitchSettings.Difficulty.Expert.LHP.json",
-			L"PitchSettings.Toss.Baseball.json",
-			L"PitchSettings.Toss.Softball.json",
-			L"EnvironmentSettings.Toss.Baseball.json",
-			L"EnvironmentSettings.Toss.Softball.json",
-			L"PitchSettings.SlowFastball.Baseball.RHP.json",
-			L"PitchSettings.SlowFastball.Baseball.LHP.json",
-			L"PitchSettings.SlowFastball.Softball.RHP.json",
-			L"PitchSettings.SlowFastball.Softball.LHP.json",
-			L"EnvironmentSettings.SlowFastball.Baseball.json",
-			L"EnvironmentSettings.SlowFastball.Softball.json",
-			L"PitchSettings.Beginner.Softball.RHP.json",
-			L"PitchSettings.Beginner.Softball.LHP.json",
-			L"PitchSettings.Beginner.BigBreak.Softball.RHP.json",
-			L"PitchSettings.Beginner.BigBreak.Softball.LHP.json",
-			L"EnvironmentSettings.Beginner.Softball.json",
-			DefaultEnvironmentSettingsJsonFileName,
-			PlaySettingsJsonFileName
-		};
-
-		for (const std::wstring_view fileName : RequiredSettingFileNames)
+		const Data::PresetCatalog catalog = BuildPresetCatalog();
+		if (!catalog.EnsureUserFiles(errorMessage))
 		{
-			if (!CopyFileIfMissing(
-			        ResolveBundledContentPath(fileName),
-			        ResolveUserDataPath(fileName),
-			        errorMessage))
-			{
-				return false;
-			}
+			return false;
 		}
 
+		// One-time migration to the read-only Presets layout. Earlier versions copied every bundled
+		// preset into the user directory, where the copies hid all later preset updates.
+		const std::filesystem::path playPath = catalog.GetUserPlaySettingsPath();
+		std::wstring playError{};
+		std::optional<Data::PlayRuntimeSettings> play =
+		    m_runtimeSettingsJsonStorage.LoadPlay(playPath.wstring(), playError);
+		m_settingsLayoutVersion = play.has_value() ? play->settingsLayoutVersion : 0;
+		if (m_settingsLayoutVersion >= Data::CurrentSettingsLayoutVersion)
+		{
+			return true;
+		}
+		const std::vector<std::filesystem::path> legacyCopies = catalog.FindLegacyProvisionedCopies();
+		if (!legacyCopies.empty())
+		{
+			std::wstring moveError{};
+			const std::optional<std::filesystem::path> backupDirectory =
+			    catalog.MoveToLegacyBackup(legacyCopies, moveError);
+			if (!moveError.empty())
+			{
+				Common::AppLog::Error(SettingsLogCategory, moveError);
+			}
+			if (backupDirectory.has_value())
+			{
+				const std::wstring notice =
+				    L"Bundled presets are now read directly from the application's Presets folder, so preset "
+				    L"updates take effect automatically. " + std::to_wstring(legacyCopies.size()) +
+				    L" preset copies made by an earlier version were moved to:\n  " + backupDirectory->wstring() +
+				    L"\nTo keep a customized preset, copy it back into the settings folder under a new name.";
+				Common::AppLog::Info(SettingsLogCategory, notice);
+				m_startupNotices.push_back(notice);
+			}
+		}
+		if (play.has_value())
+		{
+			play->settingsLayoutVersion = Data::CurrentSettingsLayoutVersion;
+			std::wstring saveError{};
+			if (!m_runtimeSettingsJsonStorage.SavePlay(playPath.wstring(), *play, saveError))
+			{
+				Common::AppLog::Error(SettingsLogCategory, L"failed to record the settings layout version: " + saveError);
+			}
+		}
+		m_settingsLayoutVersion = Data::CurrentSettingsLayoutVersion;
 		return true;
 	}
 
@@ -3221,9 +3338,7 @@ namespace BaseballSimulatorVR::Core
 		        note);
 		if (!upsertResult)
 		{
-			std::wstring logMessage = L"[SessionLog] result upsert failed: " +
-			                          upsertResult.errorMessage + L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(L"SessionLog", L"result upsert failed: " + upsertResult.errorMessage);
 			return;
 		}
 
@@ -3280,14 +3395,14 @@ namespace BaseballSimulatorVR::Core
 		m_overlayVisibility.pitchTrajectoryDisplayMode =
 		    Common::NextPitchTrajectoryDisplayMode(m_overlayVisibility.pitchTrajectoryDisplayMode);
 		ApplyOverlayVisibilityChanges(L"cycle_pitch_trajectory");
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::ToggleBattedTrajectoryVisibility()
 	{
 		m_overlayVisibility.showBattedTrajectory = !m_overlayVisibility.showBattedTrajectory;
 		ApplyOverlayVisibilityChanges(L"toggle_batted_trajectory");
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::CycleStrikeZoneDisplayMode()
@@ -3295,7 +3410,7 @@ namespace BaseballSimulatorVR::Core
 		m_overlayVisibility.strikeZoneDisplayMode =
 		    Common::NextStrikeZoneDisplayMode(m_overlayVisibility.strikeZoneDisplayMode);
 		ApplyOverlayVisibilityChanges(L"cycle_zone");
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::ToggleFloorMeshVisibility()
@@ -3539,7 +3654,7 @@ namespace BaseballSimulatorVR::Core
 		UpdateWindowTitle();
 		if (persistToJson)
 		{
-			SaveEnvironmentSettingsToJson();
+			MarkEnvironmentSettingsDirty();
 		}
 	}
 
@@ -3555,7 +3670,7 @@ namespace BaseballSimulatorVR::Core
 		m_strikeZoneCalibrator.Reset();
 		m_strikeZoneConfigured = false;
 		m_strikeZoneCalibrationNote = note;
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 		OutputDebugStringW(L"[StrikeZone] calibration started: stand upright for three seconds.\n");
 	}
 
@@ -3571,7 +3686,7 @@ namespace BaseballSimulatorVR::Core
 		else if (m_operationMode == OperationMode::TeeBatting && !m_isTeeBallInFlight && HasDuelTargetZoneSelection())
 			RefreshTeeBallSpawnFromZoneSelection(L"strike_zone_change");
 		UpdateWindowTitle();
-		if (persist) SavePlaySettingsToJson();
+		if (persist) MarkPlaySettingsDirty();
 	}
 
 	void Application::AdjustStrikeZoneBoundary(const bool upper, const double deltaMeters)
@@ -3659,7 +3774,7 @@ namespace BaseballSimulatorVR::Core
 		}
 		(void)LogPitchEvent(L"duel_interval", noteStream.str());
 		UpdateWindowTitle();
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::ToggleDuelPitchPreview(const std::wstring_view note)
@@ -3674,7 +3789,7 @@ namespace BaseballSimulatorVR::Core
 		}
 		(void)LogPitchEvent(L"duel_preview", previewNote);
 		UpdateWindowTitle();
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::ToggleBatHandedness(const std::wstring_view note)
@@ -3693,7 +3808,7 @@ namespace BaseballSimulatorVR::Core
 		}
 		(void)LogPitchEvent(L"play_config", batHandNote);
 		UpdateWindowTitle();
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::CycleBatMaterial(const std::wstring_view note)
@@ -3709,7 +3824,7 @@ namespace BaseballSimulatorVR::Core
 		if (!note.empty()) materialNote += L"," + std::wstring{ note };
 		(void)LogPitchEvent(L"play_config", materialNote);
 		UpdateWindowTitle();
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::AdjustBatAngleOffset(
@@ -3737,7 +3852,7 @@ namespace BaseballSimulatorVR::Core
 		}
 		(void)LogPitchEvent(L"environment_config", angleLog.str());
 		UpdateWindowTitle();
-		SaveEnvironmentSettingsToJson();
+		MarkEnvironmentSettingsDirty();
 	}
 
 	void Application::AdjustBatYawOffset(
@@ -3765,7 +3880,7 @@ namespace BaseballSimulatorVR::Core
 		}
 		(void)LogPitchEvent(L"environment_config", yawLog.str());
 		UpdateWindowTitle();
-		SaveEnvironmentSettingsToJson();
+		MarkEnvironmentSettingsDirty();
 	}
 
 	void Application::SetDuelTargetZoneBias(const int zoneIndex)
@@ -3794,7 +3909,7 @@ namespace BaseballSimulatorVR::Core
 		note << L",zones=" << BuildDuelZoneSelectionLabel(m_duelTargetZoneMask);
 		(void)LogPitchEvent(L"duel_bias", note.str());
 		UpdateWindowTitle();
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 		if (m_operationMode == OperationMode::TeeBatting)
 		{
 			RefreshTeeBallSpawnFromZoneSelection(L"zone_toggle");
@@ -3815,7 +3930,7 @@ namespace BaseballSimulatorVR::Core
 		m_duelTargetZoneMask = 0U;
 		(void)LogPitchEvent(L"duel_bias", L"duel_zone=random");
 		UpdateWindowTitle();
-		SavePlaySettingsToJson();
+		MarkPlaySettingsDirty();
 		if (m_operationMode == OperationMode::TeeBatting)
 		{
 			RefreshTeeBallSpawnFromZoneSelection(L"zone_random");
@@ -3860,7 +3975,7 @@ namespace BaseballSimulatorVR::Core
 		{
 			RefreshPitchTrajectoryFromZoneSelection(L"profile_select");
 		}
-		SaveUserPresetToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::SelectPitchProfileByOffset(
@@ -3923,14 +4038,22 @@ namespace BaseballSimulatorVR::Core
 
 		std::wstring loadNote = L"switch_file=" + nextFileName;
 		std::wstring error;
-		const auto selectedPath = ResolveInputFilePath(nextFileName).wstring();
-		const auto selectedSettings = m_pitchPresetJsonStorage.LoadPitchSettings(selectedPath, error);
-		if (!selectedSettings) return;
-		const auto selectedEnvironment = ResolvePathRelativeToOwningFile(
-		    selectedSettings->environmentSettingsFile, selectedPath);
-		if (!m_runtimeSettingsJsonStorage.LoadEnvironment(selectedEnvironment, error))
+		// Validate the complete selection before replacing anything that is active.
+		const Data::PresetCatalog catalog = BuildPresetCatalog();
+		const Data::PitchSettingsEntry selectedEntry =
+		    m_pitchSettingsEntries[static_cast<std::size_t>(nextIndex)];
+		const auto selectedSettings = catalog.LoadPitchSettings(selectedEntry, error);
+		if (!selectedSettings)
 		{
-			OutputDebugStringW((L"[PitchConfig] Invalid environment: " + error + L"\n").c_str());
+			Common::AppLog::Warning(SettingsLogCategory, L"cannot switch to " + nextFileName + L": " + error);
+			return;
+		}
+		const std::filesystem::path selectedEnvironment = catalog.ResolveEnvironmentReference(
+		    selectedSettings->environmentSettingsFile, selectedEntry.sourcePath);
+		if (!m_runtimeSettingsJsonStorage.LoadEnvironment(selectedEnvironment.wstring(), error))
+		{
+			Common::AppLog::Warning(SettingsLogCategory, L"cannot switch to " + nextFileName +
+			    L": invalid environment " + selectedEnvironment.wstring() + L": " + error);
 			return;
 		}
 		if (!note.empty())
@@ -3942,6 +4065,7 @@ namespace BaseballSimulatorVR::Core
 			return;
 		}
 		if (!LoadEnvironmentSettingsFromJson()) return;
+		MarkPlaySettingsDirty();
 		if (m_operationMode == OperationMode::BattingDuel)
 			StartRandomBattingDuelPitch(L"switch_file");
 		else if (m_operationMode == OperationMode::PitchTrajectory && HasDuelTargetZoneSelection())
@@ -3959,7 +4083,7 @@ namespace BaseballSimulatorVR::Core
 		}
 		(void)LogPitchEvent(L"pitch_profile", pitchNote);
 		UpdateWindowTitle();
-		SaveUserPresetToJson();
+		MarkPlaySettingsDirty();
 	}
 
 	void Application::ApplyAutoZoneResultTag(
@@ -3973,6 +4097,7 @@ namespace BaseballSimulatorVR::Core
 		                   : std::wstring_view{ L"ball" },
 		    isInStrikeZone ? 1.0 : -1.0,
 		    note);
+		RecordPitchOutcome();
 	}
 
 	bool Application::IsWaitingForNextDuelPitch() const noexcept
@@ -4000,19 +4125,7 @@ namespace BaseballSimulatorVR::Core
 				break;
 		}
 
-		if ((m_activePresetType == Data::PitchPresetType::Custom) &&
-		    (m_activePitchProfileIndex >= 0) &&
-		    (m_activePitchProfileIndex < static_cast<int>(m_pitchProfiles.size())))
-		{
-			telemetry.presetName =
-			    m_pitchProfiles[static_cast<std::size_t>(m_activePitchProfileIndex)].name;
-		}
-		else
-		{
-			telemetry.presetName = std::wstring{
-				m_presetRepository.GetPresetName(m_activePresetType)
-			};
-		}
+		telemetry.presetName = BuildActivePitchName();
 		telemetry.pitchDistanceMeters = m_environmentSettings.pitchDistanceMeters;
 		telemetry.duelIntervalSeconds = m_duelPitchIntervalSeconds;
 		telemetry.playbackSpeedPercent = m_playbackSpeedPercent;
@@ -4036,7 +4149,8 @@ namespace BaseballSimulatorVR::Core
 			    m_pitchProfiles[static_cast<std::size_t>(profileIndex)].name;
 		}
 		telemetry.activePitchProfileIndex = m_activePitchProfileIndex;
-		telemetry.pitchSettingsFileName = m_activePitchSettingsFileName;
+		// The XR panel shows this text as the preset label (displayName + throwing hand).
+		telemetry.pitchSettingsFileName = BuildActivePitchSettingsLabel();
 		telemetry.pitchSettingsFileCount = static_cast<int>(
 		    m_pitchSettingsFileNames.size());
 		telemetry.randomPitchProfileEnabled = m_randomPitchProfileEnabled;
@@ -4389,7 +4503,7 @@ namespace BaseballSimulatorVR::Core
 		              << L",friction_limited=" << response.tangentialRestitutionLimitedByFriction
 		              << L",energy_limited=" << response.tangentialRestitutionLimitedByEnergy
 		              << L",contact_from_handle=" << input.contactDistanceFromHandleMeters;
-		(void)LogPitchEvent(L"bat_contact", collisionNote.str());
+		(void)LogBattedBall(collisionNote.str(), response.ballVelocityWorld, activeMetrics.batContactFraction);
 		return true;
 	}
 
@@ -4628,6 +4742,8 @@ namespace BaseballSimulatorVR::Core
 			}
 			return;
 		}
+		// A mode switch is a natural point to persist pending settings changes.
+		FlushPendingSettingsSaves(true);
 
 		m_operationMode = mode;
 		m_forceTrajectoryResetOnNextFrame = true;
@@ -5334,31 +5450,120 @@ namespace BaseballSimulatorVR::Core
 		return teeBallState;
 	}
 
-	bool Application::LogPitchEvent(std::wstring_view eventType, std::wstring_view note)
+	bool Application::LogPitchEvent(
+	    const std::wstring_view eventType,
+	    const std::wstring_view note,
+	    const Data::SessionEventCategory category)
 	{
 		if (!m_isSessionLogAvailable || !m_sessionLogRepository.IsInitialized())
 		{
 			return false;
 		}
 
-		const Data::PitchEventLogResult insertedEventResult =
-		    m_sessionLogRepository.LogPitchEvent(
-		        eventType,
-		        m_presetRepository.GetPresetName(m_activePresetType),
-		        Physics::GetPitchIntegratorName(m_activePitchParameters.integratorType),
-		        m_activePitchParameters,
-		        note);
+		const std::wstring pitchName = BuildActivePitchName();
+		const std::wstring_view integratorName = Physics::GetPitchIntegratorName(m_activePitchParameters.integratorType);
+		Data::PitchEventLogResult insertedEventResult{};
+		if (category == Data::SessionEventCategory::Pitch)
+		{
+			Data::PitchDetails details{};
+			details.mode = m_operationMode == OperationMode::BattingDuel
+			    ? L"batting-duel"
+			    : (m_operationMode == OperationMode::TeeBatting ? L"tee-batting" : L"trajectory");
+			details.profileName = pitchName;
+			details.pitchSettingsFile = m_activePitchSettingsFileName;
+			details.pitcherThrowsLeftHanded = m_pitcherThrowsLeftHanded;
+			insertedEventResult = m_sessionLogRepository.LogPitch(
+			    eventType, pitchName, integratorName, m_activePitchParameters, note, details);
+		}
+		else
+		{
+			insertedEventResult = m_sessionLogRepository.LogEvent(
+			    category, eventType, pitchName, integratorName, m_activePitchParameters, note);
+		}
 		if (!insertedEventResult)
 		{
-			std::wstring logMessage = L"[SessionLog] insert failed: " +
-			                          insertedEventResult.errorMessage + L"\n";
-			OutputDebugStringW(logMessage.c_str());
+			Common::AppLog::Error(L"SessionLog", L"insert failed: " + insertedEventResult.errorMessage);
 			return false;
 		}
 
-		m_lastLoggedPitchEventId = *insertedEventResult.eventId;
-		m_latestPitchResultLabel = L"pending";
-		m_latestPitchResultScore = 0.0;
+		// Only pitch deliveries receive results and outcomes; configuration and UI events must not
+		// redirect a later automatic strike/ball tag.
+		if (category == Data::SessionEventCategory::Pitch)
+		{
+			m_lastLoggedPitchEventId = *insertedEventResult.eventId;
+			m_pitchOutcomePendingEventId =
+			    m_operationMode == OperationMode::TeeBatting ? 0 : *insertedEventResult.eventId;
+			m_latestPitchResultLabel = L"pending";
+			m_latestPitchResultScore = 0.0;
+		}
+		return true;
+	}
+
+	void Application::RecordPitchOutcome()
+	{
+		// The first resolved flight after a pitch event is its outcome; resets before the plate
+		// (replays, environment reloads) keep the pitch pending.
+		if ((m_pitchOutcomePendingEventId <= 0) || !m_isSessionLogAvailable ||
+		    !m_sessionLogRepository.IsInitialized() || !m_pitchFlightAnalysis.IsResolved())
+		{
+			return;
+		}
+		const std::int64_t eventId = std::exchange(m_pitchOutcomePendingEventId, 0);
+		const Simulation::PitchFlightReport& actual = m_pitchFlightAnalysis.Actual();
+		Data::PitchOutcome outcome{};
+		if (actual.frontCrossing.has_value())
+		{
+			outcome.plateCrossingX = actual.frontCrossing->x;
+			outcome.plateCrossingY = actual.frontCrossing->y;
+		}
+		outcome.zoneCall = std::wstring{ ZoneCallToken(actual.call) };
+		if (actual.breakMeters.has_value())
+		{
+			outcome.horizontalBreakMeters = actual.breakMeters->x;
+			outcome.verticalBreakMeters = actual.breakMeters->y;
+		}
+		const Data::OperationResult result = m_sessionLogRepository.RecordPitchOutcome(eventId, outcome);
+		if (!result)
+		{
+			Common::AppLog::Warning(L"SessionLog", L"pitch outcome not recorded: " + result.errorMessage);
+		}
+	}
+
+	bool Application::LogBattedBall(
+	    const std::wstring_view note,
+	    const Physics::Vector3& launchVelocity,
+	    const double contactFractionAlongBat)
+	{
+		if (!m_isSessionLogAvailable || !m_sessionLogRepository.IsInitialized())
+		{
+			return false;
+		}
+		Data::BattedBallDetails details{};
+		const bool tee = m_operationMode == OperationMode::TeeBatting;
+		details.mode = tee ? L"tee-batting" : L"batting-duel";
+		if (!tee && (m_lastLoggedPitchEventId > 0))
+		{
+			details.pitchEventId = m_lastLoggedPitchEventId;
+		}
+		const double horizontalSpeed = std::hypot(launchVelocity.x, launchVelocity.z);
+		details.exitSpeedMetersPerSecond = Physics::Length(launchVelocity);
+		details.launchAngleDegrees = std::atan2(launchVelocity.y, horizontalSpeed) * 180.0 / std::numbers::pi;
+		// Batted balls travel toward -z (back over the pitcher); +x is the batter's right.
+		details.sprayAngleDegrees = horizontalSpeed > 1e-9
+		    ? std::atan2(launchVelocity.x, -launchVelocity.z) * 180.0 / std::numbers::pi
+		    : 0.0;
+		details.contactFractionAlongBat = std::clamp(contactFractionAlongBat, 0.0, 1.0);
+		details.batMaterial = BatMaterialLabel(m_batMaterial);
+		details.batRightHanded = m_batUseRightHand;
+		const Data::PitchEventLogResult result = m_sessionLogRepository.LogBattedBall(BuildActivePitchName(),
+		    Physics::GetPitchIntegratorName(m_activePitchParameters.integratorType), m_activePitchParameters, note,
+		    details);
+		if (!result)
+		{
+			Common::AppLog::Error(L"SessionLog", L"batted-ball insert failed: " + result.errorMessage);
+			return false;
+		}
+		m_lastBattedBallEventId = *result.eventId;
 		return true;
 	}
 
@@ -5399,7 +5604,8 @@ namespace BaseballSimulatorVR::Core
 		titleInput.renderBackendName = m_renderBackend->GetBackendName();
 		titleInput.operationModeName = operationModeLabel;
 		titleInput.fxaaPresetName = m_fxaaQualityPresetLabel;
-		titleInput.presetName = m_presetRepository.GetPresetName(m_activePresetType);
+		const std::wstring activePitchName = BuildActivePitchName();
+		titleInput.presetName = activePitchName;
 		titleInput.integratorName = Physics::GetPitchIntegratorName(
 		    m_activePitchParameters.integratorType);
 		titleInput.pitchSpeedMetersPerSecond = speedMetersPerSecond;
@@ -5468,6 +5674,8 @@ namespace BaseballSimulatorVR::Core
 	{
 		m_isRunning = false;
 
+		FlushPendingSettingsSaves(true);
+		// Flushes queued session-log writes before closing the database.
 		m_sessionLogRepository.Shutdown();
 
 		if (m_xrSystem != nullptr)
@@ -5520,7 +5728,8 @@ namespace BaseballSimulatorVR::Core
 			}
 			case WM_KEYDOWN:
 			case WM_SYSKEYDOWN:
-				HandleKeyDown(wParam);
+				// lParam bit 30 is set when the key was already down (keyboard auto-repeat).
+				HandleKeyDown(wParam, (static_cast<std::uint64_t>(lParam) & (1ULL << 30U)) != 0U);
 				return 0;
 			case WM_COMMAND:
 			{

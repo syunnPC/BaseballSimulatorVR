@@ -24,9 +24,9 @@ void RunTossPhysicsTests(const std::filesystem::path& sourceRoot)
 	for (std::size_t index = 0; index < properties.size(); ++index)
 	{
 		const std::wstring kind = index == 0 ? L"Baseball" : L"Softball";
-		auto preset = pitchStorage.LoadPitchSettings((sourceRoot / (L"PitchSettings.Toss." + kind + L".json")).wstring(), error);
+		auto preset = pitchStorage.LoadPitchSettings((sourceRoot / L"Presets" / L"Pitch" / (L"PitchSettings.Toss." + kind + L".json")).wstring(), error);
 		Tests::Check(preset.has_value(), "Toss preset loads with the production parser");
-		auto environment = environmentStorage.LoadEnvironment((sourceRoot / preset->environmentSettingsFile).wstring(), error);
+		auto environment = environmentStorage.LoadEnvironment((sourceRoot / L"Presets" / L"Environment" / preset->environmentSettingsFile).wstring(), error);
 		Tests::Check(environment && environment->pitchDistanceMeters == 9.0 &&
 			environment->moundHeightOffsetMeters == 0.0 && !environment->enableMoundHeightOffset,
 			"Toss environment uses a nine-meter distance and zero mound offset");
