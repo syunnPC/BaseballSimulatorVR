@@ -167,6 +167,11 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="targetver.h" />
     <ClInclude Include="XR\IXrSystem.hpp" />
     <ClInclude Include="XR\NullXrSystem.hpp" />
+    <ClInclude Include="Common\AppLog.hpp" />
+    <ClInclude Include="Common\AtomicFileWriter.hpp" />
+    <ClInclude Include="Common\JsonWriter.hpp" />
+    <ClInclude Include="Common\TextConversion.hpp" />
+    <ClInclude Include="Data\JsonSettingsReader.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Core\Application.cpp" />
@@ -184,6 +189,8 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClCompile Include="Simulation\PitchFlightAnalysis.cpp" />
     <ClCompile Include="UI\DesktopHudViewModel.cpp" />
     <ClCompile Include="XR\NullXrSystem.cpp" />
+    <ClCompile Include="Common\AppLog.cpp" />
+    <ClCompile Include="Common\AtomicFileWriter.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="BaseballSimulatorVR.rc" />

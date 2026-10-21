@@ -96,6 +96,8 @@
     <ClCompile Include="..\BaseballSimulatorVR\Core\Application.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\UI\DesktopHudViewModel.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Data\PresetRepository.cpp" />
+    <ClCompile Include="..\BaseballSimulatorVR\Common\AppLog.cpp" />
+    <ClCompile Include="..\BaseballSimulatorVR\Common\AtomicFileWriter.cpp" />
   </ItemGroup>
   <Target Name="CopyTestRuntime" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />

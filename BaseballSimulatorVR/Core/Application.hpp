@@ -50,24 +50,8 @@ namespace BaseballSimulatorVR::Core
 			TeeBatting
 		};
 
-		struct EnvironmentSettings final
-		{
-			double pitchDistanceMeters{ 18.44 };
-			bool enableMoundHeightOffset{ false };
-			double moundHeightOffsetMeters{ 0.18 };
-			Physics::Vector3 windVelocity{};
-			Physics::BallProperties ballProperties{};
-			bool enableHeightDependentWind{ false };
-			double windShearFactor{ 0.08 };
-			double batRadiusMeters{ 0.035 };
-			double batLengthMeters{ 0.84 };
-			double batAngleOffsetDegrees{ 0.0 };
-			double batYawOffsetDegrees{ 0.0 };
-			double groundFanRadiusMeters{ 100.0 };
-			Physics::PitchIntegratorType integratorType{
-				Physics::PitchIntegratorType::Rk4
-			};
-		};
+		// Single definition shared with the JSON storage (see Data/RuntimeSettingsJsonStorage.hpp).
+		using EnvironmentSettings = Data::EnvironmentRuntimeSettings;
 
 		[[nodiscard]] bool InitializeWindow(HINSTANCE instanceHandle, int commandShow);
 		void ApplyPreset(Data::PitchPresetType presetType);
