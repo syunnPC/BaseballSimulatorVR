@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -26,6 +27,10 @@ namespace BaseballSimulatorVR::Simulation
 		double hangTimeSeconds{};
 		double apexHeightMeters{};
 		bool rightHandedBatter{ true };
+		// Height of the ball above the ground where it reached the outfield wall, when the
+		// simulation saw it get there before it came down; the landing distance and hang
+		// time are then those at the wall.
+		std::optional<double> wallHeightMeters{};
 	};
 
 	struct BattedBallOutcome final
@@ -42,8 +47,8 @@ namespace BaseballSimulatorVR::Simulation
 	[[nodiscard]] std::wstring_view FielderName(Fielder fielder) noexcept;
 	// The pitcher, the catcher and the four infielders.
 	[[nodiscard]] bool IsInfield(Fielder fielder) noexcept;
-	// The outfield wall of a park built to the Official Baseball Rules minimums (rule 2.01):
-	// 325 ft down the foul lines and 400 ft to center field, rounding through the gaps.
+	// The stadium's outfield wall (see Common/StadiumGeometry.hpp): 330 ft down the foul
+	// lines, about 380 ft in the gaps and 400 ft to center field, 8 ft high.
 	[[nodiscard]] double FenceDistanceMeters(double sprayAngleDegrees) noexcept;
 
 	// Judges a batted ball against a standard defense. Fielders start at the middle of MLB's

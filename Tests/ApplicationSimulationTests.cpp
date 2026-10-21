@@ -320,8 +320,9 @@ namespace BaseballSimulatorVR::Core
 			        app->BuildFieldPresentationState().statistics.battedResult == L"センターライナー" &&
 			        app->BuildXrUiTelemetry().battedResultLabel == L"センターライナー",
 			    "The first landing is called against the standard defense and shown on the board and the panel");
-			Tests::Check(app->m_duelRound.isWaitingForNextPitch,
-			    "An out-of-field landing still starts the duel interval after measuring carry");
+			Tests::Check(!app->m_duelRound.isWaitingForNextPitch && app->m_duelRound.hasBattedBallBounced &&
+			        app->m_pitchSimulationService.GetBallState().velocity.y > 0.0,
+			    "A landing short of the 400 ft wall bounces on in the outfield");
 			(void)UpdateBall(*app);
 			Tests::Check(Near(app->m_duelRound.battedMetrics.firstGroundDistanceMeters, 110.0),
 			    "The first landing distance remains frozen throughout the next-pitch interval");
@@ -357,6 +358,59 @@ namespace BaseballSimulatorVR::Core
 			(void)UpdateBall(*app);
 			Tests::Check(Near(app->m_teeBattedMetrics.firstGroundDistanceMeters, firstCarry),
 			    "A later bounce cannot replace the short grounder's first carry");
+		}
+
+		// A batted ball in the duel reaching the center-field wall between two frames.
+		static std::unique_ptr<Application> FlyAtCenterFieldWall(const double fromDepth, const double fromHeight,
+		    const double toDepth, const double toHeight, const Physics::Vector3& velocity, const double fromTime,
+		    const double toTime)
+		{
+			auto app = MakeApplication();
+			app->m_operationMode = Application::OperationMode::BattingDuel;
+			app->m_environmentSettings.moundHeightOffsetMeters = 0.0;
+			app->ResetPitchSimulation();
+			(void)app->m_pitchDeliveryController.Advance(std::chrono::duration<double>(1.2));
+			app->m_lastFrameDeltaSeconds = 0.2;
+			app->m_lastSimulationDeltaSeconds = 0.2;
+			app->m_duelRound.hasBallBeenBatted = true;
+			app->m_duelRound.battedMetrics.hasContact = true;
+			app->m_duelRound.battedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
+			app->m_duelRound.battedMetrics.launchVelocity = { 0.0, 18.0, -40.0 };
+			app->m_duelRound.battedMetrics.maxHeightMeters = 30.0;
+			const double apex = 18.44 + Common::HomePlateDepthMeters;
+			app->m_duelRound.hasPreviousBallState = true;
+			app->m_duelRound.previousBallState.position = { 0.0, fromHeight, apex - fromDepth };
+			app->m_duelRound.previousBallState.flightTimeSeconds = fromTime;
+			Physics::BallState ball{};
+			ball.position = { 0.0, toHeight, apex - toDepth };
+			ball.velocity = velocity;
+			ball.flightTimeSeconds = toTime;
+			ball.aerodynamicsModel = Physics::BallAerodynamicsModel::Physical;
+			app->m_pitchSimulationService.SetBallState(ball);
+			(void)UpdateBall(*app);
+			return app;
+		}
+
+		static void TestStadiumWallAndHomeRun()
+		{
+			const double fence = Common::Stadium::CenterFenceDistanceMeters;
+			auto homeRun = FlyAtCenterFieldWall(fence - 3.5, 4.0, fence + 1.5, 3.6, { 0.0, -6.0, -30.0 }, 5.0, 5.2);
+			const auto& hit = homeRun->m_duelRound.battedMetrics;
+			Tests::Check(hit.hasFirstGroundContact && hit.resultLabel == L"センターへホームラン" &&
+			        hit.firstGroundDistanceMeters > fence && homeRun->m_duelRound.hasBattedBallBounced &&
+			        !homeRun->m_duelRound.isWaitingForNextPitch,
+			    "A fly over the 400 ft wall is a home run measured to where it would have come down");
+
+			auto offWall = FlyAtCenterFieldWall(fence - 3.5, 2.0, fence + 3.5, 1.6, { 0.0, -2.0, -36.0 }, 3.7, 3.9);
+			const auto& drive = offWall->m_duelRound.battedMetrics;
+			const auto rebound = offWall->m_pitchSimulationService.GetBallState();
+			const double apex = 18.44 + Common::HomePlateDepthMeters;
+			Tests::Check(drive.hasFirstGroundContact && drive.resultLabel.find(L"フェンス直撃") != std::wstring::npos &&
+			        std::abs(drive.firstGroundDistanceMeters - (fence - Common::HomePlateDepthMeters)) < .05,
+			    "A drive that reaches the wall below its top is played off the wall, its carry ending there");
+			Tests::Check(rebound.velocity.z > 0.0 && apex - rebound.position.z < fence &&
+			        rebound.velocity.z < 36.0 * .5,
+			    "The wall sends the ball back into the field with most of its pace taken off");
 		}
 
 		static void TestDuelBoardLifecycle()
@@ -1979,6 +2033,7 @@ namespace BaseballSimulatorVR::Core
 			TestDuelReset();
 			TestGroundOffset();
 			TestGroundCarryInterpolationAndFirstBounce();
+			TestStadiumWallAndHomeRun();
 			TestDuelBoardLifecycle();
 			TestFixedPitchVisibilityAndTrajectoryBoundary();
 			TestActualDuelPlateDecisionAndResultRetention();

@@ -178,7 +178,11 @@ namespace BaseballSimulatorVR::Core
 		[[nodiscard]] Xr::UiTelemetry BuildXrUiTelemetry() const;
 		struct BattedBallMetrics;
 		[[nodiscard]] Simulation::BattedBallOutcome JudgeBattedBallLanding(const BattedBallMetrics& metrics,
-		    const Physics::Vector3& landingPosition, double landingFlightTimeSeconds) const;
+		    const Physics::Vector3& landingPosition, double landingFlightTimeSeconds,
+		    std::optional<double> wallHeightMeters = std::nullopt) const;
+		// Where a batted ball that cleared the wall would have come down.
+		[[nodiscard]] std::optional<Physics::Vector3> ProjectBattedBallLanding(
+		    Physics::BallState state, double groundContactHeight) const;
 		void RefreshBatPoseFromXrInput();
 		void UpdateModeSpecificBallState(Physics::BallState* ballState);
 		[[nodiscard]] bool TryApplyBatCollision(Physics::BallState* ballState);

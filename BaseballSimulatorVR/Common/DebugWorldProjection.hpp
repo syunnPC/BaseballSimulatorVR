@@ -6,6 +6,7 @@
 #include "../Physics/Vector3.hpp"
 #include "BatOverlayState.hpp"
 #include "FieldMarkings.hpp"
+#include "StadiumMesh.hpp"
 #include "HomePlateGeometry.hpp"
 #include "PreparedWorldProjection.hpp"
 #include "IndexedWorldMesh.hpp"
@@ -1875,6 +1876,12 @@ namespace BaseballSimulatorVR::Common
 		}
 		return mesh;
 	}
+	[[nodiscard]] inline const IndexedWorldMesh& GetStadiumWorldMesh()
+	{
+		static const IndexedWorldMesh mesh = BuildStadiumWorldMesh(-DebugWorldLayout::BatterToPlateDistanceMeters,
+		    DebugWorldStyle::FloorMeshHeightMeters);
+		return mesh;
+	}
 	template <typename TDrawTriangleFn>
 	void EmitProjectedFloorMeshOverlay(
 	    const ViewProjectionState& view, LONG width, LONG height, TDrawTriangleFn&& triangle)
@@ -1889,7 +1896,10 @@ namespace BaseballSimulatorVR::Common
 		const PreparedWorldProjection projection(view, width, height, DebugWorldLayout::NearClipMeters,
 		    DebugWorldLayout::FarClipMeters);
 		workspace.Emit(mesh, projection, triangle);
-		// Infield, chalk lines, bases and batter's boxes, layered just above the floor.
+		// The ballpark, then the infield, chalk lines, bases and batter's boxes layered just
+		// above its grass.
+		static thread_local WorldMeshProjectionWorkspace stadiumWorkspace;
+		stadiumWorkspace.Emit(GetStadiumWorldMesh(), projection, triangle);
 		static thread_local WorldMeshProjectionWorkspace markingsWorkspace;
 		markingsWorkspace.Emit(GetFieldMarkingsWorldMesh(GetGroundFanRadiusMeters()), projection, triangle);
 	}

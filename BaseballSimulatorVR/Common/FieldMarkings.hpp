@@ -2,6 +2,7 @@
 
 #include "HomePlateGeometry.hpp"
 #include "IndexedWorldMesh.hpp"
+#include "StadiumGeometry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -52,8 +53,8 @@ namespace BaseballSimulatorVR::Common
 	// Field markings drawn over the floor: infield dirt and grass, chalk lines, bases
 	// and batter's boxes. Field coordinates are measured from the apex of home plate:
 	// u toward the first-base side (+X), v toward the pitcher (-Z). Layers are lifted
-	// above the floor in order (dirt, infield grass, dirt cutouts, chalk) by a gap that
-	// grows with distance so depth precision keeps them apart.
+	// above the floor in order (the stadium's grass, dirt, infield grass, dirt cutouts,
+	// chalk) by a gap that grows with distance so depth precision keeps them apart.
 	[[nodiscard]] inline IndexedWorldMesh BuildFieldMarkingsWorldMesh(
 	    const double plateFrontDepth, const double floorHeight, const double fieldRadiusMeters)
 	{
@@ -63,7 +64,7 @@ namespace BaseballSimulatorVR::Common
 		const double apexZ = plateFrontDepth + HomePlateDepthMeters;
 		// The skin reaches the far side of the grass arc, so the field is never smaller.
 		const double radius = (std::max)(fieldRadiusMeters, D::PitchersPlateDistanceMeters + D::InfieldArcRadiusMeters);
-		enum Layer { Dirt = 1, Grass = 2, Cutout = 3, Chalk = 4 };
+		enum Layer { Dirt = 2, Grass = 3, Cutout = 4, Chalk = 5 };
 		const auto world = [&](const double u, const double v, const Layer layer)
 		{
 			const double distance = std::hypot(u, apexZ - v);
@@ -207,8 +208,8 @@ namespace BaseballSimulatorVR::Common
 		}
 
 		// Foul lines from the front of the batter's boxes, where they leave the boxes, to the
-		// edge of the field.
-		const double lineReach = radius / std::numbers::sqrt2;
+		// foul poles.
+		const double lineReach = Stadium::LineFenceDistanceMeters / std::numbers::sqrt2;
 		band({boxFront, boxFront}, {lineReach, lineReach}, D::LineWidthMeters * .5, Chalk, FieldMarkingStyle::ChalkColor);
 		band({-boxFront, boxFront}, {-lineReach, lineReach}, D::LineWidthMeters * .5, Chalk, FieldMarkingStyle::ChalkColor);
 

@@ -13,6 +13,7 @@
 #include "../Physics/BattedBallAerodynamics.hpp"
 #include "../Physics/BatGeometry.hpp"
 #include "../Physics/SweptBatCollision.hpp"
+#include "../Simulation/StadiumCollision.hpp"
 
 #include <algorithm>
 #include <array>
@@ -848,66 +849,6 @@ namespace BaseballSimulatorVR::Core
 
 	namespace
 	{
-		struct GroundFanShape final
-		{
-			double halfAngleRadians{ 0.0 };
-			double innerRadiusMeters{ 0.0 };
-			double outerRadiusMeters{ 0.0 };
-		};
-
-		[[nodiscard]] GroundFanShape BuildGroundFanShape(
-		    const double strikeZoneWidthMeters,
-		    const double configuredOuterRadiusMeters) noexcept
-		{
-			const double clampedOuterRadiusMeters = std::clamp(
-			    configuredOuterRadiusMeters,
-			    MinimumGroundFanRadiusMeters,
-			    MaximumGroundFanRadiusMeters);
-			const double targetChordLengthMeters =
-			    (std::max)(0.20, strikeZoneWidthMeters) + 2.0;
-			const double halfChordLengthMeters = targetChordLengthMeters * 0.5;
-			const double plateDepthFromCenterMeters = (std::max)(0.10,
-			                                                     std::abs(Common::DebugWorldLayout::BatterToPlateDistanceMeters));
-			const double halfAngleRadians = std::atan2(
-			    halfChordLengthMeters,
-			    plateDepthFromCenterMeters);
-			const double innerRadiusMeters = std::sqrt(
-			    (plateDepthFromCenterMeters * plateDepthFromCenterMeters) +
-			    (halfChordLengthMeters * halfChordLengthMeters));
-			const double outerRadiusMeters = (std::max)(innerRadiusMeters + 1.0,
-			                                            clampedOuterRadiusMeters);
-			return GroundFanShape{
-				halfAngleRadians,
-				innerRadiusMeters,
-				outerRadiusMeters
-			};
-		}
-
-		[[nodiscard]] bool IsWorldPointInsideGroundFan(
-		    const Physics::Vector3& worldPosition,
-		    const GroundFanShape& fanShape) noexcept
-		{
-			if ((fanShape.halfAngleRadians <= 1e-6) ||
-			    (fanShape.outerRadiusMeters <= fanShape.innerRadiusMeters))
-			{
-				return false;
-			}
-
-			const double horizontalRadiusMeters = std::sqrt(
-			    (worldPosition.x * worldPosition.x) +
-			    (worldPosition.z * worldPosition.z));
-			if ((horizontalRadiusMeters < fanShape.innerRadiusMeters) ||
-			    (horizontalRadiusMeters > fanShape.outerRadiusMeters))
-			{
-				return false;
-			}
-
-			const double angleRadians = std::atan2(
-			    worldPosition.x,
-			    -worldPosition.z);
-			return std::abs(angleRadians) <= fanShape.halfAngleRadians;
-		}
-
 		// A modal MessageBox on the frame thread stops xrWaitFrame/xrEndFrame and
 		// freezes the headset image; show runtime notices from a helper thread.
 		void ShowNonBlockingMessage(std::wstring title, std::wstring text, const UINT iconFlags)
@@ -4313,7 +4254,8 @@ namespace BaseballSimulatorVR::Core
 	}
 
 	Simulation::BattedBallOutcome Application::JudgeBattedBallLanding(const BattedBallMetrics& metrics,
-	    const Physics::Vector3& landingPosition, const double landingFlightTimeSeconds) const
+	    const Physics::Vector3& landingPosition, const double landingFlightTimeSeconds,
+	    const std::optional<double> wallHeightMeters) const
 	{
 		// Simulation z grows toward the plate, so the field lies toward -z from home plate.
 		const double homeZ = m_environmentSettings.pitchDistanceMeters + Common::HomePlateDepthMeters;
@@ -4332,7 +4274,26 @@ namespace BaseballSimulatorVR::Core
 		flight.hangTimeSeconds = (std::max)(0.0, landingFlightTimeSeconds - metrics.contactFlightTimeSeconds);
 		flight.apexHeightMeters = metrics.maxHeightMeters;
 		flight.rightHandedBatter = m_batUseRightHand;
+		flight.wallHeightMeters = wallHeightMeters;
 		return Simulation::JudgeBattedBall(flight);
+	}
+
+	std::optional<Physics::Vector3> Application::ProjectBattedBallLanding(
+	    Physics::BallState state, const double groundContactHeight) const
+	{
+		// Fly a copy on with the same aerodynamics and no stadium in the way.
+		Physics::PitchPhysicsEngine engine;
+		const Baseball::PitchParameters& parameters = m_pitchSimulationService.GetPitchParameters();
+		for (int step = 0; step < 20000; ++step)
+		{
+			const Physics::BallState previous = state;
+			state = engine.Step(previous, parameters, FixedSimulationStep);
+			if (state.position.y <= groundContactHeight)
+			{
+				return ResolveGroundCrossPoint(previous, state, groundContactHeight);
+			}
+		}
+		return std::nullopt;
 	}
 
 	void Application::RefreshBatPoseFromXrInput()
@@ -5104,9 +5065,10 @@ namespace BaseballSimulatorVR::Core
 		                                                    m_batCollisionSuppressRemainingSeconds - m_lastFrameDeltaSeconds);
 		const double groundContactHeight = GroundPlaneHeightMeters + ballState->properties.radiusMeters -
 		    m_environmentSettings.moundHeightOffsetMeters;
-		const GroundFanShape groundFanShape = BuildGroundFanShape(
-		    m_strikeZoneSettings.widthMeters,
-		    m_environmentSettings.groundFanRadiusMeters);
+		// The stadium bounds the playing field: walls, netting and seats stop the ball.
+		const Simulation::StadiumPlacement stadium{
+			m_environmentSettings.pitchDistanceMeters + Common::HomePlateDepthMeters,
+			GroundPlaneHeightMeters - m_environmentSettings.moundHeightOffsetMeters };
 
 		auto applyPendingTrajectoryReset = [&](Physics::BallState* const mutableBallState) -> void
 		{
@@ -5166,18 +5128,76 @@ namespace BaseballSimulatorVR::Core
 			}
 			return true;
 		};
-		auto isBallBelowGroundOutsideFan = [&](const Physics::BallState& state) -> bool
+		auto applyStadiumCollision = [&](const Physics::BallState& previousState,
+		                                 const bool hasPreviousState) -> Simulation::StadiumCollisionResult
 		{
-			if (state.position.y > groundContactHeight)
+			if (!hasPreviousState)
+			{
+				return {};
+			}
+			const Simulation::StadiumCollisionResult result =
+			    Simulation::ApplyStadiumCollision(previousState, ballState, stadium);
+			if ((result.contact == Simulation::StadiumContact::Wall) ||
+			    (result.contact == Simulation::StadiumContact::Stands))
+			{
+				m_pitchSimulationService.SetBallState(*ballState);
+			}
+			return result;
+		};
+		// Out over the top of the stands, or somehow below the ground: the play is over.
+		auto hasBallLeftStadium = [&](const Physics::BallState& state,
+		                              const Simulation::StadiumCollisionResult& result) -> bool
+		{
+			return (result.contact == Simulation::StadiumContact::LeftStadium) ||
+			       (state.position.y < groundContactHeight - 1.0);
+		};
+		// The first time a batted ball reaches the wall or the seats before coming down in
+		// the field, its carry ends there; one that clears the outfield wall is measured to
+		// where it would have come down, as Statcast projects home-run distance.
+		auto registerStadiumContactForMetrics =
+		    [&](BattedBallMetrics* const metrics,
+		        const Physics::BallState& previousState,
+		        const Physics::BallState& unobstructedState,
+		        const Simulation::StadiumCollisionResult& result) -> bool
+		{
+			if ((metrics == nullptr) || !metrics->hasContact || metrics->hasFirstGroundContact ||
+			    (!result.reachedWall && (result.contact != Simulation::StadiumContact::Stands)))
 			{
 				return false;
 			}
-			const Physics::Vector3 worldPosition =
-			    ConvertSimulationToCollisionWorldPosition(
-			        state.position,
-			        m_environmentSettings.pitchDistanceMeters,
-			        m_environmentSettings.moundHeightOffsetMeters);
-			return !IsWorldPointInsideGroundFan(worldPosition, groundFanShape);
+			const double fraction = result.reachedWall ? result.wallFrameFraction : 1.0;
+			const Physics::Vector3 reached = previousState.position +
+			    ((unobstructedState.position - previousState.position) * fraction);
+			const double reachedTime = previousState.flightTimeSeconds +
+			    ((unobstructedState.flightTimeSeconds - previousState.flightTimeSeconds) * fraction);
+			const auto carry = [&](const Physics::Vector3& point)
+			{
+				return std::hypot(point.x - metrics->contactPosition.x, point.z - metrics->contactPosition.z);
+			};
+			metrics->hasFirstGroundContact = true;
+			metrics->firstGroundDistanceMeters = carry(reached);
+			if (result.clearedWall)
+			{
+				if (const auto landing = ProjectBattedBallLanding(unobstructedState, groundContactHeight))
+				{
+					metrics->firstGroundDistanceMeters = carry(*landing);
+				}
+			}
+			// The judge compares the bottom of the ball with the top of the wall, as the
+			// collision does.
+			const std::optional<double> wallHeight = result.reachedWall
+			    ? std::optional<double>(result.wallHeightMeters - unobstructedState.properties.radiusMeters)
+			    : std::nullopt;
+			metrics->resultLabel = JudgeBattedBallLanding(*metrics, reached, reachedTime, wallHeight).label;
+			if (m_isSessionLogAvailable && (m_lastBattedBallEventId > 0))
+			{
+				(void)m_sessionLogRepository.UpdateBattedBallLanding(
+				    m_lastBattedBallEventId,
+				    metrics->firstGroundDistanceMeters,
+				    metrics->maxHeightMeters,
+				    metrics->resultLabel);
+			}
+			return true;
 		};
 		auto applyGroundCollisionIfNeeded =
 		    [&](const Physics::BallState& previousState,
@@ -5190,14 +5210,8 @@ namespace BaseballSimulatorVR::Core
 				collisionCheckPosition =
 				    ResolveGroundCrossPoint(previousState, *ballState, groundContactHeight);
 			}
-			const Physics::Vector3 collisionCheckWorldPosition =
-			    ConvertSimulationToCollisionWorldPosition(
-			        collisionCheckPosition,
-			        m_environmentSettings.pitchDistanceMeters,
-			        m_environmentSettings.moundHeightOffsetMeters);
-			if (!IsWorldPointInsideGroundFan(
-			        collisionCheckWorldPosition,
-			        groundFanShape))
+			const Simulation::FieldPosition field = Simulation::ToField(collisionCheckPosition, stadium);
+			if (!Common::Stadium::IsInsidePlayingField(field.u, field.v))
 			{
 				return;
 			}
@@ -5250,17 +5264,22 @@ namespace BaseballSimulatorVR::Core
 				groundPreviousState.position = m_teeBattedMetrics.contactPosition;
 			}
 			updateBattedMetricsLiveState(&m_teeBattedMetrics);
+			const Physics::BallState unobstructedState = *ballState;
+			const Simulation::StadiumCollisionResult stadiumResult = applyStadiumCollision(
+			    groundPreviousState, m_teeFlight.hasPreviousBallState || collidedWithBat);
 			if (!m_teeFlight.hasBattedBallBounced &&
-			    registerGroundContactForMetrics(
-			        &m_teeBattedMetrics,
-			        groundPreviousState,
-			        m_teeFlight.hasPreviousBallState || collidedWithBat))
+			    (registerStadiumContactForMetrics(
+			         &m_teeBattedMetrics, groundPreviousState, unobstructedState, stadiumResult) ||
+			     registerGroundContactForMetrics(
+			         &m_teeBattedMetrics,
+			         groundPreviousState,
+			         m_teeFlight.hasPreviousBallState || collidedWithBat)))
 			{
 				m_teeFlight.hasBattedBallBounced = true;
 				m_teeFlight.postBounceElapsedSeconds = 0.0;
 			}
 			if (m_teeBattedMetrics.hasContact &&
-			    isBallBelowGroundOutsideFan(*ballState))
+			    hasBallLeftStadium(*ballState, stadiumResult))
 			{
 				m_teeFlight = {};
 				if (HasDuelTargetZoneSelection())
@@ -5396,19 +5415,25 @@ namespace BaseballSimulatorVR::Core
 			m_duelRound.hasBattedBallBounced = false;
 			m_duelRound.postBounceElapsedSeconds = 0.0;
 		}
+		const Physics::BallState unobstructedState = *ballState;
+		const Simulation::StadiumCollisionResult stadiumResult = m_duelRound.hasBallBeenBatted
+		    ? applyStadiumCollision(groundPreviousState, m_duelRound.hasPreviousBallState || collidedWithBat)
+		    : Simulation::StadiumCollisionResult{};
 		if (m_duelRound.hasBallBeenBatted &&
 		    !m_duelRound.hasBattedBallBounced &&
-		    registerGroundContactForMetrics(
-		        &m_duelRound.battedMetrics,
-		        groundPreviousState,
-		        m_duelRound.hasPreviousBallState || collidedWithBat))
+		    (registerStadiumContactForMetrics(
+		         &m_duelRound.battedMetrics, groundPreviousState, unobstructedState, stadiumResult) ||
+		     registerGroundContactForMetrics(
+		         &m_duelRound.battedMetrics,
+		         groundPreviousState,
+		         m_duelRound.hasPreviousBallState || collidedWithBat)))
 		{
 			m_duelRound.hasBattedBallBounced = true;
 			m_duelRound.postBounceElapsedSeconds = 0.0;
 		}
 		if (m_duelRound.hasBallBeenBatted &&
 		    m_duelRound.battedMetrics.hasContact &&
-		    isBallBelowGroundOutsideFan(*ballState))
+		    hasBallLeftStadium(*ballState, stadiumResult))
 		{
 			m_duelRound.isWaitingForNextPitch = true;
 			m_duelRound.cooldownRemainingSeconds = m_duelPitchIntervalSeconds;

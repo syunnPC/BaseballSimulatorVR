@@ -1,5 +1,7 @@
 #include "BattedBallOutcome.hpp"
 
+#include "../Common/StadiumGeometry.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -191,7 +193,7 @@ namespace BaseballSimulatorVR::Simulation
 		constexpr double DropInSkipRetention = .6;
 		// Past this the outfield, not an infielder, fields a ground ball.
 		constexpr double InfieldLimitMeters = 50.0;
-		constexpr double FenceHeightMeters = 8.0 * Feet;
+		constexpr double FenceHeightMeters = Common::Stadium::FenceHeightMeters;
 		// Balls stop against the wall just in front of it.
 		constexpr double WallClearanceMeters = .5;
 
@@ -346,7 +348,8 @@ namespace BaseballSimulatorVR::Simulation
 			if (outcome.result == BattedBallResult::Single)
 			{
 				// "センター前ヒット" in front of him, "左中間へのヒット" past him.
-				outcome.label = overFielder ? std::wstring{RegionName(region)} + L"へのヒット"
+				outcome.label = offWall       ? std::wstring{FieldSide(spray)} + L"フェンス直撃のヒット"
+				              : overFielder ? std::wstring{RegionName(region)} + L"へのヒット"
 				                            : std::wstring{FielderName(play.fielder)} + L"前ヒット";
 				return outcome;
 			}
@@ -378,13 +381,17 @@ namespace BaseballSimulatorVR::Simulation
 
 		[[nodiscard]] BattedBallOutcome JudgeAirBall(const BattedBallFlight& flight, BattedBallOutcome outcome)
 		{
-			const double distance = (std::max)(flight.landingDistanceMeters, .1);
-			const double hang = (std::max)(flight.hangTimeSeconds, .05);
-			const double apex = (std::max)(flight.apexHeightMeters, ContactHeightMeters);
 			const double fence = FenceDistanceMeters(flight.sprayAngleDegrees);
+			// A ball the simulation saw reach the wall ends its flight there, at that height.
+			const bool atWall = flight.wallHeightMeters.has_value() && std::isfinite(*flight.wallHeightMeters);
+			const double distance = atWall ? fence : (std::max)(flight.landingDistanceMeters, .1);
+			const double hang = (std::max)(flight.hangTimeSeconds, .05);
+			const double end = atWall ? (std::max)(*flight.wallHeightMeters, 0.0) : 0.0;
+			const double apex = (std::max)({flight.apexHeightMeters, ContactHeightMeters, end});
 			const auto heightAt = [&](const double f)
 			{
-				return ContactHeightMeters * (1.0 - f) + 4.0 * (apex - .5 * ContactHeightMeters) * f * (1.0 - f);
+				return ContactHeightMeters * (1.0 - f) + end * f +
+				    4.0 * (apex - .5 * (ContactHeightMeters + end)) * f * (1.0 - f);
 			};
 			// Each fielder's earliest point on the flight where he is within reach of a
 			// catchable ball. On its way out whoever gets there first takes it; coming down,
@@ -411,8 +418,8 @@ namespace BaseballSimulatorVR::Simulation
 				{
 					const double f = static_cast<double>(sample) / Samples;
 					if (heightAt(f) > CatchableHeightMeters) continue;
-					// Nobody catches a ball beyond the outfield wall.
-					if (distance * f > fence - AirReachMeters) break;
+					// Fielders reach up to the wall, not beyond it.
+					if (distance * f > fence) break;
 					const Point at = FromPolar(distance * f, flight.sprayAngleDegrees);
 					const double needed = (std::max)(0.0, Distance(at, station.start) - AirReachMeters);
 					if (TimeToCover(needed, station.mover) > hang * f) continue;
@@ -436,8 +443,8 @@ namespace BaseballSimulatorVR::Simulation
 				outcome.label = L"ファウル";
 				return outcome;
 			}
-			const bool offWall = distance >= fence;
-			if (offWall && heightAt(fence / distance) >= FenceHeightMeters)
+			const bool offWall = atWall || distance >= fence;
+			if (atWall ? end >= FenceHeightMeters : offWall && heightAt(fence / distance) >= FenceHeightMeters)
 			{
 				outcome.result = BattedBallResult::HomeRun;
 				outcome.label = HomeRunLabel(flight.sprayAngleDegrees);
@@ -459,7 +466,8 @@ namespace BaseballSimulatorVR::Simulation
 		{
 			return std::isfinite(flight.exitSpeedMetersPerSecond) && std::isfinite(flight.launchAngleDegrees) &&
 			    std::isfinite(flight.sprayAngleDegrees) && std::isfinite(flight.landingDistanceMeters) &&
-			    std::isfinite(flight.hangTimeSeconds) && std::isfinite(flight.apexHeightMeters);
+			    std::isfinite(flight.hangTimeSeconds) && std::isfinite(flight.apexHeightMeters) &&
+			    (!flight.wallHeightMeters || std::isfinite(*flight.wallHeightMeters));
 		}
 	}
 
@@ -496,8 +504,7 @@ namespace BaseballSimulatorVR::Simulation
 
 	double FenceDistanceMeters(const double sprayAngleDegrees) noexcept
 	{
-		const double fromCenter = (std::min)(std::abs(sprayAngleDegrees), 45.0);
-		return (325.0 + 75.0 * std::cos(2.0 * fromCenter * Degrees)) * Feet;
+		return Common::Stadium::FenceDistanceMeters(sprayAngleDegrees);
 	}
 
 	BattedBallOutcome JudgeBattedBall(const BattedBallFlight& flight)

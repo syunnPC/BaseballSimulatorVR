@@ -158,7 +158,8 @@ namespace
 				const auto& v = mesh.vertices[index];
 				Tests::Check(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && v.y > floor &&
 				    std::hypot(v.x, v.z - apexZ) <=
-				        (std::max)(radius, D::PitchersPlateDistanceMeters + D::InfieldArcRadiusMeters) + D::LineWidthMeters,
+				        (std::max)({radius, D::PitchersPlateDistanceMeters + D::InfieldArcRadiusMeters,
+				            Common::Stadium::LineFenceDistanceMeters}) + D::LineWidthMeters,
 				    "Field markings lie above the floor and within the field");
 			}
 		// Bases at the official distances from the plate apex, standing on the field.
