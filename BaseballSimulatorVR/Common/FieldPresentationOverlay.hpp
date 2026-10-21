@@ -254,7 +254,8 @@ namespace BaseballSimulatorVR::Common
 		const double batWidth = plot.width - .8 * sizeScale;
 		const double batY = bottom + 2.0 * sizeScale;
 		const auto batX = [&](double fraction) { return batLeft + batWidth * fraction; };
-		const auto& sweet = Physics::GetBatMaterialProfile(Physics::BatMaterial::Wood);
+		const auto& sweet = Physics::GetBatMaterialProfile(
+		    Physics::IsValidBatMaterial(state.batMaterial) ? state.batMaterial : Physics::BatMaterial::Wood);
 		std::wstring contactLabel = L"打点  --   緑＝芯";
 		if (state.hasBattedMetrics && state.hasBatContactPosition)
 		{

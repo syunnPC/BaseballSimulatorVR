@@ -73,8 +73,10 @@ namespace BaseballSimulatorVR::Physics
 		const double centerOfMass = ReferenceCenterOfMassMeters * lengthScale;
 		const double radiusOfGyration = ReferenceRadiusOfGyrationMeters * lengthScale;
 		const double inertia = batMass * radiusOfGyration * radiusOfGyration;
-		const Vector3 batSurfaceLever = batAxis *
-		    (input.contactDistanceFromHandleMeters - centerOfMass) + input.batSurfaceOffsetWorld;
+		// The beginner bat evaluates its response at a regular sweet spot (see BatResponseRatio).
+		const double responseDistance = BatResponseRatio(input.batMaterial,
+		    input.contactDistanceFromHandleMeters / input.batLengthMeters) * input.batLengthMeters;
+		const Vector3 batSurfaceLever = batAxis * (responseDistance - centerOfMass) + input.batSurfaceOffsetWorld;
 		const double axialInertia = BatAxialInertiaFactor * batMass *
 		    input.batRadiusMeters * input.batRadiusMeters;
 		const auto inverseBatInertia = [&](const Vector3& angularImpulse)

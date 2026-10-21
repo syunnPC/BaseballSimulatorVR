@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Physics/BatMaterial.hpp"
 #include "../Physics/Vector3.hpp"
 #include "BallFlightPhase.hpp"
 
@@ -62,6 +63,8 @@ namespace BaseballSimulatorVR::Common
         double battedMaxHeightMeters{ 0.0 };
         bool hasBatContactPosition{ false };
         double batContactFraction{ 0.0 };
+        // Bat in use, so the contact diagram marks that bat's sweet zone.
+        Physics::BatMaterial batMaterial{ Physics::BatMaterial::Wood };
         double contactBatLengthMeters{ .84 };
     };
 

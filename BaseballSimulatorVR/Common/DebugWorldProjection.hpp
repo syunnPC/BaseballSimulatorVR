@@ -183,6 +183,8 @@ namespace BaseballSimulatorVR::Common
 		inline constexpr std::array<float, 4> BatColor{ 0.79F, 0.56F, 0.26F, 1.0F };
 		inline constexpr std::array<float, 4> MetalBatColor{ 0.78F, 0.81F, 0.85F, 1.0F };
 		inline constexpr std::array<float, 4> UrethaneBatColor{ 0.22F, 0.24F, 0.27F, 1.0F };
+		// Bright practice-bat orange so the forgiving bat is recognizable at a glance.
+		inline constexpr std::array<float, 4> BeginnerBatColor{ 0.98F, 0.55F, 0.12F, 1.0F };
 		inline constexpr std::array<float, 4> BatSweetSpotColor{ 0.08F, 0.95F, 0.20F, 0.35F };
 		inline constexpr double BatSweetSpotShellOffsetMeters = 0.001;
 		inline constexpr std::array<float, 4> TrailMeshColor{ 0.20F, 0.64F, 0.90F, 0.92F };
@@ -613,6 +615,7 @@ namespace BaseballSimulatorVR::Common
 		case Physics::BatMaterial::Wood: return DebugWorldStyle::BatColor;
 		case Physics::BatMaterial::Metal: return DebugWorldStyle::MetalBatColor;
 		case Physics::BatMaterial::Urethane: return DebugWorldStyle::UrethaneBatColor;
+		case Physics::BatMaterial::Beginner: return DebugWorldStyle::BeginnerBatColor;
 		}
 		throw std::invalid_argument("Invalid bat material");
 	}

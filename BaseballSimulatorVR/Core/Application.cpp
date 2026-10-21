@@ -3833,7 +3833,8 @@ namespace BaseballSimulatorVR::Core
 		{
 			case Physics::BatMaterial::Wood: m_batMaterial = Physics::BatMaterial::Metal; break;
 			case Physics::BatMaterial::Metal: m_batMaterial = Physics::BatMaterial::Urethane; break;
-			case Physics::BatMaterial::Urethane: m_batMaterial = Physics::BatMaterial::Wood; break;
+			case Physics::BatMaterial::Urethane: m_batMaterial = Physics::BatMaterial::Beginner; break;
+			case Physics::BatMaterial::Beginner: m_batMaterial = Physics::BatMaterial::Wood; break;
 		}
 		if (m_batOverlayState) m_batOverlayState->material = m_batMaterial;
 		std::wstring materialNote = L"bat_material=" + BatMaterialLabel(m_batMaterial);
@@ -4302,6 +4303,7 @@ namespace BaseballSimulatorVR::Core
 			statistics.battedMaxHeightMeters = battedMetrics->maxHeightMeters;
 			statistics.hasBatContactPosition = battedMetrics->hasBatContactPosition;
 			statistics.batContactFraction = battedMetrics->batContactFraction;
+			statistics.batMaterial = m_batMaterial;
 			statistics.contactBatLengthMeters = battedMetrics->contactBatLengthMeters;
 		}
 		return state;
@@ -4444,8 +4446,12 @@ namespace BaseballSimulatorVR::Core
 		input.ballVelocityWorld = ballState->velocity;
 		input.ballAngularVelocityWorld = ballState->spinAxis *
 		    (ballState->spinRpm * 2.0 * std::numbers::pi / 60.0);
-		input.batContactVelocityWorld = gripVelocity +
-		    Physics::Cross(angularVelocity, contact->batSurfacePosition - gripAtContact);
+		// Ordinary bats move at the contact point; the beginner bat responds with the speed of
+		// a regular sweet spot wherever the barrel meets the ball.
+		const double responseShift = (Physics::BatResponseRatio(m_batMaterial, contact->batFraction) -
+		    contact->batFraction) * m_environmentSettings.batLengthMeters;
+		input.batContactVelocityWorld = gripVelocity + Physics::Cross(angularVelocity,
+		    contact->batSurfacePosition + contact->batAxis * responseShift - gripAtContact);
 		input.collisionNormal = contact->normal;
 		input.batAxisDirectionWorld = contact->batAxis;
 		input.batSurfaceOffsetWorld = contact->batSurfaceOffset;

@@ -926,14 +926,14 @@ namespace BaseballSimulatorVR::Core
 			    app->m_batOverlayState->material == Physics::BatMaterial::Wood,
 			    "The initial tracked bat uses the persisted wood material default");
 			for (const auto material : { Physics::BatMaterial::Metal,
-			    Physics::BatMaterial::Urethane, Physics::BatMaterial::Wood })
+			    Physics::BatMaterial::Urethane, Physics::BatMaterial::Beginner, Physics::BatMaterial::Wood })
 			{
 				if (material == Physics::BatMaterial::Urethane) app->HandleKeyDown('9');
 				else app->HandleXrUiCommand({ Xr::UiCommandType::CycleBatMaterial });
 				Tests::Check(app->m_batMaterial == material && app->m_batOverlayState &&
 				    app->m_batOverlayState->material == material &&
 				    app->BuildXrUiTelemetry().batMaterial == material,
-				    "XR and keyboard material commands cycle all three bats and update the existing presentation");
+				    "XR and keyboard material commands cycle all four bats and update the existing presentation");
 				app->FlushPendingSettingsSaves(true);
 				auto restored = MakeApplication();
 				restored->m_userDataDirectoryPath = output.path.wstring();
