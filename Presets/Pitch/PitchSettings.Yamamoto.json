@@ -1,4 +1,6 @@
 {
+  "_comment_displayName": "Preset name shown in the pitch panel.",
+  "displayName": "山本由伸\n硬式野球 / 右投げ",
   "_comment_pitcherThrowsLeftHanded": "Pitcher throws with the left hand when true; right hand when false.",
   "pitcherThrowsLeftHanded": false,
   "_comment_dataset": "Yoshinobu Yamamoto, 2025 MLB regular season. Speed and rpm are observed; axes and lift are fitted simulator parameters. Sources are listed below.",

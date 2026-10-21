@@ -1,5 +1,9 @@
 {
-  "_comment_preset": "VeryEasy / RHP training preset.",
+  "_comment_displayName": "Preset name shown in the pitch panel; the throwing hand is appended.",
+  "displayName": "難易度 ベリーイージー",
+  "_comment_mirrorForLeftHandedPitcher": "Also offer the opposite-hand variant: spin axis Y/Z and lateral velocity are mirrored, pitcherThrowsLeftHanded is flipped.",
+  "mirrorForLeftHandedPitcher": true,
+  "_comment_preset": "VeryEasy / RHP training preset. The left-handed variant is generated at load time (mirrorForLeftHandedPitcher).",
   "_comment_shape": "Axes and lift are fitted simulator parameters for training shapes. Left-handed profiles mirror horizontal movement.",
   "initialSpeedMetersPerSecond": 30.555555555555554,
   "releaseHeightMeters": 1.8,

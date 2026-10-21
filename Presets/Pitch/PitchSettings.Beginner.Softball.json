@@ -1,5 +1,9 @@
 {
-  "_comment_preset": "Beginner softball normal-break training preset, RHP. Release speeds 90/75/80/85/85/80 km/h.",
+  "_comment_displayName": "Preset name shown in the pitch panel; the throwing hand is appended.",
+  "displayName": "初心者 / 標準変化\nソフトボール",
+  "_comment_mirrorForLeftHandedPitcher": "Also offer the opposite-hand variant: spin axis Y/Z and lateral velocity are mirrored, pitcherThrowsLeftHanded is flipped.",
+  "mirrorForLeftHandedPitcher": true,
+  "_comment_preset": "Beginner softball normal-break training preset, RHP. Release speeds 90/75/80/85/85/80 km/h. The left-handed variant is generated at load time (mirrorForLeftHandedPitcher).",
   "_comment_model": "PitchProfile axes and lift are fitted training parameters; spinless fork has gravity and drag only. Drag is acceleration / speed squared, with no mass division.",
   "initialSpeedMetersPerSecond": 24.8992395243163,
   "launchElevationDegrees": 5.145868739854396,

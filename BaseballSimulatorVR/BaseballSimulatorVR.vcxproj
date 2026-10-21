@@ -172,6 +172,7 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="Common\JsonWriter.hpp" />
     <ClInclude Include="Common\TextConversion.hpp" />
     <ClInclude Include="Data\JsonSettingsReader.hpp" />
+    <ClInclude Include="Data\PresetCatalog.hpp" />
     <ClInclude Include="Common\CrashReporting.hpp" />
   </ItemGroup>
   <ItemGroup>
@@ -192,6 +193,7 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClCompile Include="XR\NullXrSystem.cpp" />
     <ClCompile Include="Common\AppLog.cpp" />
     <ClCompile Include="Common\AtomicFileWriter.cpp" />
+    <ClCompile Include="Data\PresetCatalog.cpp" />
     <ClCompile Include="Common\CrashReporting.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -214,10 +216,11 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <BundledSettings Include="$(ProjectDir)..\PitchSettings.*.json;$(ProjectDir)..\EnvironmentSettings.*.json;$(ProjectDir)..\PlaySettings.*.json" />
+    <!-- Read-only presets; the folder structure (Presets\Pitch, Presets\Environment, Presets\Play) is kept next to the executable. -->
+    <BundledSettings Include="$(ProjectDir)..\Presets\**\*.json" />
   </ItemGroup>
   <Target Name="CopyBundledSettings" AfterTargets="Build">
-    <Copy SourceFiles="@(BundledSettings)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(BundledSettings)" DestinationFiles="@(BundledSettings->'$(OutDir)Presets\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

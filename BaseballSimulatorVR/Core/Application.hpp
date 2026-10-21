@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Data/PitchPresetJsonStorage.hpp"
+#include "../Data/PresetCatalog.hpp"
 #include "../Data/PresetRepository.hpp"
 #include "../Data/RuntimeSettingsJsonStorage.hpp"
 #include "../Data/SessionLogRepository.hpp"
@@ -18,8 +19,10 @@
 #include "../XR/IXrSystem.hpp"
 #include "FrameStatistics.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -43,6 +46,7 @@ namespace BaseballSimulatorVR::Core
 
 	  private:
 		friend struct ApplicationTestAccess;
+		friend struct ApplicationSettingsTestAccess;
 		enum class OperationMode
 		{
 			PitchTrajectory,
@@ -64,7 +68,8 @@ namespace BaseballSimulatorVR::Core
 		    std::wstring_view eventType,
 		    std::wstring_view note,
 		    bool preserveDirectionalVelocityForCurrentPitch = false);
-		void HandleKeyDown(WPARAM keyCode);
+		// isAutoRepeat: WM_KEYDOWN lParam bit 30. Repeats only drive continuous adjustments.
+		void HandleKeyDown(WPARAM keyCode, bool isAutoRepeat = false);
 		void HandleXrUiCommands();
 		void HandleXrUiCommand(const Xr::UiCommand& uiCommand);
 		void ToggleIntegrator();
@@ -92,6 +97,26 @@ namespace BaseballSimulatorVR::Core
 		[[nodiscard]] bool LoadEnvironmentSettingsFromJson();
 		void SavePlaySettingsToJson();
 		[[nodiscard]] bool LoadPlaySettingsFromJson();
+		// Settings changes only mark the files dirty; they are written once no further change
+		// happened for SettingsSaveDebounceInterval, on mode switches and on shutdown.
+		void MarkPlaySettingsDirty();
+		void MarkEnvironmentSettingsDirty();
+		void FlushPendingSettingsSaves(bool force);
+		[[nodiscard]] Data::PresetCatalog BuildPresetCatalog() const;
+		[[nodiscard]] std::wstring BuildActivePitchName() const;
+		[[nodiscard]] std::wstring BuildActivePitchSettingsLabel() const;
+		// Startup loading with recovery: a user settings file that fails to load is renamed to
+		// "<name>.broken-<timestamp>.json" and restored from its ".bak" or bundled default.
+		[[nodiscard]] bool LoadStartupSettings(std::wstring& fatalErrorMessage);
+		[[nodiscard]] bool RecoverBrokenUserSettingsFile(
+		    const std::filesystem::path& filePath,
+		    std::wstring_view loadError,
+		    const std::function<bool(const std::filesystem::path&)>& isLoadable);
+		void RecordPitchOutcome();
+		[[nodiscard]] bool LogBattedBall(
+		    std::wstring_view note,
+		    const Physics::Vector3& launchVelocity,
+		    double contactFractionAlongBat);
 		void TagLatestPitchEventResult(
 		    std::wstring_view resultLabel,
 		    double resultScore,
@@ -99,7 +124,8 @@ namespace BaseballSimulatorVR::Core
 		void AdjustLatestPitchEventResultScore(double deltaScore);
 		[[nodiscard]] bool LogPitchEvent(
 		    std::wstring_view eventType,
-		    std::wstring_view note);
+		    std::wstring_view note,
+		    Data::SessionEventCategory category = Data::SessionEventCategory::Config);
 		void ApplyOverlayVisibilityChanges(std::wstring_view note = L"");
 		void CyclePitchTrajectoryDisplayMode();
 		void ToggleBattedTrajectoryVisibility();
@@ -153,7 +179,7 @@ namespace BaseballSimulatorVR::Core
 		void EnsureDefaultPitchProfiles();
 		[[nodiscard]] bool InitializeStoragePaths(std::wstring& errorMessage);
 		[[nodiscard]] bool EnsureRequiredUserSettingsFiles(
-		    std::wstring& errorMessage) const;
+		    std::wstring& errorMessage);
 		[[nodiscard]] std::filesystem::path ResolveUserDataPath(
 		    std::wstring_view filePath) const;
 		[[nodiscard]] std::filesystem::path ResolveBundledContentPath(
@@ -209,6 +235,8 @@ namespace BaseballSimulatorVR::Core
 		std::vector<Data::PitchProfileEntry> m_pitchProfiles{};
 		int m_activePitchProfileIndex{ 0 };
 		std::vector<std::wstring> m_pitchSettingsFileNames{};
+		std::vector<Data::PitchSettingsEntry> m_pitchSettingsEntries{};
+		std::optional<Data::PitchSettingsEntry> m_activePitchSettingsEntry{};
 		int m_activePitchSettingsFileIndex{ -1 };
 		std::wstring m_activePitchSettingsFileName{
 			L"PitchSettings.user.json"
@@ -218,7 +246,18 @@ namespace BaseballSimulatorVR::Core
 		bool m_pitcherThrowsLeftHanded{ false };
 		double m_pitcherArmSpeedScale{ 1.0 };
 		bool m_isSessionLogAvailable{ false };
+		// Last pitch delivery event; results and outcomes are attached to it.
 		std::int64_t m_lastLoggedPitchEventId{ 0 };
+		// Latest "bat_contact" event; UpdateBattedBallLanding can add its carry distance.
+		std::int64_t m_lastBattedBallEventId{ 0 };
+		// Pitch whose plate outcome has not been recorded yet (0 = none).
+		std::int64_t m_pitchOutcomePendingEventId{ 0 };
+		bool m_playSettingsDirty{ false };
+		bool m_environmentSettingsDirty{ false };
+		std::chrono::steady_clock::time_point m_lastSettingsChangeTime{};
+		int m_settingsLayoutVersion{ 0 };
+		std::vector<std::wstring> m_startupNotices{};
+		// Read-only bundled "Presets" folder (see Data::PresetCatalog).
 		std::wstring m_bundledContentDirectoryPath{};
 		std::wstring m_userDataDirectoryPath{};
 		std::wstring m_latestPitchResultLabel{ L"pending" };

@@ -84,6 +84,7 @@
     <ClCompile Include="UiPointerInputTests.cpp" />
     <ClCompile Include="DesktopRenderResizeTests.cpp" />
     <ClCompile Include="ApplicationSimulationTests.cpp" />
+    <ClCompile Include="ApplicationSettingsTests.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Core\FrameStatistics.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Data\SessionLogRepository.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Data\PitchPresetJsonStorage.cpp" />
@@ -98,6 +99,7 @@
     <ClCompile Include="..\BaseballSimulatorVR\Data\PresetRepository.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Common\AppLog.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Common\AtomicFileWriter.cpp" />
+    <ClCompile Include="..\BaseballSimulatorVR\Data\PresetCatalog.cpp" />
     <ClCompile Include="..\BaseballSimulatorVR\Common\CrashReporting.cpp" />
   </ItemGroup>
   <Target Name="CopyTestRuntime" AfterTargets="Build">

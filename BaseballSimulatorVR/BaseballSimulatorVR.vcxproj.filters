@@ -203,6 +203,9 @@
     <ClInclude Include="Data\JsonSettingsReader.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Data\PresetCatalog.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Common\CrashReporting.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -255,6 +258,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="Common\AtomicFileWriter.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="Data\PresetCatalog.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="Common\CrashReporting.cpp">

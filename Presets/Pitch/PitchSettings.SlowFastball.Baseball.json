@@ -1,5 +1,9 @@
 {
-  "_comment_preset": "Baseball fastballs, 70-100 km/h release speed, LHP.",
+  "_comment_displayName": "Preset name shown in the pitch panel; the throwing hand is appended.",
+  "displayName": "低速ストレート\n硬式野球",
+  "_comment_mirrorForLeftHandedPitcher": "Also offer the opposite-hand variant: spin axis Y/Z and lateral velocity are mirrored, pitcherThrowsLeftHanded is flipped.",
+  "mirrorForLeftHandedPitcher": true,
+  "_comment_preset": "Baseball fastballs, 70-100 km/h release speed, RHP. The left-handed variant is generated at load time (mirrorForLeftHandedPitcher).",
   "initialSpeedMetersPerSecond": 19.153847444447017,
   "launchElevationDegrees": 9.91808415898362,
   "releaseHeightMeters": 1.8,
@@ -17,7 +21,7 @@
   "seamPerturbationFrequencyHz": 0.0,
   "seamPerturbationPhase": 0.0,
   "environmentSettingsFile": "EnvironmentSettings.SlowFastball.Baseball.json",
-  "pitcherThrowsLeftHanded": true,
+  "pitcherThrowsLeftHanded": false,
   "activePitchProfileIndex": 0,
   "randomPitchProfileEnabled": true,
   "pitchProfiles": [

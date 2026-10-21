@@ -1,4 +1,6 @@
 {
+  "_comment_displayName": "Preset name shown in the pitch panel.",
+  "displayName": "トス\n硬式野球",
   "_comment_preset": "9 m underhand lob toss; launch speed specifies the forward component.",
   "initialSpeedMetersPerSecond": 8.0,
   "launchElevationDegrees": 35.0,
