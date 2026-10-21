@@ -1684,7 +1684,8 @@ namespace BaseballSimulatorVR::Core
 		}
 
 		Shutdown();
-		return static_cast<int>(message.wParam);
+		// wParam is only meaningful for WM_QUIT; an XR-requested exit returns 0.
+		return message.message == WM_QUIT ? static_cast<int>(message.wParam) : 0;
 	}
 
 	bool Application::InitializeWindow(HINSTANCE instanceHandle, int commandShow)

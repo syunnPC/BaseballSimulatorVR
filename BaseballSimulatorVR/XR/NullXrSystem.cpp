@@ -5766,6 +5766,9 @@ namespace BaseballSimulatorVR::Xr
 		const std::wstring message = L"[OpenXR] " + std::wstring{ reason } + L"; recreating the session.\n";
 		OutputDebugStringW(message.c_str());
 		DestroySession();
+		// Query the system again: xrGetSystem reports FORM_FACTOR_UNAVAILABLE
+		// until the device is back, and its id may change.
+		m_systemId = XR_NULL_SYSTEM_ID;
 		m_recoveryPending = true;
 		m_nextRecoveryAttempt = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 		m_sessionName = L"Session(recovering): " + std::wstring{ reason };
