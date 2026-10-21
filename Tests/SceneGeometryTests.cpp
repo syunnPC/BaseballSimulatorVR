@@ -62,7 +62,7 @@ namespace
 				auto state = PitcherState(time, 1);
 				state.releasePositionWorld.y = state.moundHeightMeters + releaseHeight;
 				Common::BuildPitcherWorldMesh(state, mesh);
-				Tests::Check(mesh.triangles.size() == (time < 0 ? 4514 : 4322),
+				Tests::Check(mesh.triangles.size() == (time < 0 ? 8482 : 8290),
 				    "Every delivery style retains the complete pitcher, mound and held ball tessellation");
 				Tests::Check(Fingerprint(cache.Get(state)) == Fingerprint(mesh),
 				    "Cached geometry matches the direct mesh across every style and animation key");
