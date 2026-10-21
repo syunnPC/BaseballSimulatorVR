@@ -80,22 +80,26 @@ GitHub Actions（`.github/workflows/build.yml`）では、Windows ランナー�
 - UI を持つ手のコントローラーを HMD のほうへ向けると、その手の近くに UI パネルが表示されます。パネルの向きはその手のレイに追従します。
 - 対戦とティー打撃では、バットを持つ手と反対の手が UI の手になり、バットを持つ手のレーザーで操作します。それ以外のモードでは右手が UI、左手がレーザーです。
 - レーザーを項目に向けてトリガーを引くと選択します。バットはコントローラーのグリップ姿勢に追従します。
-- 左スティックで視点を回転（ヨー・ピッチ）、右スティックで移動（前後・左右）します。
+- 左スティックの左右で視点を水平に回転、右スティックで移動（前後・左右）します。上下方向の回転は酔いの原因になるため行いません。
+- 左スティックの押し込み（Vive は左のメニューボタン）で、今いる位置と向きを打席の位置・投手方向に合わせ直します（リセンター）。
+- バットがボールに当たると、バットを持つ手のコントローラーが打球の強さに応じて振動します。
 - メインパネル：モードの切り替えと各パネルの表示（見失ったパネルの呼び戻しを含む）
 - 投球パネル：25 分割ゾーンの複数選択、球種と設定ファイルの切り替え、再生・一時停止、再生速度のスライダー
 - 計測パネル：軌道とストライクゾーンの表示、マウンドの高さ、投球予告マーカー、打席（右・左）、バットの素材
 
 ### 対応コントローラー
 
-OpenXR の次のインタラクションプロファイルに入力を割り当てています。どのプロファイルでも aim ポーズ（レーザー）と grip ポーズ（バット）を使います。
+OpenXR の次のインタラクションプロファイルに入力を割り当てています。どのプロファイルでも aim ポーズ（レーザー）と grip ポーズ（バット）、両手の振動出力を使います。バットの速度はランタイムが返すコントローラーの速度・角速度を使い、取得できない場合だけ姿勢の差分から求めます。
 
-| インタラクションプロファイル | 選択 | 視点の回転 | 移動 |
-| --- | --- | --- | --- |
-| `/interaction_profiles/oculus/touch_controller`（Meta Quest Touch など） | トリガー | 左スティック | 右スティック |
-| `/interaction_profiles/valve/index_controller`（Valve Index） | トリガー | 左スティック | 右スティック |
-| `/interaction_profiles/htc/vive_controller`（HTC Vive） | トリガー | 左トラックパッド | 右トラックパッド |
-| `/interaction_profiles/microsoft/motion_controller`（Windows Mixed Reality） | トリガー | 左スティック | 右スティック |
-| `/interaction_profiles/khr/simple_controller`（Khronos Simple Controller） | select | なし | なし |
+| インタラクションプロファイル | 選択 | 視点の回転 | 移動 | リセンター |
+| --- | --- | --- | --- | --- |
+| `/interaction_profiles/oculus/touch_controller`（Meta Quest Touch など） | トリガー | 左スティック | 右スティック | 左スティック押し込み |
+| `/interaction_profiles/valve/index_controller`（Valve Index） | トリガー | 左スティック | 右スティック | 左スティック押し込み |
+| `/interaction_profiles/htc/vive_controller`（HTC Vive） | トリガー | 左トラックパッド | 右トラックパッド | 左メニューボタン |
+| `/interaction_profiles/microsoft/motion_controller`（Windows Mixed Reality） | トリガー | 左スティック | 右スティック | 左スティック押し込み |
+| `/interaction_profiles/khr/simple_controller`（Khronos Simple Controller） | select | なし | なし | なし |
+
+ヘッドセットを外す・ダッシュボードを開くなどで入力のフォーカスが外れている間は、シミュレーションを一時停止します。ランタイムやヘッドセットとの接続が切れた場合は、再接続を待ってセッションを作り直します。
 
 ### キーボード
 
@@ -133,13 +137,28 @@ OpenXR の次のインタラクションプロファイルに入力を割り当�
 
 ### データの保存場所
 
-- 初回起動時に、同梱の設定ファイル（プリセット JSON）を `%LOCALAPPDATA%\BaseballSimulatorVR` にコピーし、以降はこのフォルダーのファイルを読み書きします。既にあるファイルは上書きしません。
-- 投球の記録は同じフォルダーの `SessionHistory.sqlite3` に保存され、Ctrl+E で `SessionHistory.current.csv` に出力できます。
-- 設定を初期状態に戻すには、アプリを終了してこのフォルダーのファイルを削除します。次回起動時に同梱の設定ファイルがコピーし直されます。
+- 同梱のプリセットは実行ファイルと同じフォルダーの `Presets\` から読み取り専用で読み込みます。アプリを更新するとプリセットも新しいものに置き換わります。
+- ユーザーごとの設定は `%LOCALAPPDATA%\BaseballSimulatorVR` に保存します。初回起動時に `Presets\` の `*.default.json` から次の 3 つを作成し、以降はこれらだけを書き換えます。
+  - `PitchSettings.user.json`：K キーなどで保存した投球設定
+  - `EnvironmentSettings.user.json`：投球距離・風・バット・環境の設定
+  - `PlaySettings.user.json`：モードや表示などの状態
+- 設定ファイルの書き込みは一時ファイルに書いてから置き換えるので、書き込み中に終了しても壊れません。読み込めないファイルは `*.broken-<日時>.json` に名前を変えて退避し、既定値で起動します。
+- 投球・打球の記録は同じフォルダーの `SessionHistory.sqlite3` に保存され（書き込みは別スレッドで行います）、Ctrl+E で `SessionHistory.current.csv` に出力できます。打球は着地した時点で飛距離と最高点が記録されます。
+- 設定を初期状態に戻すには、アプリを終了して `*.user.json` を削除します。次回起動時に作り直されます。
+- 以前のバージョンが `%LOCALAPPDATA%\BaseballSimulatorVR` にコピーした同梱プリセットは、更新後の初回起動時に `LegacyPresetBackup\<日時>\` へ移動します（古いコピーが新しいプリセットを隠してしまうのを防ぐため）。自分で調整したものを使い続ける場合は、別の名前で設定フォルダーに戻してください。同梱と名前が重ならない `PitchSettings.*.json` は一覧に表示されます。
+
+`EnvironmentSettings` の JSON では、次の項目も指定できます（省略時は括弧内の値）。空気密度は高度・気温・湿度から計算し、投球と打球の空気抵抗・揚力の両方に反映します。
+
+| 項目 | 内容 |
+| --- | --- |
+| `altitudeMeters` | 球場の標高 [m]（0、範囲 −500〜5000） |
+| `temperatureCelsius` | 気温 [°C]（15、範囲 −40〜60） |
+| `relativeHumidityPercent` | 相対湿度 [%]（0、範囲 0〜100） |
+| `batMassKilograms` | バットの質量 [kg]（0.885、範囲 0.3〜1.5） |
 
 ### 同梱プリセット
 
-右投げ（RHP）・左投げ（LHP）の両方を用意したものが多く、手元 UI や Ctrl+← / → で切り替えられます。ファイルの配置は今後変更される可能性があります。
+`Presets\Pitch\PitchSettings.<名前>.json` に右投げのデータだけを置き、`mirrorForLeftHandedPitcher` が `true` のものは左投げ（左右反転）も自動で一覧に加えます。手元 UI や Ctrl+← / → で切り替えられます。環境設定は `Presets\Environment\`、プレイ設定の既定値は `Presets\Play\` にあります。
 
 - `Difficulty.*`：難易度別のトレーニング用（VeryEasy / Easy / Normal / Hard / Expert）。難易度が上がるほど球種が増え、Expert は 9 球種です。
 - `Challenge*`：チャレンジ用（Challenge1：ストレート・カーブ・シンカー、Challenge2：ツーシーム）。
@@ -154,11 +173,13 @@ OpenXR の次のインタラクションプロファイルに入力を割り当�
 - Windows x64 と Direct3D 12 専用です。Release ビルドは AVX2 に対応していない CPU では動作しません。
 - ハンドトラッキングには対応していません。コントローラーが必要です。
 - キーボード操作は US 配列を前提にしています。
-- 打球・投球のモデルは近似を含みます。球種の回転軸や揚力の多くはトレーニング用にフィッティングしたパラメーターです（下の「出典・ライセンス」も参照してください）。
+- 打球・投球のモデルは近似を含みます。抗力・揚力係数は実測に基づくフィット式を使い、球種の回転軸や回転効率などはプリセットごとに調整したパラメーターです（下の「出典・ライセンス」も参照してください）。
+- 描画は 4x MSAA（GPU が対応している場合）と FXAA を使います。リフレッシュレートの変更（`XR_FB_display_refresh_rate`）や UI のクワッドレイヤー化には対応していません。
 
 ## 出典・ライセンス
 
 - 山本由伸プロファイル：[MLB Baseball Savant](https://baseballsavant.mlb.com/savant-player/yoshinobu-yamamoto-808967)、[FanGraphs](https://www.fangraphs.com/players/yoshinobu-yamamoto/33825/pitch-type-splits?position=P)。球種の特徴は [MLB Glossary](https://www.mlb.com/glossary/pitch-types) を参照。
+- 空気力学：抗力・揚力係数は Nathan の[打球軌道の分析](https://baseball.physics.illinois.edu/TrajectoryAnalysis.pdf)（式 10・11）のフィット式を投球・打球の両方に使います。回転の減衰時定数は Nathan の軌道計算ツールが使う 25〜30 秒の範囲から 25 秒としています。空気密度は標高・気温・湿度から湿潤空気として求め、海抜 0 m・15 °C・湿度 0% で 1.225 kg/m³ になるよう正規化しています。
 - 衝突・打球のモデル：Nathan [2000](https://baseball.physics.illinois.edu/AJP-Nov2000.pdf)・[2003](https://baseball.physics.illinois.edu/AJP-Feb2003.pdf)、Kensrud ほか [2017](https://baseball.physics.illinois.edu/ObliqueCollisionsWSU-AJP.pdf)、[打球軌道の分析](https://baseball.physics.illinois.edu/TrajectoryAnalysis.pdf)。
 - 芯の範囲：Russell [2004](https://www.acs.psu.edu/drussell/bats/sweetspot.html)・[2013](https://www.acs.psu.edu/drussell/bats/sting-damp.html)、Cross [1998](https://baseball.physics.illinois.edu/CrossSweetSpotBat.pdf)。34インチの先端から5〜7インチを全長比に換算した近似で、個別バットの形状・振動特性は計算しません。軟式球とウレタンの反発は [JSME 2017](https://www.jstage.jst.go.jp/article/jsmeshd/2017/0/2017_C-16/_article/-char/ja) を参照。
 - ゾーンの身体位置：[AIST人体寸法統計](https://www.airc.aist.go.jp/dhrt/97-98_Statistics.pdf)。HMDから身長を推定し、膝付近と胸骨上縁・胴囲高の中間を近似します。個人の関節位置は測定しません。
