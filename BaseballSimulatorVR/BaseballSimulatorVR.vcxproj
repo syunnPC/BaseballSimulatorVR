@@ -166,6 +166,14 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="targetver.h" />
     <ClInclude Include="XR\IXrSystem.hpp" />
     <ClInclude Include="XR\NullXrSystem.hpp" />
+    <ClInclude Include="Common\BatOverlayState.hpp" />
+    <ClInclude Include="Common\D3d12ShaderCompiler.hpp" />
+    <ClInclude Include="Common\FxaaPipelineUtilities.hpp" />
+    <ClInclude Include="Common\FxaaShaderSource.hpp" />
+    <ClInclude Include="Common\OverlayVisibilitySettings.hpp" />
+    <ClInclude Include="Common\RenderQualitySettings.hpp" />
+    <ClInclude Include="Common\RuntimeLimits.hpp" />
+    <ClInclude Include="Common\ZoneMaskUtilities.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Core\Application.cpp" />
