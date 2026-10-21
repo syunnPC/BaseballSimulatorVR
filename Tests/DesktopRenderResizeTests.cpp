@@ -19,7 +19,7 @@ namespace
 		HiddenRenderWindow()
 		{
 			WNDCLASSW windowClass{};
-			windowClass.lpfnWndProc = DefWindowProcW;
+			windowClass.lpfnWndProc = WindowProcedure;
 			windowClass.hInstance = GetModuleHandleW(nullptr);
 			windowClass.lpszClassName = ClassName;
 			Tests::Check(RegisterClassW(&windowClass) != 0, "Register hidden render test window class");
@@ -48,6 +48,18 @@ namespace
 		}
 		HWND handle{ nullptr };
 	  private:
+		// DefWindowProc clamps window sizes to the desktop (1024x768 on CI runners),
+		// which would silently shrink the larger client extents this test requests.
+		static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+		{
+			if (message == WM_GETMINMAXINFO)
+			{
+				auto* limits = reinterpret_cast<MINMAXINFO*>(lParam);
+				limits->ptMaxTrackSize = { 8192, 8192 };
+				return 0;
+			}
+			return DefWindowProcW(window, message, wParam, lParam);
+		}
 		static constexpr const wchar_t* ClassName = L"BaseballSimulatorVR.DesktopResizeTests";
 	};
 
