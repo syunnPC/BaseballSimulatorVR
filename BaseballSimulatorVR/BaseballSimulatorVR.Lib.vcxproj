@@ -121,7 +121,8 @@
     <ClInclude Include="Simulation\PitchSimulationService.hpp" />
     <ClInclude Include="UI\DesktopHudViewModel.hpp" />
     <ClInclude Include="XR\IXrSystem.hpp" />
-    <ClInclude Include="XR\NullXrSystem.hpp" />
+    <ClInclude Include="XR\OpenXrSystem.hpp" />
+    <ClInclude Include="XR\OpenXrSystemDetail.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Common\AppLog.cpp" />
@@ -140,7 +141,11 @@
     <ClCompile Include="Simulation\PitchFlightAnalysis.cpp" />
     <ClCompile Include="Simulation\PitchSimulationService.cpp" />
     <ClCompile Include="UI\DesktopHudViewModel.cpp" />
-    <ClCompile Include="XR\NullXrSystem.cpp" />
+    <ClCompile Include="XR\OpenXrSystem.cpp" />
+    <ClCompile Include="XR\OpenXrSystemInput.cpp" />
+    <ClCompile Include="XR\OpenXrSystemRendering.cpp" />
+    <ClCompile Include="XR\OpenXrSystemSwapchains.cpp" />
+    <ClCompile Include="XR\OpenXrSystemUi.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

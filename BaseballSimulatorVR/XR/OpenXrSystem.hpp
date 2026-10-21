@@ -28,7 +28,7 @@
 
 namespace BaseballSimulatorVR::Xr
 {
-	class NullXrSystem final : public IXrSystem
+	class OpenXrSystem final : public IXrSystem
 	{
 	  public:
 		[[nodiscard]] bool Initialize(HWND windowHandle) override;
@@ -112,7 +112,7 @@ namespace BaseballSimulatorVR::Xr
 		void TryRecover();
 		void RecenterToBattingPosition();
 		void AppendTrajectoryPoint(const Physics::BallState& ballState);
-		[[nodiscard]] bool ClearSwapchainImage(
+		[[nodiscard]] bool RenderSwapchainImage(
 		    SwapchainContext& swapchainContext,
 		    uint32_t imageIndex,
 		    const float* clearColor,

@@ -227,7 +227,10 @@
     <ClInclude Include="XR\IXrSystem.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
-    <ClInclude Include="XR\NullXrSystem.hpp">
+    <ClInclude Include="XR\OpenXrSystem.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="XR\OpenXrSystemDetail.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
   </ItemGroup>
@@ -280,7 +283,19 @@
     <ClCompile Include="UI\DesktopHudViewModel.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
-    <ClCompile Include="XR\NullXrSystem.cpp">
+    <ClCompile Include="XR\OpenXrSystem.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="XR\OpenXrSystemInput.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="XR\OpenXrSystemRendering.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="XR\OpenXrSystemSwapchains.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="XR\OpenXrSystemUi.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
   </ItemGroup>

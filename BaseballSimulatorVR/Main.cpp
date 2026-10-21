@@ -6,7 +6,7 @@
 #include "Core/Application.hpp"
 #include "Data/PresetRepository.hpp"
 #include "Render/Dx12RenderBackend.hpp"
-#include "XR/NullXrSystem.hpp"
+#include "XR/OpenXrSystem.hpp"
 
 #include <exception>
 #include <memory>
@@ -44,7 +44,7 @@ int WINAPI wWinMain(HINSTANCE instanceHandle, [[maybe_unused]] HINSTANCE previou
 	try
 	{
 		BaseballSimulatorVR::Core::Application application(
-		    std::make_unique<BaseballSimulatorVR::Xr::NullXrSystem>(),
+		    std::make_unique<BaseballSimulatorVR::Xr::OpenXrSystem>(),
 		    std::make_unique<BaseballSimulatorVR::Render::Dx12RenderBackend>(),
 		    BaseballSimulatorVR::Data::PresetRepository{});
 
