@@ -77,6 +77,13 @@ namespace BaseballSimulatorVR::Xr
 			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneSrvHeap{};
 			std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> depthBuffers{};
 			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap{};
+			// App-owned multisampled targets, resolved into the scene target each
+			// frame when the runtime asks for single-sample swapchains. One pair per
+			// view suffices: the queue orders each frame's draw and resolve.
+			Microsoft::WRL::ComPtr<ID3D12Resource> msaaColorTarget{};
+			Microsoft::WRL::ComPtr<ID3D12Resource> msaaDepthTarget{};
+			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> msaaRtvHeap{};
+			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> msaaDsvHeap{};
 		};
 
 		void TryInitializeOpenXrInstance();
@@ -158,6 +165,7 @@ namespace BaseballSimulatorVR::Xr
 		XrEnvironmentBlendMode m_environmentBlendMode{ XR_ENVIRONMENT_BLEND_MODE_OPAQUE };
 		DXGI_FORMAT m_colorSwapchainFormat{ DXGI_FORMAT_R8G8B8A8_UNORM };
 		UINT m_projectionSampleCount{ 1U };
+		UINT m_renderSampleCount{ 1U };
 		XrActionSet m_inputActionSet{ XR_NULL_HANDLE };
 		XrAction m_aimPoseAction{ XR_NULL_HANDLE };
 		XrAction m_gripPoseAction{ XR_NULL_HANDLE };

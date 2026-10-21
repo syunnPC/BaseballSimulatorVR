@@ -77,6 +77,7 @@ namespace BaseballSimulatorVR::Xr
 			DXGI_FORMAT_B8G8R8A8_UNORM
 		};
 		constexpr DXGI_FORMAT DepthBufferFormat = DXGI_FORMAT_D32_FLOAT;
+		constexpr UINT RequestedRenderSampleCount = 4U;
 		constexpr UINT MaxDebugVertices = 262144;
 #if defined(BASEBALLSIMVR_DISABLE_WORLD_DRAW)
 		constexpr bool EnableDebugDraw = false;
@@ -2955,6 +2956,7 @@ namespace BaseballSimulatorVR::Xr
 		m_rtvDescriptorSize = m_d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 		m_srvDescriptorSize = m_d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		m_projectionSampleCount = 1U;
+		m_renderSampleCount = 1U;
 		if (!m_viewConfigurationViews.empty())
 		{
 			m_projectionSampleCount = (std::max)(1U,
@@ -2965,6 +2967,25 @@ namespace BaseballSimulatorVR::Xr
 				                                                   viewConfiguration.recommendedSwapchainSampleCount);
 				m_projectionSampleCount =
 				    (std::min)(m_projectionSampleCount, recommendedSampleCount);
+			}
+		}
+		// Runtimes almost always recommend single-sample swapchains, which left
+		// only FXAA. Render 4x MSAA into app-owned targets and resolve instead.
+		m_renderSampleCount = m_projectionSampleCount;
+		if (m_projectionSampleCount == 1U)
+		{
+			D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS colorLevels{};
+			colorLevels.Format = ResolveRtvFormat(m_colorSwapchainFormat);
+			colorLevels.SampleCount = RequestedRenderSampleCount;
+			D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS depthLevels{};
+			depthLevels.Format = DepthBufferFormat;
+			depthLevels.SampleCount = RequestedRenderSampleCount;
+			if (SUCCEEDED(m_d3d12Device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+			        &colorLevels, sizeof(colorLevels))) && (colorLevels.NumQualityLevels > 0U) &&
+			    SUCCEEDED(m_d3d12Device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+			        &depthLevels, sizeof(depthLevels))) && (depthLevels.NumQualityLevels > 0U))
+			{
+				m_renderSampleCount = RequestedRenderSampleCount;
 			}
 		}
 
@@ -3292,6 +3313,61 @@ namespace BaseballSimulatorVR::Xr
 				dsvHandle.ptr += static_cast<SIZE_T>(m_dsvDescriptorSize);
 			}
 
+			if (m_renderSampleCount > m_projectionSampleCount)
+			{
+				D3D12_HEAP_PROPERTIES msaaHeapProperties{};
+				msaaHeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+				D3D12_RESOURCE_DESC msaaDescription{};
+				msaaDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+				msaaDescription.Width = static_cast<UINT64>(swapchainContext.width);
+				msaaDescription.Height = static_cast<UINT>(swapchainContext.height);
+				msaaDescription.DepthOrArraySize = 1;
+				msaaDescription.MipLevels = 1;
+				msaaDescription.Format = ResolveRtvFormat(m_colorSwapchainFormat);
+				msaaDescription.SampleDesc.Count = m_renderSampleCount;
+				msaaDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+				D3D12_CLEAR_VALUE msaaColorClear{};
+				msaaColorClear.Format = msaaDescription.Format;
+				std::copy(LeftEyeClearColor.begin(), LeftEyeClearColor.end(), msaaColorClear.Color);
+				D3D12_DESCRIPTOR_HEAP_DESC msaaRtvHeapDescription{};
+				msaaRtvHeapDescription.NumDescriptors = 1;
+				msaaRtvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+				D3D12_DESCRIPTOR_HEAP_DESC msaaDsvHeapDescription{};
+				msaaDsvHeapDescription.NumDescriptors = 1;
+				msaaDsvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+				D3D12_RESOURCE_DESC msaaDepthDescription = msaaDescription;
+				msaaDepthDescription.Format = DepthBufferFormat;
+				msaaDepthDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+				D3D12_CLEAR_VALUE msaaDepthClear{};
+				msaaDepthClear.Format = DepthBufferFormat;
+				msaaDepthClear.DepthStencil.Depth = 1.0F;
+				const bool created =
+				    SUCCEEDED(m_d3d12Device->CreateCommittedResource(&msaaHeapProperties, D3D12_HEAP_FLAG_NONE,
+				        &msaaDescription, D3D12_RESOURCE_STATE_RENDER_TARGET, &msaaColorClear,
+				        IID_PPV_ARGS(&swapchainContext.msaaColorTarget))) &&
+				    SUCCEEDED(m_d3d12Device->CreateCommittedResource(&msaaHeapProperties, D3D12_HEAP_FLAG_NONE,
+				        &msaaDepthDescription, D3D12_RESOURCE_STATE_DEPTH_WRITE, &msaaDepthClear,
+				        IID_PPV_ARGS(&swapchainContext.msaaDepthTarget))) &&
+				    SUCCEEDED(m_d3d12Device->CreateDescriptorHeap(&msaaRtvHeapDescription,
+				        IID_PPV_ARGS(&swapchainContext.msaaRtvHeap))) &&
+				    SUCCEEDED(m_d3d12Device->CreateDescriptorHeap(&msaaDsvHeapDescription,
+				        IID_PPV_ARGS(&swapchainContext.msaaDsvHeap)));
+				if (!created)
+				{
+					return cleanupCurrentSwapchainAndFail(L"Session(unavailable): MSAA render target creation failed");
+				}
+				D3D12_RENDER_TARGET_VIEW_DESC msaaRtvDescription{};
+				msaaRtvDescription.Format = msaaDescription.Format;
+				msaaRtvDescription.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+				m_d3d12Device->CreateRenderTargetView(swapchainContext.msaaColorTarget.Get(), &msaaRtvDescription,
+				    swapchainContext.msaaRtvHeap->GetCPUDescriptorHandleForHeapStart());
+				D3D12_DEPTH_STENCIL_VIEW_DESC msaaDsvDescription{};
+				msaaDsvDescription.Format = DepthBufferFormat;
+				msaaDsvDescription.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+				m_d3d12Device->CreateDepthStencilView(swapchainContext.msaaDepthTarget.Get(), &msaaDsvDescription,
+				    swapchainContext.msaaDsvHeap->GetCPUDescriptorHandleForHeapStart());
+			}
+
 			m_projectionSwapchains.push_back(std::move(swapchainContext));
 		}
 
@@ -3306,7 +3382,7 @@ namespace BaseballSimulatorVR::Xr
 			{
 				const HRESULT result = frame.Initialize(m_d3d12Device.Get(),
 				    ResolveRtvFormat(m_colorSwapchainFormat), DepthBufferFormat,
-				    m_projectionSampleCount, MaxDebugVertices);
+				    m_renderSampleCount, MaxDebugVertices);
 				if (FAILED(result))
 				{
 					m_sessionName = L"Session(unavailable): " + BuildD3d12ErrorMessage(L"XR per-view resources", result);
@@ -3371,7 +3447,7 @@ namespace BaseballSimulatorVR::Xr
 		        Common::DebugOverlay::PipelineBlendMode::Opaque,
 		        Common::DebugOverlay::PipelineDepthWriteMode::Enabled,
 		        false,
-		        (std::max)(1U, m_projectionSampleCount)))
+		        (std::max)(1U, m_renderSampleCount)))
 		{
 			m_lastProjectionLayerStatus = L"pipeline-init-failed";
 			m_sessionName = L"Session(unavailable): " +
@@ -5644,6 +5720,7 @@ namespace BaseballSimulatorVR::Xr
 		m_dsvDescriptorSize = 0;
 		m_srvDescriptorSize = 0;
 		m_projectionSampleCount = 1U;
+		m_renderSampleCount = 1U;
 		m_isFxaaAvailable = false;
 		m_xrPostProcessStatus = L"none";
 
@@ -6141,11 +6218,17 @@ namespace BaseballSimulatorVR::Xr
 		    hasSceneResources &&
 		    m_isFxaaAvailable &&
 		    ((std::max)(1U, m_projectionSampleCount) > 1U);
+		const bool useAppMsaaPath =
+		    hasSceneResources &&
+		    ((std::max)(1U, m_projectionSampleCount) == 1U) &&
+		    (swapchainContext.msaaColorTarget != nullptr) &&
+		    (swapchainContext.msaaDepthTarget != nullptr);
 		const bool useSceneDrawPath =
 		    hasSceneResources &&
-		    ((std::max)(1U, m_projectionSampleCount) == 1U);
+		    ((std::max)(1U, m_projectionSampleCount) == 1U) &&
+		    !useAppMsaaPath;
 		const bool canUseScenePostProcess =
-		    useMsaaResolvePath || useSceneDrawPath;
+		    useMsaaResolvePath || useAppMsaaPath || useSceneDrawPath;
 		m_xrPostProcessStatus = canUseScenePostProcess
 		                            ? (m_isFxaaAvailable ? L"fxaa" : L"copy")
 		                            : L"direct";
@@ -6184,7 +6267,7 @@ namespace BaseballSimulatorVR::Xr
 			    swapchainContext.sceneColorTargets[imageIndex].Get();
 		}
 
-		if (useMsaaResolvePath || useSceneDrawPath)
+		if (useMsaaResolvePath || useAppMsaaPath || useSceneDrawPath)
 		{
 			D3D12_RESOURCE_BARRIER& sceneToDrawBarrier =
 			    toDrawBarriers[toDrawBarrierCount++];
@@ -6193,7 +6276,7 @@ namespace BaseballSimulatorVR::Xr
 			sceneToDrawBarrier.Transition.pResource = sceneColorTexture;
 			sceneToDrawBarrier.Transition.StateBefore =
 			    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-			sceneToDrawBarrier.Transition.StateAfter = useMsaaResolvePath
+			sceneToDrawBarrier.Transition.StateAfter = (useMsaaResolvePath || useAppMsaaPath)
 			                                               ? D3D12_RESOURCE_STATE_RESOLVE_DEST
 			                                               : D3D12_RESOURCE_STATE_RENDER_TARGET;
 			sceneToDrawBarrier.Transition.Subresource =
@@ -6213,10 +6296,15 @@ namespace BaseballSimulatorVR::Xr
 			sceneRtvHandle.ptr += static_cast<SIZE_T>(imageIndex) *
 			                      static_cast<SIZE_T>(m_rtvDescriptorSize);
 		}
-		const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
-		    useSceneDrawPath ? sceneRtvHandle : swapchainRtvHandle;
+		const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = useAppMsaaPath
+		    ? swapchainContext.msaaRtvHeap->GetCPUDescriptorHandleForHeapStart()
+		    : (useSceneDrawPath ? sceneRtvHandle : swapchainRtvHandle);
 		D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = swapchainContext.dsvHeap->GetCPUDescriptorHandleForHeapStart();
 		dsvHandle.ptr += static_cast<SIZE_T>(imageIndex) * static_cast<SIZE_T>(m_dsvDescriptorSize);
+		if (useAppMsaaPath)
+		{
+			dsvHandle = swapchainContext.msaaDsvHeap->GetCPUDescriptorHandleForHeapStart();
+		}
 		frame.commands->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 		frame.commands->ClearDepthStencilView(
 		    dsvHandle,
@@ -7851,6 +7939,24 @@ namespace BaseballSimulatorVR::Xr
 		}
 
 #endif
+		if (useAppMsaaPath)
+		{
+			D3D12_RESOURCE_BARRIER msaaBarrier{};
+			msaaBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			msaaBarrier.Transition.pResource = swapchainContext.msaaColorTarget.Get();
+			msaaBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			msaaBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			msaaBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+			frame.commands->ResourceBarrier(1, &msaaBarrier);
+			frame.commands->ResolveSubresource(
+			    sceneColorTexture,
+			    0,
+			    swapchainContext.msaaColorTarget.Get(),
+			    0,
+			    ResolveRtvFormat(m_colorSwapchainFormat));
+			std::swap(msaaBarrier.Transition.StateBefore, msaaBarrier.Transition.StateAfter);
+			frame.commands->ResourceBarrier(1, &msaaBarrier);
+		}
 		if (useMsaaResolvePath)
 		{
 			D3D12_RESOURCE_BARRIER swapchainToResolveSourceBarrier{};
@@ -7895,14 +8001,14 @@ namespace BaseballSimulatorVR::Xr
 			    &swapchainBackToRenderBarrier);
 		}
 
-		if (useMsaaResolvePath || useSceneDrawPath)
+		if (useMsaaResolvePath || useAppMsaaPath || useSceneDrawPath)
 		{
 			D3D12_RESOURCE_BARRIER sceneToShaderBarrier{};
 			sceneToShaderBarrier.Type =
 			    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			sceneToShaderBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
 			sceneToShaderBarrier.Transition.pResource = sceneColorTexture;
-			sceneToShaderBarrier.Transition.StateBefore = useMsaaResolvePath
+			sceneToShaderBarrier.Transition.StateBefore = (useMsaaResolvePath || useAppMsaaPath)
 			                                                  ? D3D12_RESOURCE_STATE_RESOLVE_DEST
 			                                                  : D3D12_RESOURCE_STATE_RENDER_TARGET;
 			sceneToShaderBarrier.Transition.StateAfter =
@@ -7979,7 +8085,7 @@ namespace BaseballSimulatorVR::Xr
 
 		if (canUseScenePostProcess && !usedFxaaPass)
 		{
-			if (useSceneDrawPath)
+			if (useSceneDrawPath || useAppMsaaPath)
 			{
 				D3D12_RESOURCE_BARRIER toCopyBarriers[2]{};
 				D3D12_RESOURCE_BARRIER& swapchainToCopyDestBarrier =
@@ -8124,6 +8230,7 @@ namespace BaseballSimulatorVR::Xr
 		m_usesDedicatedGraphicsDevice = false;
 		m_colorSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 		m_projectionSampleCount = 1U;
+		m_renderSampleCount = 1U;
 		m_trajectoryTrails.Clear();
 		m_leftEyeViewState = Common::ViewProjectionState{};
 		m_leftHandPose = HandPoseState{};
@@ -8154,6 +8261,7 @@ namespace BaseballSimulatorVR::Xr
 		m_xrGetD3d12GraphicsRequirementsKhr = nullptr;
 		m_colorSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 		m_projectionSampleCount = 1U;
+		m_renderSampleCount = 1U;
 		m_trajectoryTrails.Clear();
 		m_leftEyeViewState = Common::ViewProjectionState{};
 		m_lastPredictedDisplayTime = 0;
@@ -8257,7 +8365,7 @@ namespace BaseballSimulatorVR::Xr
 			                 L"x" +
 			                 std::to_wstring(primarySwapchain.height) +
 			                 L", samples:" +
-			                 std::to_wstring((std::max)(1U, m_projectionSampleCount)) +
+			                 std::to_wstring((std::max)(1U, m_renderSampleCount)) +
 			                 L", fmt:" +
 			                 BuildDxgiFormatName(m_colorSwapchainFormat);
 		}
