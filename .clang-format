@@ -1,0 +1,57 @@
+# Describes the prevailing style of the C++ sources: tab indentation, Allman
+# braces, indented namespace bodies, continuation lines indented by 4 columns
+# and hand-chosen line breaks. It is not enforced in CI and the tree has not
+# been reformatted with it; format only the lines you change (for example with
+# `git clang-format`) so diffs stay reviewable.
+---
+Language: Cpp
+BasedOnStyle: Microsoft
+Standard: c++20
+
+# Indentation: tabs of width 4; continuation lines add 4 columns.
+UseTab: ForIndentation
+TabWidth: 4
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+NamespaceIndentation: All
+IndentCaseLabels: true
+AccessModifierOffset: -2
+IndentPPDirectives: None
+
+# Braces on their own lines; one-line bodies only for short in-class functions.
+BreakBeforeBraces: Allman
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLambdasOnASingleLine: All
+
+# Line breaks are chosen by hand (most lines stay under ~100 columns, 120 at
+# most), so clang-format keeps existing breaks instead of re-wrapping.
+ColumnLimit: 0
+AlignAfterOpenBracket: DontAlign
+AlignOperands: Align
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+AlwaysBreakTemplateDeclarations: Yes
+
+# Spacing.
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+Cpp11BracedListStyle: false
+SpaceBeforeParens: ControlStatements
+SpaceAfterTemplateKeyword: true
+SpaceAfterCStyleCast: false
+SpacesBeforeTrailingComments: 1
+
+# File layout. Include order is significant around <windows.h>; keep it.
+SortIncludes: Never
+IncludeBlocks: Preserve
+FixNamespaceComments: false
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+InsertNewlineAtEOF: true

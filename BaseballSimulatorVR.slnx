@@ -3,6 +3,8 @@
     <Platform Name="x64" />
   </Configurations>
   <Folder Name="/Solution Items/">
+    <File Path=".clang-format" />
+    <File Path=".editorconfig" />
     <File Path="Directory.Build.props" />
     <File Path="README.md" />
     <File Path="THIRD_PARTY_NOTICES.md" />
