@@ -22,6 +22,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace BaseballSimulatorVR::Core
@@ -864,6 +865,16 @@ namespace BaseballSimulatorVR::Core
 			return std::abs(angleRadians) <= fanShape.halfAngleRadians;
 		}
 
+		// A modal MessageBox on the frame thread stops xrWaitFrame/xrEndFrame and
+		// freezes the headset image; show runtime notices from a helper thread.
+		void ShowNonBlockingMessage(std::wstring title, std::wstring text, const UINT iconFlags)
+		{
+			std::thread([title = std::move(title), text = std::move(text), iconFlags]()
+			{
+				(void)MessageBoxW(nullptr, text.c_str(), title.c_str(), MB_OK | MB_SETFOREGROUND | iconFlags);
+			}).detach();
+		}
+
 		[[nodiscard]] bool DidBallCrossGroundFromAbove(
 		    const Physics::BallState& previousState,
 		    const Physics::BallState& currentState,
@@ -1497,7 +1508,7 @@ namespace BaseballSimulatorVR::Core
 		m_isRunning = true;
 		MSG message{};
 		auto previousTime = std::chrono::steady_clock::now();
-		std::chrono::duration<double> simulationAccumulator{ 0.0 };
+		double previousDisplayTimeSeconds = 0.0;
 		std::chrono::duration<double> titleAccumulator{ 0.0 };
 
 		while (m_isRunning)
@@ -1518,17 +1529,36 @@ namespace BaseballSimulatorVR::Core
 			{
 				break;
 			}
-
-			const auto currentTime = std::chrono::steady_clock::now();
-			auto frameDuration = currentTime - previousTime;
-			previousTime = currentTime;
-
-			if (frameDuration > MaxFrameTime)
+			if (m_xrSystem->IsExitRequested())
 			{
-				frameDuration = MaxFrameTime;
+				OutputDebugStringW(L"[OpenXR] the runtime ended the session; exiting.\n");
+				m_isRunning = false;
+				break;
 			}
 
-			const std::chrono::duration<double> frameSeconds(frameDuration);
+			// Blocks in xrWaitFrame (pacing the loop) and samples views, hand poses
+			// and panel input at the predicted display time of the frame that
+			// SubmitFrame presents below, after the simulation has caught up.
+			m_xrSystem->PollInput();
+			const Xr::FrameTiming frameTiming = m_xrSystem->GetFrameTiming();
+
+			const auto currentTime = std::chrono::steady_clock::now();
+			std::chrono::duration<double> frameSeconds = currentTime - previousTime;
+			previousTime = currentTime;
+			// Advance by the display-time step that the two bat samples span, so the
+			// swept collision compares ball and bat over the same interval.
+			if (frameTiming.isValid && (previousDisplayTimeSeconds > 0.0) &&
+			    (frameTiming.predictedDisplayTimeSeconds > previousDisplayTimeSeconds))
+			{
+				frameSeconds = std::chrono::duration<double>(
+				    frameTiming.predictedDisplayTimeSeconds - previousDisplayTimeSeconds);
+			}
+			previousDisplayTimeSeconds = frameTiming.isValid ? frameTiming.predictedDisplayTimeSeconds : 0.0;
+			if (frameSeconds > MaxFrameTime)
+			{
+				frameSeconds = MaxFrameTime;
+			}
+
 			m_lastFrameDeltaSeconds = frameSeconds.count();
 			double playbackTimeScale = m_playbackPaused
 			                               ? 0.0
@@ -1538,14 +1568,24 @@ namespace BaseballSimulatorVR::Core
 			{
 				playbackTimeScale = 1.0;
 			}
-			simulationAccumulator += frameSeconds * playbackTimeScale;
-			m_lastSimulationDeltaSeconds = (frameSeconds * playbackTimeScale).count();
+			if (!m_xrSystem->IsInputFocused())
+			{
+				// The runtime's own UI covers the app: hold the pitch instead of
+				// throwing it at a player who cannot see or swing.
+				playbackTimeScale = 0.0;
+			}
+			const std::chrono::duration<double> simulationDelta = frameSeconds * playbackTimeScale;
+			m_lastSimulationDeltaSeconds = simulationDelta.count();
 			titleAccumulator += frameSeconds;
 			m_frameStatistics.AddFrameSample(frameSeconds);
 
 			m_pendingPitchSamples.clear();
-			while (simulationAccumulator >= FixedSimulationStep)
+			// Fixed 1 ms steps plus the remainder: the ball reaches the display time
+			// exactly instead of trailing it by an accumulator residue.
+			for (double remainingSeconds = simulationDelta.count(); remainingSeconds > 1e-12;)
 			{
+				const auto step = std::chrono::duration<double>(
+				    (std::min)(remainingSeconds, FixedSimulationStep.count()));
 				const bool isSimulationTickAllowedInMode =
 				    (m_operationMode != OperationMode::TeeBatting) ||
 				    m_isTeeBallInFlight;
@@ -1553,15 +1593,13 @@ namespace BaseballSimulatorVR::Core
 				    !IsWaitingForNextDuelPitch())
 				{
 					const auto flightStep = m_operationMode == OperationMode::BattingDuel
-					    ? m_pitchDeliveryController.Advance(FixedSimulationStep)
-					    : FixedSimulationStep;
+					    ? m_pitchDeliveryController.Advance(step)
+					    : step;
 					AdvancePitchSimulation(flightStep);
 				}
-				simulationAccumulator -= FixedSimulationStep;
+				remainingSeconds -= step.count();
 			}
 
-			m_xrSystem->SetUiTelemetry(BuildXrUiTelemetry());
-			m_xrSystem->PollInput();
 			HandleXrUiCommands();
 
 			UpdateStrikeZoneCalibration();
@@ -1610,6 +1648,7 @@ namespace BaseballSimulatorVR::Core
 			m_xrSystem->SetBallState(currentBallState);
 			m_xrSystem->SetDuelZonePassMarker(markerForRendering);
 			m_xrSystem->SetBatOverlayState(m_batOverlayState);
+			m_xrSystem->SubmitFrame();
 
 			const Common::ViewProjectionState leftEyeViewState = m_xrSystem->GetLeftEyeViewState();
 			m_renderBackend->SetDesktopMirrorView(leftEyeViewState);
@@ -1635,6 +1674,12 @@ namespace BaseballSimulatorVR::Core
 			{
 				UpdateWindowTitle();
 				titleAccumulator = std::chrono::duration<double>::zero();
+			}
+			if (!frameTiming.isValid)
+			{
+				// No XR frame paces the loop (session idle or recovering): wait for
+				// window messages briefly instead of spinning a core.
+				(void)MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
 			}
 		}
 
@@ -2509,8 +2554,8 @@ namespace BaseballSimulatorVR::Core
 		const std::wstring message = result
 		    ? L"Current session exported to:\n" + filePath.wstring()
 		    : L"Failed to export current session:\n" + result.errorMessage;
-		MessageBoxW(m_windowHandle, message.c_str(), L"Session CSV export",
-		            MB_OK | (result ? MB_ICONINFORMATION : MB_ICONERROR));
+		ShowNonBlockingMessage(L"Session CSV export", message,
+		    static_cast<UINT>(result ? MB_ICONINFORMATION : MB_ICONERROR));
 	}
 
 	void Application::RefreshPitchSettingsFileList()
@@ -4120,7 +4165,9 @@ namespace BaseballSimulatorVR::Core
 		    Physics::Dot(m_batPoseState.axisDirectionWorld, *axis) > 0.5;
 		m_previousBatPoseState = sameHandAndSpace ? m_batPoseState : BatPoseState{};
 		m_batPoseState = { true, hand.position, *axis, hand.sampleTimeSeconds,
-		    hand.referenceSpaceRevision, orientation->up };
+		    hand.referenceSpaceRevision, orientation->up,
+		    hand.hasLinearVelocity, hand.linearVelocity,
+		    hand.hasAngularVelocity, hand.angularVelocity };
 		m_lastBatSampleUsedRightHand = m_batUseRightHand;
 		const double length = m_environmentSettings.batLengthMeters;
 		const auto endpoints = Physics::BatEndpointsFromGrip(hand.position, *axis, length);
@@ -4153,29 +4200,76 @@ namespace BaseballSimulatorVR::Core
 			return ConvertSimulationToCollisionWorldPosition(position,
 			    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters);
 		};
-		const auto segment = [&](const BatPoseState& pose)
+		const auto segmentAt = [&](const Physics::Vector3& grip, const Physics::Vector3& axis)
 		{
-			const auto endpoints = Physics::BatEndpointsFromGrip(pose.originWorld,
-			    pose.axisDirectionWorld, m_environmentSettings.batLengthMeters);
+			const auto endpoints = Physics::BatEndpointsFromGrip(grip, axis, m_environmentSettings.batLengthMeters);
 			return Physics::BatSegment{endpoints.knob, endpoints.tip};
 		};
-		const auto contact = Physics::FindSweptBatProfileContact(worldPosition(previousBall.position),
-		    worldPosition(ballState->position), segment(m_previousBatPoseState), segment(m_batPoseState),
-		    m_environmentSettings.batRadiusMeters, ballState->properties.radiusMeters, sampleSeconds);
-		if (!contact) return false;
+		const Common::BatOrientation previousOrientation{
+			m_previousBatPoseState.axisDirectionWorld, m_previousBatPoseState.upDirectionWorld };
+		const Common::BatOrientation currentOrientation{
+			m_batPoseState.axisDirectionWorld, m_batPoseState.upDirectionWorld };
 		const auto frameAngularVelocity = Common::ComputeBatAngularVelocity(
-		    { m_previousBatPoseState.axisDirectionWorld, m_previousBatPoseState.upDirectionWorld },
-		    { m_batPoseState.axisDirectionWorld, m_batPoseState.upDirectionWorld }, sampleSeconds);
+		    previousOrientation, currentOrientation, sampleSeconds);
 		if (!frameAngularVelocity) return false;
-		const auto surfaceAngularVelocity = contact->batAngularVelocity + contact->batAxis *
-		    Physics::Dot(*frameAngularVelocity, contact->batAxis);
+		// The swept test interpolates bat endpoints linearly. A 40-50 rad/s swing
+		// turns ~30 degrees per 90 Hz frame, where that chord shortens the bat and
+		// skews its velocity, so split the frame into rigid-rotation sub-steps.
+		constexpr double MaximumSubStepRadians = 8.0 * std::numbers::pi / 180.0;
+		const int subSteps = std::clamp(static_cast<int>(std::ceil(
+		    Physics::Length(*frameAngularVelocity) * sampleSeconds / MaximumSubStepRadians)), 1, 8);
+		const Physics::Vector3 previousBallWorld = worldPosition(previousBall.position);
+		const Physics::Vector3 currentBallWorld = worldPosition(ballState->position);
+		std::optional<Physics::SweptBatContact> contact{};
+		for (int subStep = 0; subStep < subSteps && !contact; ++subStep)
+		{
+			const double start = static_cast<double>(subStep) / subSteps;
+			const double end = static_cast<double>(subStep + 1) / subSteps;
+			const auto poseAt = [&](const double fraction)
+			{
+				const auto orientation = fraction >= 1.0 ? currentOrientation
+				    : Common::RotateBatOrientation(previousOrientation, *frameAngularVelocity, fraction * sampleSeconds);
+				return segmentAt(m_previousBatPoseState.originWorld +
+				    (m_batPoseState.originWorld - m_previousBatPoseState.originWorld) * fraction, orientation.axis);
+			};
+			contact = Physics::FindSweptBatProfileContact(
+			    previousBallWorld + (currentBallWorld - previousBallWorld) * start,
+			    previousBallWorld + (currentBallWorld - previousBallWorld) * end,
+			    poseAt(start), poseAt(end),
+			    m_environmentSettings.batRadiusMeters, ballState->properties.radiusMeters,
+			    sampleSeconds / subSteps);
+			if (contact) contact->frameFraction = (subStep + contact->frameFraction) / subSteps;
+		}
+		if (!contact) return false;
+		// Rigid-body surface velocity v_grip + w x r at the contact instant. Prefer
+		// the runtime's IMU-based grip velocities, which are free of the finite
+		// difference error between two predicted poses; reject implausible ones.
+		const double fraction = contact->frameFraction;
+		const Physics::Vector3 differencedGripVelocity =
+		    (m_batPoseState.originWorld - m_previousBatPoseState.originWorld) / sampleSeconds;
+		Physics::Vector3 gripVelocity = differencedGripVelocity;
+		if (m_previousBatPoseState.hasLinearVelocity && m_batPoseState.hasLinearVelocity)
+		{
+			const Physics::Vector3 reported = m_previousBatPoseState.linearVelocityWorld +
+			    (m_batPoseState.linearVelocityWorld - m_previousBatPoseState.linearVelocityWorld) * fraction;
+			if (Physics::Length(reported - differencedGripVelocity) < 10.0) gripVelocity = reported;
+		}
+		Physics::Vector3 angularVelocity = *frameAngularVelocity;
+		if (m_previousBatPoseState.hasAngularVelocity && m_batPoseState.hasAngularVelocity)
+		{
+			const Physics::Vector3 reported = m_previousBatPoseState.angularVelocityWorld +
+			    (m_batPoseState.angularVelocityWorld - m_previousBatPoseState.angularVelocityWorld) * fraction;
+			if (Physics::Length(reported - *frameAngularVelocity) < 25.0) angularVelocity = reported;
+		}
+		const Physics::Vector3 gripAtContact = m_previousBatPoseState.originWorld +
+		    (m_batPoseState.originWorld - m_previousBatPoseState.originWorld) * fraction;
 		Physics::BatBallCollisionInput input;
 		input.ballProperties = ballState->properties;
 		input.ballVelocityWorld = ballState->velocity;
 		input.ballAngularVelocityWorld = ballState->spinAxis *
 		    (ballState->spinRpm * 2.0 * std::numbers::pi / 60.0);
-		input.batContactVelocityWorld = contact->batContactVelocity +
-		    Physics::Cross(surfaceAngularVelocity, contact->batSurfaceOffset);
+		input.batContactVelocityWorld = gripVelocity +
+		    Physics::Cross(angularVelocity, contact->batSurfacePosition - gripAtContact);
 		input.collisionNormal = contact->normal;
 		input.batAxisDirectionWorld = contact->batAxis;
 		input.batSurfaceOffsetWorld = contact->batSurfaceOffset;
@@ -4232,6 +4326,15 @@ namespace BaseballSimulatorVR::Core
 			m_duelPitchPredictedZonePassPoint.reset();
 			m_hasCurrentDuelPitchPassedZone = true;
 		}
+
+		// Contact feedback: a clean barrel hit is a short light tap, a miss-hit on
+		// the handle or end stings longer and harder; both scale with impact.
+		const double contactQuality = Physics::BatContactRestitutionScale(m_batMaterial,
+		    activeMetrics.batContactFraction) / Physics::GetBatMaterialProfile(m_batMaterial).restitutionMultiplier;
+		const double sting = std::clamp((1.0 - contactQuality) / (1.0 - Physics::MinimumBatContactResponse), 0.0, 1.0);
+		const double impact = std::clamp(-Physics::Dot(input.ballVelocityWorld - input.batContactVelocityWorld,
+		    input.collisionNormal) / 40.0, 0.35, 1.0);
+		m_xrSystem->ApplyHapticPulse(m_batUseRightHand, (0.35 + 0.65 * sting) * impact, 0.015 + 0.06 * sting);
 
 		std::wostringstream collisionNote{};
 		collisionNote << std::fixed << std::setprecision(2);
@@ -5308,8 +5411,8 @@ namespace BaseballSimulatorVR::Core
 				switch (commandId)
 				{
 					case IDM_ABOUT:
-						MessageBoxW(
-						    windowHandle,
+						ShowNonBlockingMessage(
+						    L"About BaseballSimulatorVR",
 						    L"BaseballSimulatorVR phase6 build.\n\n"
 						    L"Controls:\n"
 						    L"  F1/F2/F3/F4 : Fastball / Slider / Curveball / Changeup\n"
@@ -5369,8 +5472,7 @@ namespace BaseballSimulatorVR::Core
 						    L"  Main panel : mode / panel open (open-or-rescue)\n"
 						    L"  Pitch panel: 25-zone multi-select / <- pitch -> / <- settings file -> / play-pause / playback slider\n"
 						    L"  Metrics UI : trajectory / zone / mound / preview / bat hand / bat material",
-						    L"About BaseballSimulatorVR",
-						    MB_OK | MB_ICONINFORMATION);
+						    MB_ICONINFORMATION);
 						return 0;
 					case IDM_EXIT:
 						DestroyWindow(windowHandle);

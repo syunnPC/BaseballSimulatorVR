@@ -120,6 +120,20 @@ struct HandPoseState final {
   Physics::Vector3 position{};
   Physics::Vector3 forward{};
   Physics::Vector3 up{0.0, 1.0, 0.0};
+  // Runtime-reported grip velocities in the reference space, when available.
+  bool hasLinearVelocity{false};
+  Physics::Vector3 linearVelocity{};
+  bool hasAngularVelocity{false};
+  Physics::Vector3 angularVelocity{};
+  // False while the runtime only infers the pose (e.g. a fast swing out of
+  // tracking-camera view); the pose is still usable.
+  bool isTracked{false};
+};
+
+struct FrameTiming final {
+  bool isValid{false};
+  double predictedDisplayTimeSeconds{0.0};
+  double predictedDisplayPeriodSeconds{0.0};
 };
 
 class IXrSystem {
@@ -140,7 +154,19 @@ public:
       const std::optional<Common::BatOverlayState> &batOverlayState) = 0;
   virtual void SetFieldPresentationState(const Common::FieldPresentationState& state) = 0;
   virtual void SetUiTelemetry(const UiTelemetry &telemetry) = 0;
+  // Processes runtime events, waits for and begins the next frame, and samples
+  // views, hand poses and UI input for that frame's predicted display time.
   virtual void PollInput() = 0;
+  // Renders the state set since PollInput and ends the frame it began, so the
+  // HMD shows the simulation advanced to the same display time as the poses.
+  virtual void SubmitFrame() = 0;
+  [[nodiscard]] virtual FrameTiming GetFrameTiming() const noexcept = 0;
+  // False while the runtime shows its own UI over the running app.
+  [[nodiscard]] virtual bool IsInputFocused() const noexcept = 0;
+  // The runtime asked the app to exit, or the XR instance cannot be recovered.
+  [[nodiscard]] virtual bool IsExitRequested() const noexcept = 0;
+  virtual void ApplyHapticPulse(bool rightHand, double amplitude,
+                                double durationSeconds) = 0;
   [[nodiscard]] virtual std::vector<UiCommand> ConsumePendingUiCommands() = 0;
   virtual void Shutdown() = 0;
   [[nodiscard]] virtual std::wstring_view GetRuntimeName() const noexcept = 0;

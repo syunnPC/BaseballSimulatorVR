@@ -51,6 +51,10 @@ namespace BaseballSimulatorVR::Physics
 		return std::nullopt;
 	}
 
+	// Fraction of the sweet-spot restitution that remains far from it. Together
+	// with the 2 in falloff this keeps the fastest exit inside the marked zone.
+	inline constexpr double MinimumBatContactResponse = 0.55;
+
 	// contactRatio is measured from the full handle origin (0) to the tip (1).
 	[[nodiscard]] inline double BatContactRestitutionScale(
 	    BatMaterial material, double contactRatio) noexcept
@@ -58,9 +62,8 @@ namespace BaseballSimulatorVR::Physics
 		const auto& profile = GetBatMaterialProfile(material);
 		const double centerRatio = 0.5 * (profile.sweetSpotStartRatio + profile.sweetSpotEndRatio);
 		constexpr double falloffRatio = 2.0 / 34.0;
-		constexpr double minimumResponse = 0.55;
 		const double normalizedMiss = (contactRatio - centerRatio) / falloffRatio;
-		const double contactQuality = minimumResponse + (1.0 - minimumResponse) *
+		const double contactQuality = MinimumBatContactResponse + (1.0 - MinimumBatContactResponse) *
 		    std::exp(-0.5 * normalizedMiss * normalizedMiss);
 		return profile.restitutionMultiplier * contactQuality;
 	}

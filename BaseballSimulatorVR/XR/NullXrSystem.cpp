@@ -279,6 +279,8 @@ namespace BaseballSimulatorVR::Xr
 					return L"local";
 				case XR_REFERENCE_SPACE_TYPE_STAGE:
 					return L"stage";
+				case XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR:
+					return L"local-floor";
 				case XR_REFERENCE_SPACE_TYPE_VIEW:
 					return L"view";
 				default:
@@ -387,33 +389,6 @@ namespace BaseballSimulatorVR::Xr
 			};
 		}
 
-		[[nodiscard]] XrQuaternionf MultiplyQuaternions(
-		    const XrQuaternionf& left,
-		    const XrQuaternionf& right)
-		{
-			return NormalizeQuaternion(XrQuaternionf{
-			    static_cast<float>(
-			        (static_cast<double>(left.w) * static_cast<double>(right.x)) +
-			        (static_cast<double>(left.x) * static_cast<double>(right.w)) +
-			        (static_cast<double>(left.y) * static_cast<double>(right.z)) -
-			        (static_cast<double>(left.z) * static_cast<double>(right.y))),
-			    static_cast<float>(
-			        (static_cast<double>(left.w) * static_cast<double>(right.y)) -
-			        (static_cast<double>(left.x) * static_cast<double>(right.z)) +
-			        (static_cast<double>(left.y) * static_cast<double>(right.w)) +
-			        (static_cast<double>(left.z) * static_cast<double>(right.x))),
-			    static_cast<float>(
-			        (static_cast<double>(left.w) * static_cast<double>(right.z)) +
-			        (static_cast<double>(left.x) * static_cast<double>(right.y)) -
-			        (static_cast<double>(left.y) * static_cast<double>(right.x)) +
-			        (static_cast<double>(left.z) * static_cast<double>(right.w))),
-			    static_cast<float>(
-			        (static_cast<double>(left.w) * static_cast<double>(right.w)) -
-			        (static_cast<double>(left.x) * static_cast<double>(right.x)) -
-			        (static_cast<double>(left.y) * static_cast<double>(right.y)) -
-			        (static_cast<double>(left.z) * static_cast<double>(right.z))) });
-		}
-
 		[[nodiscard]] XrQuaternionf BuildAxisAngleQuaternion(
 		    const Physics::Vector3& axis,
 		    const double angleRadians)
@@ -441,211 +416,6 @@ namespace BaseballSimulatorVR::Xr
 			return BuildAxisAngleQuaternion(
 			    Physics::Vector3{ 0.0, 1.0, 0.0 },
 			    yawRadians);
-		}
-
-		[[nodiscard]] XrQuaternionf BuildPitchOffsetOrientation(
-		    const XrQuaternionf& referenceOrientation,
-		    const double pitchRadians)
-		{
-			if (std::abs(pitchRadians) <= 1e-9)
-			{
-				return XrQuaternionf{ 0.0F, 0.0F, 0.0F, 1.0F };
-			}
-
-			const Physics::Vector3 pitchAxis = RotateVectorByQuaternion(
-			    Physics::Vector3{ 1.0, 0.0, 0.0 },
-			    NormalizeQuaternion(referenceOrientation));
-			return BuildAxisAngleQuaternion(pitchAxis, pitchRadians);
-		}
-
-		[[nodiscard]] XrQuaternionf BuildViewOrientationWithLookOffsets(
-		    const XrQuaternionf& sourceOrientation,
-		    const double yawRadians,
-		    const double pitchRadians)
-		{
-			const XrQuaternionf yawOffsetOrientation =
-			    BuildYawOffsetOrientation(yawRadians);
-			const XrQuaternionf yawAdjustedOrientation = MultiplyQuaternions(
-			    yawOffsetOrientation,
-			    sourceOrientation);
-			const XrQuaternionf pitchOffsetOrientation =
-			    BuildPitchOffsetOrientation(
-			        yawAdjustedOrientation,
-			        pitchRadians);
-			return MultiplyQuaternions(
-			    pitchOffsetOrientation,
-			    yawAdjustedOrientation);
-		}
-
-		[[nodiscard]] Physics::Vector3 RotatePointAroundPivot(
-		    const Physics::Vector3& point,
-		    const Physics::Vector3& pivot,
-		    const XrQuaternionf& rotation)
-		{
-			return pivot + RotateVectorByQuaternion(point - pivot, rotation);
-		}
-
-		[[nodiscard]] Physics::Vector3 ApplyYawAndPositionOffset(
-		    const Physics::Vector3& sourcePosition,
-		    const double yawRadians,
-		    const Physics::Vector3& positionOffset)
-		{
-			const double c = std::cos(yawRadians);
-			const double s = std::sin(yawRadians);
-			const double rotatedX = (sourcePosition.x * c) - (sourcePosition.z * s);
-			const double rotatedZ = (sourcePosition.x * s) + (sourcePosition.z * c);
-			return Physics::Vector3{
-				rotatedX + positionOffset.x,
-				sourcePosition.y + positionOffset.y,
-				rotatedZ + positionOffset.z
-			};
-		}
-
-		[[nodiscard]] bool TryBuildLookPitchPivot(
-		    const std::span<const XrView> sourceViews,
-		    const double yawRadians,
-		    const Physics::Vector3& positionOffset,
-		    const Common::ViewProjectionState* const fallbackViewState,
-		    Physics::Vector3* const outPivot)
-		{
-			if (outPivot == nullptr)
-			{
-				return false;
-			}
-
-			if (!sourceViews.empty())
-			{
-				const std::size_t sampleCount = (std::min)(sourceViews.size(),
-				                                           static_cast<std::size_t>(2));
-				double sumX = 0.0;
-				double sumY = 0.0;
-				double sumZ = 0.0;
-				for (std::size_t viewIndex = 0; viewIndex < sampleCount; ++viewIndex)
-				{
-					sumX += static_cast<double>(sourceViews[viewIndex].pose.position.x);
-					sumY += static_cast<double>(sourceViews[viewIndex].pose.position.y);
-					sumZ += static_cast<double>(sourceViews[viewIndex].pose.position.z);
-				}
-
-				const double inverseCount =
-				    1.0 / static_cast<double>(sampleCount);
-				*outPivot = ApplyYawAndPositionOffset(
-				    Physics::Vector3{
-				        sumX * inverseCount,
-				        sumY * inverseCount,
-				        sumZ * inverseCount },
-				    yawRadians,
-				    positionOffset);
-				return true;
-			}
-
-			if ((fallbackViewState != nullptr) && fallbackViewState->isValid)
-			{
-				*outPivot = fallbackViewState->position;
-				return true;
-			}
-
-			return false;
-		}
-
-		[[nodiscard]] bool TryBuildLookPitchOrientation(
-		    const std::span<const XrView> sourceViews,
-		    const double yawRadians,
-		    const Common::ViewProjectionState* const fallbackViewState,
-		    const double pitchRadians,
-		    XrQuaternionf* const outOrientation)
-		{
-			if (outOrientation == nullptr)
-			{
-				return false;
-			}
-
-			*outOrientation = XrQuaternionf{ 0.0F, 0.0F, 0.0F, 1.0F };
-			if (std::abs(pitchRadians) <= 1e-9)
-			{
-				return false;
-			}
-
-			XrQuaternionf referenceOrientation{ 0.0F, 0.0F, 0.0F, 1.0F };
-			bool hasReferenceOrientation = false;
-			if (!sourceViews.empty())
-			{
-				referenceOrientation = NormalizeQuaternion(
-				    sourceViews.front().pose.orientation);
-				hasReferenceOrientation = true;
-			}
-			else if ((fallbackViewState != nullptr) && fallbackViewState->isValid)
-			{
-				referenceOrientation = NormalizeQuaternion(XrQuaternionf{
-				    static_cast<float>(fallbackViewState->orientation.x),
-				    static_cast<float>(fallbackViewState->orientation.y),
-				    static_cast<float>(fallbackViewState->orientation.z),
-				    static_cast<float>(fallbackViewState->orientationW) });
-				hasReferenceOrientation = true;
-			}
-
-			if (!hasReferenceOrientation)
-			{
-				return false;
-			}
-
-			const XrQuaternionf yawAdjustedOrientation = MultiplyQuaternions(
-			    BuildYawOffsetOrientation(yawRadians),
-			    referenceOrientation);
-			*outOrientation = BuildPitchOffsetOrientation(
-			    yawAdjustedOrientation,
-			    pitchRadians);
-			return true;
-		}
-
-		[[nodiscard]] XrPosef ApplyLocomotionToPose(
-		    const XrPosef& sourcePose,
-		    const double yawRadians,
-		    const double pitchRadians,
-		    const Physics::Vector3& positionOffset,
-		    const Physics::Vector3* const lookPitchPivot = nullptr,
-		    const XrQuaternionf* const lookPitchOrientation = nullptr)
-		{
-			XrPosef adjustedPose = sourcePose;
-			const XrQuaternionf yawAdjustedOrientation = MultiplyQuaternions(
-			    BuildYawOffsetOrientation(yawRadians),
-			    sourcePose.orientation);
-			const bool hasPitchOffset = std::abs(pitchRadians) > 1e-9;
-			XrQuaternionf pitchOffsetOrientation{ 0.0F, 0.0F, 0.0F, 1.0F };
-			if (hasPitchOffset)
-			{
-				pitchOffsetOrientation =
-				    (lookPitchOrientation != nullptr)
-				        ? *lookPitchOrientation
-				        : BuildPitchOffsetOrientation(
-				              yawAdjustedOrientation,
-				              pitchRadians);
-			}
-
-			adjustedPose.orientation = hasPitchOffset
-			                               ? MultiplyQuaternions(
-			                                     pitchOffsetOrientation,
-			                                     yawAdjustedOrientation)
-			                               : yawAdjustedOrientation;
-			Physics::Vector3 adjustedPosition = ApplyYawAndPositionOffset(
-			    Physics::Vector3{
-			        static_cast<double>(sourcePose.position.x),
-			        static_cast<double>(sourcePose.position.y),
-			        static_cast<double>(sourcePose.position.z) },
-			    yawRadians,
-			    positionOffset);
-			if ((lookPitchPivot != nullptr) && hasPitchOffset)
-			{
-				adjustedPosition = RotatePointAroundPivot(
-				    adjustedPosition,
-				    *lookPitchPivot,
-				    pitchOffsetOrientation);
-			}
-
-			adjustedPose.position.x = static_cast<float>(adjustedPosition.x);
-			adjustedPose.position.y = static_cast<float>(adjustedPosition.y);
-			adjustedPose.position.z = static_cast<float>(adjustedPosition.z);
-			return adjustedPose;
 		}
 
 		[[nodiscard]] XrVector2f ApplyStickDeadzone(
@@ -2184,6 +1954,8 @@ namespace BaseballSimulatorVR::Xr
 			return false;
 		}
 
+		m_graphicsBinding = graphicsBinding;
+		m_hasGraphicsBinding = true;
 		const bool created = TryInitializeOpenXrSession(graphicsBinding);
 		UpdateSessionName();
 		return created;
@@ -2281,7 +2053,8 @@ namespace BaseballSimulatorVR::Xr
 		m_floorEyeHeightSample = {};
 #if defined(_WIN64)
 		m_floorEyeHeightSample.referenceSpaceRevision = m_floorReferenceRevision;
-		m_floorEyeHeightSample.isFloorReferenced = m_sessionHandle != XR_NULL_HANDLE && m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE;
+		m_floorEyeHeightSample.isFloorReferenced = m_sessionHandle != XR_NULL_HANDLE &&
+		    (m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE || m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR);
 		m_leftHandPose = {};
 		m_rightHandPose = {};
 #endif
@@ -2291,6 +2064,13 @@ namespace BaseballSimulatorVR::Xr
 		}
 
 #if defined(_WIN64)
+		if (m_isFrameBegun)
+		{
+			// The caller skipped SubmitFrame; every begun frame must still end.
+			EndFrame(false);
+		}
+		m_frameTiming = {};
+		TryRecover();
 		if (m_instanceHandle == XR_NULL_HANDLE)
 		{
 			return;
@@ -2326,9 +2106,28 @@ namespace BaseballSimulatorVR::Xr
 				    reinterpret_cast<const XrEventDataSessionStateChanged*>(&eventData);
 				HandleSessionStateChanged(sessionStateChanged->state);
 			}
+			else if (eventData.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED)
+			{
+				HandleInteractionProfileChanged();
+			}
+			else if (eventData.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING)
+			{
+				// The runtime is going away (e.g. an update or restart): release
+				// everything and try to create a fresh instance later.
+				OutputDebugStringW(L"[OpenXR] instance loss pending; tearing down and retrying.\n");
+				DestroyOpenXrInstance();
+				m_recoveryPending = true;
+				m_nextRecoveryAttempt = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+				m_sessionName = L"Session(recovering): instance loss pending";
+				return;
+			}
+			if (m_instanceHandle == XR_NULL_HANDLE)
+			{
+				return;
+			}
 		}
 
-		TryRenderFrame();
+		TryBeginFrame();
 #endif
 	}
 
@@ -2337,6 +2136,7 @@ namespace BaseballSimulatorVR::Xr
 #if defined(_WIN64)
 		if ((m_sessionHandle == XR_NULL_HANDLE) ||
 		    (m_referenceSpaceType != XR_REFERENCE_SPACE_TYPE_STAGE &&
+		     m_referenceSpaceType != XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR &&
 		     m_referenceSpaceType != XR_REFERENCE_SPACE_TYPE_LOCAL))
 		{
 			return false;
@@ -2401,7 +2201,17 @@ namespace BaseballSimulatorVR::Xr
 			    xrDestroySpace(m_referenceSpaceHandle));
 		}
 
-		++m_handReferenceRevision;
+		// Poses are located in the recreated space, which keeps the world fixed, so
+		// smooth stick locomotion stays continuous for bat sweeps. Only a jump
+		// (mound toggle, recenter) would teleport the bat between two samples.
+		constexpr double MaximumContinuousOffsetMeters = 0.05;
+		constexpr double MaximumContinuousYawRadians = 5.0 * std::numbers::pi / 180.0;
+		if ((Physics::Length(offsetDelta) > MaximumContinuousOffsetMeters) ||
+		    (std::abs(m_viewYawOffsetRadians - m_appliedReferenceSpaceYawOffsetRadians) >
+		     MaximumContinuousYawRadians))
+		{
+			++m_handReferenceRevision;
+		}
 		m_referenceSpaceHandle = updatedReferenceSpaceHandle;
 		m_appliedReferenceSpaceYawOffsetRadians = m_viewYawOffsetRadians;
 		m_appliedReferenceSpacePositionOffset = referenceSpacePositionOffset;
@@ -2425,6 +2235,28 @@ namespace BaseballSimulatorVR::Xr
 	void NullXrSystem::Shutdown()
 	{
 #if defined(_WIN64)
+		if (m_isSessionRunning && (m_sessionHandle != XR_NULL_HANDLE) && !m_exitRequested)
+		{
+			// Ask the runtime to stop the session and keep the frame loop alive
+			// until it reports STOPPING, instead of ending a running session.
+			if (m_isFrameBegun)
+			{
+				EndFrame(false);
+			}
+			if (XR_SUCCEEDED(xrRequestExitSession(m_sessionHandle)))
+			{
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+				while (m_isSessionRunning && (m_sessionHandle != XR_NULL_HANDLE) &&
+				       (std::chrono::steady_clock::now() < deadline))
+				{
+					PollInput();
+					if (m_isFrameBegun)
+					{
+						EndFrame(false);
+					}
+				}
+			}
+		}
 		DestroyOpenXrInstance();
 		m_duelZonePassMarker.reset();
 		m_batOverlayState.reset();
@@ -2462,6 +2294,58 @@ namespace BaseballSimulatorVR::Xr
 	HandPoseState NullXrSystem::GetRightHandPose() const noexcept
 	{
 		return m_rightHandPose;
+	}
+
+	FrameTiming NullXrSystem::GetFrameTiming() const noexcept
+	{
+#if defined(_WIN64)
+		return m_frameTiming;
+#else
+		return {};
+#endif
+	}
+
+	bool NullXrSystem::IsInputFocused() const noexcept
+	{
+#if defined(_WIN64)
+		// Only a running, merely VISIBLE session has system UI over the app.
+		return !m_isSessionRunning || (m_sessionState == XR_SESSION_STATE_FOCUSED);
+#else
+		return true;
+#endif
+	}
+
+	bool NullXrSystem::IsExitRequested() const noexcept
+	{
+#if defined(_WIN64)
+		return m_exitRequested;
+#else
+		return false;
+#endif
+	}
+
+	void NullXrSystem::ApplyHapticPulse(const bool rightHand, const double amplitude, const double durationSeconds)
+	{
+#if defined(_WIN64)
+		if ((m_sessionHandle == XR_NULL_HANDLE) || (m_hapticAction == XR_NULL_HANDLE) ||
+		    !m_isSessionRunning || !std::isfinite(amplitude) || !std::isfinite(durationSeconds))
+		{
+			return;
+		}
+		XrHapticActionInfo hapticInfo{ XR_TYPE_HAPTIC_ACTION_INFO };
+		hapticInfo.action = m_hapticAction;
+		hapticInfo.subactionPath = rightHand ? m_rightHandPath : m_leftHandPath;
+		XrHapticVibration vibration{ XR_TYPE_HAPTIC_VIBRATION };
+		vibration.amplitude = static_cast<float>(std::clamp(amplitude, 0.0, 1.0));
+		vibration.duration = static_cast<XrDuration>(std::clamp(durationSeconds, 0.0, 1.0) * 1'000'000'000.0);
+		vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+		(void)xrApplyHapticFeedback(m_sessionHandle, &hapticInfo,
+		    reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+#else
+		(void)rightHand;
+		(void)amplitude;
+		(void)durationSeconds;
+#endif
 	}
 
 	std::wstring NullXrSystem::QueryActiveRuntimePath()
@@ -2529,6 +2413,7 @@ namespace BaseballSimulatorVR::Xr
 		}
 
 		bool hasD3d12Extension = false;
+		m_hasLocalFloorExtension = false;
 		uint32_t extensionCount = 0;
 		const XrResult extensionCountResult = xrEnumerateInstanceExtensionProperties(
 		    nullptr,
@@ -2552,7 +2437,10 @@ namespace BaseballSimulatorVR::Xr
 					if (std::strcmp(extensionProperty.extensionName, XR_KHR_D3D12_ENABLE_EXTENSION_NAME) == 0)
 					{
 						hasD3d12Extension = true;
-						break;
+					}
+					else if (std::strcmp(extensionProperty.extensionName, XR_EXT_LOCAL_FLOOR_EXTENSION_NAME) == 0)
+					{
+						m_hasLocalFloorExtension = true;
 					}
 				}
 			}
@@ -2562,6 +2450,10 @@ namespace BaseballSimulatorVR::Xr
 		if (hasD3d12Extension)
 		{
 			enabledExtensions.push_back(XR_KHR_D3D12_ENABLE_EXTENSION_NAME);
+		}
+		if (m_hasLocalFloorExtension)
+		{
+			enabledExtensions.push_back(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
 		}
 
 		XrInstanceCreateInfo createInfo{ XR_TYPE_INSTANCE_CREATE_INFO };
@@ -2582,6 +2474,7 @@ namespace BaseballSimulatorVR::Xr
 			createInfo.enabledExtensionNames = nullptr;
 			createResult = xrCreateInstance(&createInfo, &m_instanceHandle);
 			hasD3d12Extension = false;
+			m_hasLocalFloorExtension = false;
 		}
 
 		if (XR_FAILED(createResult) || (m_instanceHandle == XR_NULL_HANDLE))
@@ -2732,10 +2625,16 @@ namespace BaseballSimulatorVR::Xr
 
 		m_referenceSpaceHandle = XR_NULL_HANDLE;
 		m_referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+		// Prefer floor-anchored spaces so the strike zone and ground sit at the real floor.
 		XrResult referenceSpaceResult = tryCreateReferenceSpace(XR_REFERENCE_SPACE_TYPE_STAGE);
 		if (XR_SUCCEEDED(referenceSpaceResult))
 		{
 			m_referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+		}
+		else if (m_hasLocalFloorExtension &&
+		         XR_SUCCEEDED(referenceSpaceResult = tryCreateReferenceSpace(XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR)))
+		{
+			m_referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
 		}
 		else
 		{
@@ -3620,7 +3519,17 @@ namespace BaseballSimulatorVR::Xr
 		        "view_stick",
 		        "View Stick",
 		        XR_ACTION_TYPE_VECTOR2F_INPUT,
-		        &m_viewStickAction))
+		        &m_viewStickAction) ||
+		    !createAction(
+		        "recenter",
+		        "Recenter At Batting Position",
+		        XR_ACTION_TYPE_BOOLEAN_INPUT,
+		        &m_recenterAction) ||
+		    !createAction(
+		        "bat_haptic",
+		        "Bat Contact Vibration",
+		        XR_ACTION_TYPE_VIBRATION_OUTPUT,
+		        &m_hapticAction))
 		{
 			DestroyInputActions();
 			return false;
@@ -3715,13 +3624,27 @@ namespace BaseballSimulatorVR::Xr
 		    &simpleControllerBindings,
 		    m_selectClickAction,
 		    "/user/hand/right/input/select/click");
+		appendBinding(
+		    &simpleControllerBindings,
+		    m_hapticAction,
+		    "/user/hand/left/output/haptic");
+		appendBinding(
+		    &simpleControllerBindings,
+		    m_hapticAction,
+		    "/user/hand/right/output/haptic");
 		suggestBindings(
 		    "/interaction_profiles/khr/simple_controller",
 		    simpleControllerBindings);
 
+		// Every path must exist in the profile: one unsupported path makes the
+		// runtime reject the whole profile (XR_ERROR_PATH_UNSUPPORTED).
+		// oculus/touch_controller and microsoft/motion_controller have no
+		// trigger/click; select then comes from trigger/value (see querySelectPressed).
 		auto buildTriggerProfileBindings = [&](std::vector<XrActionSuggestedBinding>* const bindings,
 		                                       const char* const leftStickPath,
-		                                       const char* const rightStickPath) -> void
+		                                       const char* const rightStickPath,
+		                                       const bool hasTriggerClick,
+		                                       const char* const recenterPath) -> void
 		{
 			appendBinding(
 			    bindings,
@@ -3747,14 +3670,32 @@ namespace BaseballSimulatorVR::Xr
 			    bindings,
 			    m_triggerValueAction,
 			    "/user/hand/right/input/trigger/value");
+			if (hasTriggerClick)
+			{
+				appendBinding(
+				    bindings,
+				    m_selectClickAction,
+				    "/user/hand/left/input/trigger/click");
+				appendBinding(
+				    bindings,
+				    m_selectClickAction,
+				    "/user/hand/right/input/trigger/click");
+			}
 			appendBinding(
 			    bindings,
-			    m_selectClickAction,
-			    "/user/hand/left/input/trigger/click");
+			    m_hapticAction,
+			    "/user/hand/left/output/haptic");
 			appendBinding(
 			    bindings,
-			    m_selectClickAction,
-			    "/user/hand/right/input/trigger/click");
+			    m_hapticAction,
+			    "/user/hand/right/output/haptic");
+			if (recenterPath != nullptr)
+			{
+				appendBinding(
+				    bindings,
+				    m_recenterAction,
+				    recenterPath);
+			}
 			if (leftStickPath != nullptr)
 			{
 				appendBinding(
@@ -3775,7 +3716,9 @@ namespace BaseballSimulatorVR::Xr
 		buildTriggerProfileBindings(
 		    &oculusTouchBindings,
 		    "/user/hand/left/input/thumbstick",
-		    "/user/hand/right/input/thumbstick");
+		    "/user/hand/right/input/thumbstick",
+		    false,
+		    "/user/hand/left/input/thumbstick/click");
 		suggestBindings(
 		    "/interaction_profiles/oculus/touch_controller",
 		    oculusTouchBindings);
@@ -3784,7 +3727,9 @@ namespace BaseballSimulatorVR::Xr
 		buildTriggerProfileBindings(
 		    &viveControllerBindings,
 		    "/user/hand/left/input/trackpad",
-		    "/user/hand/right/input/trackpad");
+		    "/user/hand/right/input/trackpad",
+		    true,
+		    "/user/hand/left/input/menu/click");
 		suggestBindings(
 		    "/interaction_profiles/htc/vive_controller",
 		    viveControllerBindings);
@@ -3793,7 +3738,9 @@ namespace BaseballSimulatorVR::Xr
 		buildTriggerProfileBindings(
 		    &valveIndexBindings,
 		    "/user/hand/left/input/thumbstick",
-		    "/user/hand/right/input/thumbstick");
+		    "/user/hand/right/input/thumbstick",
+		    true,
+		    "/user/hand/left/input/thumbstick/click");
 		suggestBindings(
 		    "/interaction_profiles/valve/index_controller",
 		    valveIndexBindings);
@@ -3802,7 +3749,9 @@ namespace BaseballSimulatorVR::Xr
 		buildTriggerProfileBindings(
 		    &microsoftMotionBindings,
 		    "/user/hand/left/input/thumbstick",
-		    "/user/hand/right/input/thumbstick");
+		    "/user/hand/right/input/thumbstick",
+		    false,
+		    "/user/hand/left/input/thumbstick/click");
 		suggestBindings(
 		    "/interaction_profiles/microsoft/motion_controller",
 		    microsoftMotionBindings);
@@ -3874,7 +3823,6 @@ namespace BaseballSimulatorVR::Xr
 		m_hasResultPanelLaser = false;
 		m_locomotionPositionOffset = Physics::Vector3{};
 		m_viewYawOffsetRadians = 0.0;
-		m_viewPitchOffsetRadians = 0.0;
 		m_appliedReferenceSpacePositionOffset = Physics::Vector3{};
 		m_appliedReferenceSpaceYawOffsetRadians = 0.0;
 		m_lastLocomotionSampleTime = 0;
@@ -3986,6 +3934,21 @@ namespace BaseballSimulatorVR::Xr
 			    xrDestroyAction(m_moveStickAction));
 			m_moveStickAction = XR_NULL_HANDLE;
 		}
+		if (m_recenterAction != XR_NULL_HANDLE)
+		{
+			LogXrCleanupFailure(
+			    L"xrDestroyAction",
+			    xrDestroyAction(m_recenterAction));
+			m_recenterAction = XR_NULL_HANDLE;
+		}
+		m_wasRecenterPressed = false;
+		if (m_hapticAction != XR_NULL_HANDLE)
+		{
+			LogXrCleanupFailure(
+			    L"xrDestroyAction",
+			    xrDestroyAction(m_hapticAction));
+			m_hapticAction = XR_NULL_HANDLE;
+		}
 		if (m_viewStickAction != XR_NULL_HANDLE)
 		{
 			LogXrCleanupFailure(
@@ -4005,7 +3968,6 @@ namespace BaseballSimulatorVR::Xr
 		m_rightHandPath = XR_NULL_PATH;
 		m_locomotionPositionOffset = Physics::Vector3{};
 		m_viewYawOffsetRadians = 0.0;
-		m_viewPitchOffsetRadians = 0.0;
 		m_appliedReferenceSpacePositionOffset = Physics::Vector3{};
 		m_appliedReferenceSpaceYawOffsetRadians = 0.0;
 		m_lastLocomotionSampleTime = 0;
@@ -4058,6 +4020,49 @@ namespace BaseballSimulatorVR::Xr
 		m_rightHandPose = HandPoseState{};
 		m_batOverlayState.reset();
 		m_pendingUiCommands.clear();
+	}
+
+	void NullXrSystem::RecenterToBattingPosition()
+	{
+		if (m_views.empty())
+		{
+			return;
+		}
+		const std::size_t viewCount = (std::min)(m_views.size(), static_cast<std::size_t>(2));
+		Physics::Vector3 head{};
+		for (std::size_t viewIndex = 0; viewIndex < viewCount; ++viewIndex)
+		{
+			head += Physics::Vector3{
+				static_cast<double>(m_views[viewIndex].pose.position.x),
+				static_cast<double>(m_views[viewIndex].pose.position.y),
+				static_cast<double>(m_views[viewIndex].pose.position.z)
+			};
+		}
+		head = head / static_cast<double>(viewCount);
+		const Physics::Vector3 forward = RotateVectorByQuaternion(
+		    Physics::Vector3{ 0.0, 0.0, -1.0 },
+		    NormalizeQuaternion(m_views.front().pose.orientation));
+		const Physics::Vector3 horizontalForward =
+		    Physics::NormalizeOrZero(Physics::Vector3{ forward.x, 0.0, forward.z });
+		if (Physics::Length(horizontalForward) < 0.5)
+		{
+			return;
+		}
+		// World = R(yaw) * tracking + offset. Rotating the world by the head
+		// heading and removing the head's horizontal position puts the player at
+		// the batting origin looking down the pitching line (-z).
+		const double heading = std::atan2(horizontalForward.x, -horizontalForward.z);
+		const double c = std::cos(heading);
+		const double sn = std::sin(heading);
+		const Physics::Vector3 shifted = m_locomotionPositionOffset - Physics::Vector3{ head.x, 0.0, head.z };
+		m_locomotionPositionOffset = Physics::Vector3{
+			(shifted.x * c) + (shifted.z * sn),
+			shifted.y,
+			(-shifted.x * sn) + (shifted.z * c)
+		};
+		m_viewYawOffsetRadians = std::remainder(m_viewYawOffsetRadians + heading, 2.0 * std::numbers::pi);
+		++m_handReferenceRevision;
+		OutputDebugStringW(L"[OpenXR] recentered at the batting position.\n");
 	}
 
 	void NullXrSystem::UpdateUiPanelInteraction(
@@ -4198,6 +4203,22 @@ namespace BaseballSimulatorVR::Xr
 			    movementDirection * (MoveSpeedMetersPerSecond * frameDeltaSeconds);
 		}
 
+		if (m_recenterAction != XR_NULL_HANDLE)
+		{
+			XrActionStateGetInfo recenterInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+			recenterInfo.action = m_recenterAction;
+			recenterInfo.subactionPath = m_leftHandPath;
+			XrActionStateBoolean recenterState{ XR_TYPE_ACTION_STATE_BOOLEAN };
+			const bool recenterPressed =
+			    XR_SUCCEEDED(xrGetActionStateBoolean(m_sessionHandle, &recenterInfo, &recenterState)) &&
+			    (recenterState.isActive == XR_TRUE) && (recenterState.currentState == XR_TRUE);
+			if (recenterPressed && !m_wasRecenterPressed)
+			{
+				RecenterToBattingPosition();
+			}
+			m_wasRecenterPressed = recenterPressed;
+		}
+
 		auto querySelectPressed = [&](const XrPath handPath, bool* const isPressed) -> bool
 		{
 			if (isPressed == nullptr)
@@ -4261,7 +4282,7 @@ namespace BaseballSimulatorVR::Xr
 		                     const XrPath handPath,
 		                     const XrSpace actionSpace,
 		                     XrPosef* const outPose,
-		                     const bool requireTracked = false) -> bool
+		                     HandPoseState* const outMotion = nullptr) -> bool
 		{
 			if ((outPose == nullptr) ||
 			    (poseAction == XR_NULL_HANDLE) ||
@@ -4285,7 +4306,12 @@ namespace BaseballSimulatorVR::Xr
 				return false;
 			}
 
+			XrSpaceVelocity spaceVelocity{ XR_TYPE_SPACE_VELOCITY };
 			XrSpaceLocation spaceLocation{ XR_TYPE_SPACE_LOCATION };
+			if (outMotion != nullptr)
+			{
+				spaceLocation.next = &spaceVelocity;
+			}
 			const XrResult locateResult = xrLocateSpace(
 			    actionSpace,
 			    m_referenceSpaceHandle,
@@ -4296,16 +4322,38 @@ namespace BaseballSimulatorVR::Xr
 				return false;
 			}
 
+			// Inferred (VALID but not TRACKED) poses are kept: fast swings briefly
+			// leave inside-out camera coverage, and dropping them removed the bat
+			// and broke the sweep exactly at the contact point.
 			const XrSpaceLocationFlags requiredFlags =
 			    XR_SPACE_LOCATION_POSITION_VALID_BIT |
-			    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
-			    (requireTracked ? (XR_SPACE_LOCATION_POSITION_TRACKED_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) : 0);
+			    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
 			if ((spaceLocation.locationFlags & requiredFlags) != requiredFlags)
 			{
 				return false;
 			}
 
 			*outPose = spaceLocation.pose;
+			if (outMotion != nullptr)
+			{
+				constexpr XrSpaceLocationFlags trackedFlags =
+				    XR_SPACE_LOCATION_POSITION_TRACKED_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+				outMotion->isTracked = (spaceLocation.locationFlags & trackedFlags) == trackedFlags;
+				outMotion->hasLinearVelocity =
+				    (spaceVelocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+				outMotion->hasAngularVelocity =
+				    (spaceVelocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0;
+				outMotion->linearVelocity = Physics::Vector3{
+					static_cast<double>(spaceVelocity.linearVelocity.x),
+					static_cast<double>(spaceVelocity.linearVelocity.y),
+					static_cast<double>(spaceVelocity.linearVelocity.z)
+				};
+				outMotion->angularVelocity = Physics::Vector3{
+					static_cast<double>(spaceVelocity.angularVelocity.x),
+					static_cast<double>(spaceVelocity.angularVelocity.y),
+					static_cast<double>(spaceVelocity.angularVelocity.z)
+				};
+			}
 			return true;
 		};
 
@@ -4361,11 +4409,13 @@ namespace BaseballSimulatorVR::Xr
 		{
 			HandPoseState handPoseState{};
 			XrPosef gripPose{};
+			HandPoseState motion{};
 			const bool hasGripPose = queryPose(
 			    m_gripPoseAction,
 			    handPath,
 			    gripActionSpace,
-			    &gripPose, true);
+			    &gripPose,
+			    &motion);
 			if (!hasGripPose)
 			{
 				return handPoseState;
@@ -4402,6 +4452,11 @@ namespace BaseballSimulatorVR::Xr
 			};
 			handPoseState.forward = normalizedForward;
 			handPoseState.up = up;
+			handPoseState.isTracked = motion.isTracked;
+			handPoseState.hasLinearVelocity = motion.hasLinearVelocity;
+			handPoseState.linearVelocity = motion.linearVelocity;
+			handPoseState.hasAngularVelocity = motion.hasAngularVelocity;
+			handPoseState.angularVelocity = motion.angularVelocity;
 			return handPoseState;
 		};
 
@@ -5650,30 +5705,91 @@ namespace BaseballSimulatorVR::Xr
 			m_lastFrameSummary = L"frame(stopped)";
 			m_xrPostProcessStatus = L"none";
 		}
-		else if ((sessionState == XR_SESSION_STATE_EXITING) ||
-		         (sessionState == XR_SESSION_STATE_LOSS_PENDING))
+		else if (sessionState == XR_SESSION_STATE_EXITING)
 		{
-			m_isSessionRunning = false;
-			m_lastPredictedDisplayTime = 0;
-			m_lastLocomotionSampleTime = 0;
-			m_lastFrameSummary = L"frame(stopped)";
-			m_xrPostProcessStatus = L"none";
+			// The user or runtime ended the experience: it must not restart itself.
+			DestroySession();
+			m_exitRequested = true;
+			m_sessionName = L"Session(exited)";
+			return;
+		}
+		else if (sessionState == XR_SESSION_STATE_LOSS_PENDING)
+		{
+			// The device was lost (e.g. headset disconnected); recreate the session
+			// once xrGetSystem succeeds again.
+			ScheduleRecovery(L"session loss pending");
+			return;
 		}
 
 		UpdateSessionName();
 	}
 
-	void NullXrSystem::TryRenderFrame()
+	void NullXrSystem::HandleInteractionProfileChanged()
 	{
-		if(m_projectionRenderingFailed) {m_leftEyeViewState.isValid=false;return;}
-		if (!m_isSessionRunning || (m_sessionHandle == XR_NULL_HANDLE) ||
-		    (m_referenceSpaceHandle == XR_NULL_HANDLE))
+		m_interactionProfileName.clear();
+		if ((m_sessionHandle == XR_NULL_HANDLE) || (m_rightHandPath == XR_NULL_PATH))
 		{
-			m_leftEyeViewState.isValid = false;
 			return;
 		}
+		XrInteractionProfileState profileState{ XR_TYPE_INTERACTION_PROFILE_STATE };
+		const XrPath handPath = m_rightHandPath;
+		if (XR_SUCCEEDED(xrGetCurrentInteractionProfile(m_sessionHandle, handPath, &profileState)) &&
+		    (profileState.interactionProfile != XR_NULL_PATH))
+		{
+			std::array<char, XR_MAX_PATH_LENGTH> buffer{};
+			uint32_t length = 0;
+			if (XR_SUCCEEDED(xrPathToString(m_instanceHandle, profileState.interactionProfile,
+			        static_cast<uint32_t>(buffer.size()), &length, buffer.data())))
+			{
+				m_interactionProfileName = ConvertUtf8ToWide(buffer.data());
+			}
+		}
+		// A controller swap can move the grip origin; do not sweep across it.
+		++m_handReferenceRevision;
+		const std::wstring message = L"[OpenXR] interaction profile: " +
+		    (m_interactionProfileName.empty() ? std::wstring{ L"(none)" } : m_interactionProfileName) + L"\n";
+		OutputDebugStringW(message.c_str());
+	}
 
-		if (m_projectionSwapchains.empty() || (m_d3d12Queue == nullptr))
+	void NullXrSystem::ScheduleRecovery(const std::wstring_view reason)
+	{
+		const std::wstring message = L"[OpenXR] " + std::wstring{ reason } + L"; recreating the session.\n";
+		OutputDebugStringW(message.c_str());
+		DestroySession();
+		m_recoveryPending = true;
+		m_nextRecoveryAttempt = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+		m_sessionName = L"Session(recovering): " + std::wstring{ reason };
+	}
+
+	void NullXrSystem::TryRecover()
+	{
+		if (!m_recoveryPending || (std::chrono::steady_clock::now() < m_nextRecoveryAttempt))
+		{
+			return;
+		}
+		m_nextRecoveryAttempt = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		TryInitializeOpenXrInstance();
+		TryInitializeOpenXrSystem();
+		if ((m_instanceHandle == XR_NULL_HANDLE) || (m_systemId == XR_NULL_SYSTEM_ID) || !m_hasGraphicsBinding)
+		{
+			// xrGetSystem reports FORM_FACTOR_UNAVAILABLE until the headset is back.
+			return;
+		}
+		if (TryInitializeOpenXrSession(m_graphicsBinding))
+		{
+			m_recoveryPending = false;
+			OutputDebugStringW(L"[OpenXR] session recreated.\n");
+		}
+		UpdateSessionName();
+	}
+
+	void NullXrSystem::TryBeginFrame()
+	{
+		m_frameTiming = {};
+		m_hasLocatedViews = false;
+		if (!m_isSessionRunning || (m_sessionHandle == XR_NULL_HANDLE) ||
+		    (m_referenceSpaceHandle == XR_NULL_HANDLE) ||
+		    m_projectionSwapchains.empty() || (m_d3d12Queue == nullptr))
 		{
 			m_leftEyeViewState.isValid = false;
 			return;
@@ -5685,6 +5801,11 @@ namespace BaseballSimulatorVR::Xr
 		if (XR_FAILED(frameWaitResult))
 		{
 			m_leftEyeViewState.isValid = false;
+			if (frameWaitResult == XR_ERROR_SESSION_LOST)
+			{
+				ScheduleRecovery(L"xrWaitFrame reported a lost session");
+				return;
+			}
 			m_sessionName = L"Session(unavailable): " +
 			                BuildXrErrorMessage(L"xrWaitFrame", frameWaitResult);
 			return;
@@ -5700,20 +5821,51 @@ namespace BaseballSimulatorVR::Xr
 			return;
 		}
 
+		m_isFrameBegun = true;
+		m_frameState = frameState;
+		m_frameTiming = FrameTiming{
+			true,
+			static_cast<double>(frameState.predictedDisplayTime) / 1'000'000'000.0,
+			static_cast<double>(frameState.predictedDisplayPeriod) / 1'000'000'000.0
+		};
+		if (frameState.shouldRender != XR_TRUE)
+		{
+			m_leftEyeViewState.isValid = false;
+			m_floorEyeHeightSample.sampleTimeSeconds = m_frameTiming.predictedDisplayTimeSeconds;
+			return;
+		}
+		m_hasLocatedViews = LocateFrameViews(frameState.predictedDisplayTime);
+	}
+
+	void NullXrSystem::SubmitFrame()
+	{
+#if defined(_WIN64)
+		if (!m_isFrameBegun)
+		{
+			return;
+		}
+		const bool hasProjectionLayer =
+		    m_hasLocatedViews && !m_projectionRenderingFailed && RenderLocatedViews();
+		EndFrame(hasProjectionLayer);
+		if (m_projectionRenderingFailed)
+		{
+			// Keep presenting empty frames meanwhile; a failed device queue or
+			// fence otherwise left the session without xrWaitFrame calls forever.
+			ScheduleRecovery(L"projection rendering failed");
+		}
+#endif
+	}
+
+	void NullXrSystem::EndFrame(const bool hasProjectionLayer)
+	{
+		m_isFrameBegun = false;
+		m_hasLocatedViews = false;
 		XrFrameEndInfo frameEndInfo{ XR_TYPE_FRAME_END_INFO };
-		frameEndInfo.displayTime = frameState.predictedDisplayTime;
+		frameEndInfo.displayTime = m_frameState.predictedDisplayTime;
 		frameEndInfo.environmentBlendMode = m_environmentBlendMode;
 		frameEndInfo.layerCount = 0;
 		frameEndInfo.layers = nullptr;
 		const XrTime previousPredictedDisplayTime = m_lastPredictedDisplayTime;
-
-		if (frameState.shouldRender != XR_TRUE)
-		{
-		    m_leftEyeViewState.isValid = false;
-		    m_floorEyeHeightSample.sampleTimeSeconds = static_cast<double>(frameState.predictedDisplayTime) / 1'000'000'000.0;
-		}
-		const bool hasProjectionLayer = frameState.shouldRender == XR_TRUE &&
-		    RenderProjectionLayer(frameState.predictedDisplayTime);
 		const XrCompositionLayerBaseHeader* layers[] = {
 			reinterpret_cast<const XrCompositionLayerBaseHeader*>(&m_projectionLayer)
 		};
@@ -5732,18 +5884,18 @@ namespace BaseballSimulatorVR::Xr
 		}
 
 		m_lastFrameSummary = BuildFrameSummary(
-		    frameState.shouldRender,
+		    m_frameState.shouldRender,
 		    hasProjectionLayer,
-		    frameState.predictedDisplayTime,
+		    m_frameState.predictedDisplayTime,
 		    previousPredictedDisplayTime,
 		    m_lastProjectionLayerStatus,
 		    m_resultPanelLaserStatus,
 		    m_xrPostProcessStatus);
-		m_lastPredictedDisplayTime = frameState.predictedDisplayTime;
+		m_lastPredictedDisplayTime = m_frameState.predictedDisplayTime;
 		UpdateSessionName();
 	}
 
-	bool NullXrSystem::RenderProjectionLayer(const XrTime predictedDisplayTime)
+	bool NullXrSystem::LocateFrameViews(const XrTime predictedDisplayTime)
 	{
 		m_lastProjectionLayerStatus = L"locating";
 		if (m_pendingReferenceChangeTime > 0 && predictedDisplayTime >= m_pendingReferenceChangeTime) {
@@ -5809,7 +5961,8 @@ namespace BaseballSimulatorVR::Xr
 		m_floorEyeHeightSample = {};
 		m_floorEyeHeightSample.sampleTimeSeconds = static_cast<double>(predictedDisplayTime) / 1'000'000'000.0;
 		m_floorEyeHeightSample.referenceSpaceRevision = m_floorReferenceRevision;
-		m_floorEyeHeightSample.isFloorReferenced = m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE;
+		m_floorEyeHeightSample.isFloorReferenced = m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE ||
+		    m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
 		m_floorEyeHeightSample.isPositionTracked =
 		    (viewState.viewStateFlags & (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_POSITION_TRACKED_BIT)) ==
 		    (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_POSITION_TRACKED_BIT);
@@ -5821,82 +5974,22 @@ namespace BaseballSimulatorVR::Xr
 		    m_floorEyeHeightSample.isPositionTracked = false;
 		}
 
-		Physics::Vector3 lookPitchPivot{};
-		const Physics::Vector3* lookPitchPivotPtr = nullptr;
-		XrQuaternionf lookPitchOrientation{ 0.0F, 0.0F, 0.0F, 1.0F };
-		const XrQuaternionf* lookPitchOrientationPtr = nullptr;
-		if ((std::abs(m_viewPitchOffsetRadians) > 1e-9) &&
-		    TryBuildLookPitchPivot(
-		        std::span<const XrView>{ m_views },
-		        0.0,
-		        Physics::Vector3{},
-		        nullptr,
-		        &lookPitchPivot))
-		{
-			lookPitchPivotPtr = &lookPitchPivot;
-		}
-		if (TryBuildLookPitchOrientation(
-		        std::span<const XrView>{ m_views },
-		        0.0,
-		        nullptr,
-		        m_viewPitchOffsetRadians,
-		        &lookPitchOrientation))
-		{
-			lookPitchOrientationPtr = &lookPitchOrientation;
-		}
-
-		XrView preUiLeftEyeView = m_views.front();
-		preUiLeftEyeView.pose = ApplyLocomotionToPose(
-		    preUiLeftEyeView.pose,
-		    0.0,
-		    m_viewPitchOffsetRadians,
-		    Physics::Vector3{},
-		    lookPitchPivotPtr,
-		    lookPitchOrientationPtr);
-		m_leftEyeViewState = BuildProjectionStateFromView(preUiLeftEyeView);
+		m_locatedViewCount = viewCount;
+		m_leftEyeViewState = BuildProjectionStateFromView(m_views.front());
 		UpdateUiPanelInteraction(predictedDisplayTime);
-		m_batOverlayState.reset();
-		const bool batting = m_uiTelemetry.operationMode == UiOperationMode::BattingDuel ||
-		                     m_uiTelemetry.operationMode == UiOperationMode::TeeBatting;
-		const auto& hand = m_uiTelemetry.batUseRightHand ? m_rightHandPose : m_leftHandPose;
-		if (batting && hand.isValid) {
-		    const auto orientation = Common::BuildBatOrientation(hand.forward, hand.up,
-		        m_uiTelemetry.batAngleOffsetDegrees, m_uiTelemetry.batYawOffsetDegrees);
-		    if (orientation) {
-		        const Physics::Vector3 simulationOffset{0, 0, Common::GetPitchDistanceMeters() + Common::DebugWorldLayout::BatterToPlateDistanceMeters};
-		        const auto endpoints = Physics::BatEndpointsFromGrip(hand.position, orientation->axis,
-		            m_uiTelemetry.batLengthMeters);
-		        m_batOverlayState = Common::BatOverlayState{
-		            endpoints.knob + simulationOffset,
-		            endpoints.tip + simulationOffset,
-		            m_uiTelemetry.batRadiusMeters, m_uiTelemetry.batMaterial,
-		            orientation->up};
-		    }
-		}
+		return true;
+	}
 
-		XrView leftEyeView = m_views.front();
-		leftEyeView.pose = ApplyLocomotionToPose(
-		    leftEyeView.pose,
-		    0.0,
-		    m_viewPitchOffsetRadians,
-		    Physics::Vector3{},
-		    lookPitchPivotPtr,
-		    lookPitchOrientationPtr);
-		m_leftEyeViewState = BuildProjectionStateFromView(leftEyeView);
+	bool NullXrSystem::RenderLocatedViews()
+	{
+		const uint32_t viewCount = m_locatedViewCount;
 		m_xrPostProcessStatus = m_isFxaaAvailable ? L"fxaa" : L"direct";
 
 		m_uiTextAtlas.BeginFrame();
 		for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex)
 		{
 			SwapchainContext& swapchainContext = m_projectionSwapchains[viewIndex];
-			XrView adjustedView = m_views[viewIndex];
-			adjustedView.pose = ApplyLocomotionToPose(
-			    adjustedView.pose,
-			    0.0,
-			    m_viewPitchOffsetRadians,
-			    Physics::Vector3{},
-			    lookPitchPivotPtr,
-			    lookPitchOrientationPtr);
+			const XrView& adjustedView = m_views[viewIndex];
 			uint32_t imageIndex = 0;
 
 			XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -7971,8 +8064,15 @@ namespace BaseballSimulatorVR::Xr
 		return true;
 	}
 
-	void NullXrSystem::DestroyOpenXrInstance()
+	void NullXrSystem::DestroySession()
 	{
+		if (m_isFrameBegun && (m_sessionHandle != XR_NULL_HANDLE))
+		{
+			EndFrame(false);
+		}
+		m_isFrameBegun = false;
+		m_hasLocatedViews = false;
+		m_frameTiming = {};
 		if (m_isSessionRunning && (m_sessionHandle != XR_NULL_HANDLE))
 		{
 			LogXrCleanupFailure(
@@ -8000,6 +8100,28 @@ namespace BaseballSimulatorVR::Xr
 			m_sessionHandle = XR_NULL_HANDLE;
 		}
 
+		m_d3d12Device.Reset();
+		m_d3d12Queue.Reset();
+		m_referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+		m_sessionState = XR_SESSION_STATE_UNKNOWN;
+		m_isGraphicsBound = false;
+		m_usesDedicatedGraphicsDevice = false;
+		m_colorSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+		m_projectionSampleCount = 1U;
+		m_trajectoryTrails.Clear();
+		m_leftEyeViewState = Common::ViewProjectionState{};
+		m_leftHandPose = HandPoseState{};
+		m_rightHandPose = HandPoseState{};
+		m_lastPredictedDisplayTime = 0;
+		m_lastFrameSummary = L"frame(pending)";
+		m_xrPostProcessStatus = L"none";
+		++m_handReferenceRevision;
+		++m_floorReferenceRevision;
+	}
+
+	void NullXrSystem::DestroyOpenXrInstance()
+	{
+		DestroySession();
 		if (m_instanceHandle != XR_NULL_HANDLE)
 		{
 			LogXrCleanupFailure(
@@ -8008,8 +8130,6 @@ namespace BaseballSimulatorVR::Xr
 			m_instanceHandle = XR_NULL_HANDLE;
 		}
 
-		m_d3d12Device.Reset();
-		m_d3d12Queue.Reset();
 		m_systemId = XR_NULL_SYSTEM_ID;
 		m_referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
 		m_sessionState = XR_SESSION_STATE_UNKNOWN;

@@ -11,6 +11,8 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <optional>
+#include <vector>
 
 namespace
 {
@@ -33,6 +35,21 @@ namespace
 		void SetFieldPresentationState(const Common::FieldPresentationState&) override {}
 		void SetUiTelemetry(const Xr::UiTelemetry&) override {}
 		void PollInput() override {}
+		void SubmitFrame() override {}
+		Xr::FrameTiming GetFrameTiming() const noexcept override { return {}; }
+		bool IsInputFocused() const noexcept override { return true; }
+		bool IsExitRequested() const noexcept override { return false; }
+		void ApplyHapticPulse(const bool rightHand, const double amplitude, const double durationSeconds) override
+		{
+			hapticPulses.push_back({ rightHand, amplitude, durationSeconds });
+		}
+		struct HapticPulse
+		{
+			bool rightHand{};
+			double amplitude{};
+			double durationSeconds{};
+		};
+		std::vector<HapticPulse> hapticPulses{};
 		std::vector<Xr::UiCommand> ConsumePendingUiCommands() override { return {}; }
 		void Shutdown() override {}
 		std::wstring_view GetRuntimeName() const noexcept override { return L"test"; }
@@ -1757,10 +1774,66 @@ namespace BaseballSimulatorVR::Core
 				    "Calibration and manual player-zone changes never modify preset environment files");
 		}
 
+		static void TestBatVelocitySourcesAndHaptics()
+		{
+			// The application owns its XR system, so copy the pulses out before it is destroyed.
+			std::vector<TestXrSystem::HapticPulse> pulses{};
+			const auto hitWith = [&pulses](const std::optional<double> reportedSpeed)
+			{
+				TestXrSystem* xr = nullptr;
+				auto app = MakeApplication(&xr);
+				SetUpTee(*app);
+				const auto pose = [&](const double x, const double time)
+				{
+					Xr::HandPoseState hand{ true, time, 1,
+					    { x, 1.0, -2.1 + Physics::BatGripCenterRatio * app->m_environmentSettings.batLengthMeters },
+					    { 0.0, 0.0, 1.0 }, { 0.0, 1.0, 0.0 } };
+					if (reportedSpeed)
+					{
+						hand.hasLinearVelocity = true;
+						hand.linearVelocity = { *reportedSpeed, 0.0, 0.0 };
+						hand.hasAngularVelocity = true;
+					}
+					return hand;
+				};
+				xr->rightHand = pose(-0.2, 1.0);
+				app->RefreshBatPoseFromXrInput();
+				(void)UpdateBall(*app);
+				xr->rightHand = pose(0.2, 1.01);
+				app->RefreshBatPoseFromXrInput();
+				(void)UpdateBall(*app);
+				Tests::Check(app->m_teeBattedMetrics.hasContact, "Each velocity source still hits the tee ball");
+				pulses = xr->hapticPulses;
+				return Physics::Length(app->m_teeBattedMetrics.launchVelocity);
+			};
+			const double differenced = hitWith(std::nullopt);
+			Tests::Check(pulses.size() == 1 && pulses.front().rightHand &&
+			    pulses.front().amplitude > 0.0 && pulses.front().amplitude <= 1.0 &&
+			    pulses.front().durationSeconds > 0.0,
+			    "A bat contact sends one bounded vibration pulse to the bat hand");
+			const double reported = hitWith(32.0);
+			const double implausible = hitWith(90.0);
+			Tests::Check(reported < differenced - 1.0,
+			    "Runtime-reported grip velocity replaces the 40 m/s finite difference of predicted poses");
+			Tests::Check(std::abs(implausible - differenced) < 1e-9,
+			    "A runtime velocity far from the measured motion falls back to finite differences");
+
+			const Common::BatOrientation previous{ { 0.0, 0.0, 1.0 }, { 0.0, 1.0, 0.0 } };
+			const Common::BatOrientation current{
+			    { std::sin(0.5), 0.0, std::cos(0.5) }, { 0.0, 1.0, 0.0 } };
+			const auto omega = Common::ComputeBatAngularVelocity(previous, current, 0.011);
+			const auto halfway = Common::RotateBatOrientation(previous, *omega, 0.0055);
+			const auto end = Common::RotateBatOrientation(previous, *omega, 0.011);
+			Tests::Check(omega && Physics::Length(end.axis - current.axis) < 1e-12 &&
+			    std::abs(halfway.axis.x - std::sin(0.25)) < 1e-12 && std::abs(Physics::Length(halfway.axis) - 1.0) < 1e-12,
+			    "Sub-step bat frames follow the rigid rotation instead of shortening along the chord");
+		}
+
 		static void Run(const std::filesystem::path& sourceRoot)
 		{
 			const RuntimeSettingsGuard settingsGuard;
 			TestTeeCollisionAndPause();
+			TestBatVelocitySourcesAndHaptics();
 			TestBatGripAndFullLength();
 			TestBatTrackingDiscontinuities();
 			TestObliqueBatCollisionIntegration();

@@ -191,6 +191,11 @@ namespace BaseballSimulatorVR::Core
 			double sampleTimeSeconds{ 0.0 };
 			std::uint64_t referenceSpaceRevision{ 0 };
 			Physics::Vector3 upDirectionWorld{ 0.0, 1.0, 0.0 };
+			// Runtime-reported grip velocities (XrSpaceVelocity), when available.
+			bool hasLinearVelocity{ false };
+			Physics::Vector3 linearVelocityWorld{};
+			bool hasAngularVelocity{ false };
+			Physics::Vector3 angularVelocityWorld{};
 		};
 
 		struct BattedBallMetrics final

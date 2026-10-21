@@ -41,6 +41,11 @@ namespace BaseballSimulatorVR::Xr
 		    const std::optional<Common::BatOverlayState>& batOverlayState) override;
 		void SetUiTelemetry(const UiTelemetry& telemetry) override;
 		void PollInput() override;
+		void SubmitFrame() override;
+		[[nodiscard]] FrameTiming GetFrameTiming() const noexcept override;
+		[[nodiscard]] bool IsInputFocused() const noexcept override;
+		[[nodiscard]] bool IsExitRequested() const noexcept override;
+		void ApplyHapticPulse(bool rightHand, double amplitude, double durationSeconds) override;
 		[[nodiscard]] std::vector<UiCommand> ConsumePendingUiCommands() override;
 		void Shutdown() override;
 		[[nodiscard]] std::wstring_view GetRuntimeName() const noexcept override;
@@ -85,8 +90,15 @@ namespace BaseballSimulatorVR::Xr
 		void DestroyInputActions();
 		void UpdateUiPanelInteraction(XrTime predictedDisplayTime);
 		void HandleSessionStateChanged(XrSessionState sessionState);
-		void TryRenderFrame();
-		[[nodiscard]] bool RenderProjectionLayer(XrTime predictedDisplayTime);
+		void HandleInteractionProfileChanged();
+		void TryBeginFrame();
+		void EndFrame(bool hasProjectionLayer);
+		[[nodiscard]] bool LocateFrameViews(XrTime predictedDisplayTime);
+		[[nodiscard]] bool RenderLocatedViews();
+		void DestroySession();
+		void ScheduleRecovery(std::wstring_view reason);
+		void TryRecover();
+		void RecenterToBattingPosition();
 		void AppendTrajectoryPoint(const Physics::BallState& ballState);
 		[[nodiscard]] bool ClearSwapchainImage(
 		    SwapchainContext& swapchainContext,
@@ -112,6 +124,18 @@ namespace BaseballSimulatorVR::Xr
 		Common::UiText::GlyphAtlas m_uiTextAtlas;
 		Common::UiText::TextLayoutCache m_uiTextLayouts;
 		bool m_projectionRenderingFailed{false};
+		bool m_isFrameBegun{false};
+		bool m_hasLocatedViews{false};
+		uint32_t m_locatedViewCount{0};
+		XrFrameState m_frameState{ XR_TYPE_FRAME_STATE };
+		FrameTiming m_frameTiming{};
+		bool m_exitRequested{false};
+		bool m_recoveryPending{false};
+		std::chrono::steady_clock::time_point m_nextRecoveryAttempt{};
+		Common::GraphicsBinding m_graphicsBinding{};
+		bool m_hasGraphicsBinding{false};
+		bool m_hasLocalFloorExtension{false};
+		std::wstring m_interactionProfileName{};
 		XrInstance m_instanceHandle{ XR_NULL_HANDLE };
 		XrSystemId m_systemId{ XR_NULL_SYSTEM_ID };
 		XrSession m_sessionHandle{ XR_NULL_HANDLE };
@@ -136,6 +160,9 @@ namespace BaseballSimulatorVR::Xr
 		XrAction m_triggerValueAction{ XR_NULL_HANDLE };
 		XrAction m_moveStickAction{ XR_NULL_HANDLE };
 		XrAction m_viewStickAction{ XR_NULL_HANDLE };
+		XrAction m_recenterAction{ XR_NULL_HANDLE };
+		XrAction m_hapticAction{ XR_NULL_HANDLE };
+		bool m_wasRecenterPressed{ false };
 		XrSpace m_leftAimActionSpace{ XR_NULL_HANDLE };
 		XrSpace m_rightAimActionSpace{ XR_NULL_HANDLE };
 		XrSpace m_leftGripActionSpace{ XR_NULL_HANDLE };
@@ -144,7 +171,6 @@ namespace BaseballSimulatorVR::Xr
 		XrPath m_rightHandPath{ XR_NULL_PATH };
 		Physics::Vector3 m_locomotionPositionOffset{};
 		double m_viewYawOffsetRadians{ 0.0 };
-		double m_viewPitchOffsetRadians{ 0.0 };
 		Physics::Vector3 m_appliedReferenceSpacePositionOffset{};
 		double m_appliedReferenceSpaceYawOffsetRadians{ 0.0 };
 		XrTime m_lastLocomotionSampleTime{ 0 };
