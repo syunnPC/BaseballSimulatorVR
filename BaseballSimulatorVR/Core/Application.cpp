@@ -1449,13 +1449,15 @@ namespace BaseballSimulatorVR::Core
 		}
 		if (!m_startupNotices.empty())
 		{
-			// Shown once, before the frame loop starts: which file and key were bad and what was restored.
+			// Which file and key were bad and what was restored. The XR session is already
+			// running here, so a modal dialog would hold the headset on a frozen frame until
+			// the player took it off to dismiss the box on the desktop.
 			std::wstring notice{};
 			for (const std::wstring& line : m_startupNotices)
 			{
 				notice += line + L"\n\n";
 			}
-			MessageBoxW(m_windowHandle, notice.c_str(), L"BaseballSimulatorVR settings", MB_OK | MB_ICONWARNING);
+			ShowNonBlockingMessage(L"BaseballSimulatorVR settings", std::move(notice), MB_ICONWARNING);
 			m_startupNotices.clear();
 		}
 
