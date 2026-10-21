@@ -7,6 +7,8 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -581,6 +583,40 @@ namespace
 		Tests::Check(
 		    cache.BuildCount() == 3, "Changing delivery style invalidates the pitcher mesh cache");
 	}
+	void CheckBallShadow()
+	{
+		Common::ViewProjectionState view;
+		view.isValid = true;
+		view.position = {0, 1.6, 0};
+		const auto shadowOf = [&](const Physics::Vector3& simulationPosition)
+		{
+			Physics::BallState ball;
+			ball.position = simulationPosition;
+			std::vector<std::pair<Common::ScreenPoint, float>> corners;
+			Common::EmitProjectedBallShadow(view, 1280, 720, ball,
+			    [&](const auto& a, const auto& b, const auto& c, const float* color)
+			    {
+				    Tests::Check(color[0] == 0.0F && color[1] == 0.0F && color[2] == 0.0F,
+				        "The ball's shadow is a dark patch");
+				    for (const auto& point : {a, b, c}) corners.push_back({point, color[3]});
+			    });
+			return corners;
+		};
+		const double plateApex = Common::GetPitchDistanceMeters() + .43;
+		const auto low = shadowOf({0.0, .8, plateApex - 8.0});
+		const auto high = shadowOf({0.0, 30.0, plateApex - 8.0});
+		Common::ScreenPoint ball{};
+		const bool ballOnScreen = Common::TryProjectWorldToScreen(
+		    Common::ConvertSimulationPositionToWorld({0.0, .8, plateApex - 8.0}), view, 1280, 720, &ball);
+		bool belowBall = !low.empty();
+		for (const auto& [point, alpha] : low) belowBall = belowBall && point.y > ball.y;
+		Tests::Check(ballOnScreen && low.size() == 60 && belowBall,
+		    "A ball over the field casts a round shadow on the ground below it");
+		Tests::Check(!high.empty() && high.front().second < low.front().second && high.front().second > 0.0F,
+		    "A high fly's shadow is fainter than a low ball's");
+		Tests::Check(shadowOf({0.0, 5.0, plateApex - 140.0}).empty() && shadowOf({0.0, 5.0, plateApex + 25.0}).empty(),
+		    "No shadow is drawn over the stands or the backstop seats");
+	}
 } // namespace
 
 void RunBallRenderingTests()
@@ -594,4 +630,5 @@ void RunBallRenderingTests()
 	CheckBatMaterialGeometry();
 	CheckProjectedBatMaterials();
 	CheckSoftwareBatShellBlend();
+	CheckBallShadow();
 }

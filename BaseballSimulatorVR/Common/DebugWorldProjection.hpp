@@ -1903,4 +1903,34 @@ namespace BaseballSimulatorVR::Common
 		static thread_local WorldMeshProjectionWorkspace markingsWorkspace;
 		markingsWorkspace.Emit(GetFieldMarkingsWorldMesh(GetGroundFanRadiusMeters()), projection, triangle);
 	}
+
+	// The ball's shadow straight below it on the field, just above the chalk. It tells how
+	// high the ball is and where it will come down; the sun's half-degree disc blurs it
+	// wider and fainter the higher the ball flies. Nothing is drawn over the stands.
+	template <typename TDrawTriangleFn>
+	void EmitProjectedBallShadow(const ViewProjectionState& view, const LONG width, const LONG height,
+	    const Physics::BallState& ball, TDrawTriangleFn&& drawTriangle)
+	{
+		if (!view.isValid || width <= 0 || height <= 0) return;
+		const Physics::Vector3 center = ConvertSimulationPositionToWorld(ball.position);
+		const double radius = ball.properties.radiusMeters;
+		const double altitude = ball.position.y - radius;
+		const double apexZ = -DebugWorldLayout::BatterToPlateDistanceMeters + HomePlateDepthMeters;
+		if (!(altitude > -radius) || !Stadium::IsInsidePlayingField(center.x, apexZ - center.z)) return;
+		const double lift = 6.0 * (.003 + .00015 * std::hypot(center.x, center.z));
+		const Physics::Vector3 ground{center.x, DebugWorldStyle::FloorMeshHeightMeters + lift, center.z};
+		const double spread = radius * .9 + .0046 * (std::max)(0.0, altitude);
+		const std::array<float, 4> color{0.0F, 0.0F, 0.0F,
+		    static_cast<float>(.50 * std::clamp(1.0 - altitude / 40.0, .35, 1.0))};
+		constexpr int Segments = 20;
+		for (int segment = 0; segment < Segments; ++segment)
+		{
+			const double a0 = 2.0 * std::numbers::pi * segment / Segments;
+			const double a1 = 2.0 * std::numbers::pi * (segment + 1) / Segments;
+			EmitProjectedWorldTriangle(ground,
+			    ground + Physics::Vector3{std::cos(a1) * spread, 0.0, std::sin(a1) * spread},
+			    ground + Physics::Vector3{std::cos(a0) * spread, 0.0, std::sin(a0) * spread}, view, width, height,
+			    color.data(), drawTriangle);
+		}
+	}
 } // namespace BaseballSimulatorVR::Common
