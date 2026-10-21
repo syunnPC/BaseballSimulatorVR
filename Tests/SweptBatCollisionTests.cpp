@@ -11,7 +11,7 @@ namespace
 {
 	[[nodiscard]] bool Near(double a, double b, double tolerance = 1e-8)
 	{
-		return std::abs(a - b) <= tolerance;
+		return Tests::Near(a, b, tolerance, 0.0);
 	}
 }
 

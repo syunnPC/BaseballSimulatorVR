@@ -41,11 +41,15 @@ cbuffer FxaaParameters : register(b0)
     float edgeThreshold;
     float edgeThresholdMin;
     float blendFactor;
+    float linearInput;
 };
 
+// FXAA's thresholds assume perceptual (gamma-encoded) luma. An sRGB scene view
+// samples linear values, so approximate the encoding with a square root.
 float Luma(float3 rgb)
 {
-    return dot(rgb, float3(0.299, 0.587, 0.114));
+    const float luma = dot(rgb, float3(0.299, 0.587, 0.114));
+    return linearInput > 0.5 ? sqrt(max(luma, 0.0)) : luma;
 }
 
 float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET

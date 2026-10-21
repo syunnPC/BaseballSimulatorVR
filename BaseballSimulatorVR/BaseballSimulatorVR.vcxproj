@@ -22,14 +22,12 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -46,144 +44,39 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
   </PropertyGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+  <!-- Compiler and linker settings shared with the library and the tests live in ..\Directory.Build.props. -->
+  <ItemDefinitionGroup>
     <ClCompile>
-      <WarningLevel>Level4</WarningLevel>
-      <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_WINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp20</LanguageStandard>
-      <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <TreatWarningAsError>true</TreatWarningAsError>
-      <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\external\openxr\include;$(ProjectDir)..\external\sqlite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
-      <AdditionalOptions>/utf-8 /external:templates- %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(ProjectDir)..\external\openxr\lib\x64;$(ProjectDir)..\external\sqlite\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>openxr_loader.lib;sqlite3.lib;d3d12.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <Manifest>
+      <AdditionalManifestFiles>$(ProjectDir)BaseballSimulatorVR.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+    </Manifest>
     <PostBuildEvent>
       <Command>if not exist "$(ProjectDir)..\external\openxr\bin\x64\openxr_loader.dll" exit /b 1
 copy /Y "$(ProjectDir)..\external\openxr\bin\x64\openxr_loader.dll" "$(OutDir)openxr_loader.dll"
 if not exist "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" exit /b 1
-copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.dll"</Command>
+copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.dll"
+if not exist "$(ProjectDir)..\LICENSE.txt" exit /b 1
+copy /Y "$(ProjectDir)..\LICENSE.txt" "$(OutDir)LICENSE.txt"
+if not exist "$(ProjectDir)..\THIRD_PARTY_NOTICES.md" exit /b 1
+copy /Y "$(ProjectDir)..\THIRD_PARTY_NOTICES.md" "$(OutDir)THIRD_PARTY_NOTICES.md"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ClCompile>
-      <WarningLevel>Level4</WarningLevel>
-      <FunctionLevelLinking>true</FunctionLevelLinking>
-      <IntrinsicFunctions>true</IntrinsicFunctions>
-      <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_WINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp20</LanguageStandard>
-      <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <TreatWarningAsError>true</TreatWarningAsError>
-      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
-      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <OpenMPSupport>true</OpenMPSupport>
-      <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\external\openxr\include;$(ProjectDir)..\external\sqlite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
-      <AdditionalOptions>/utf-8 /external:templates- %(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>false</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(ProjectDir)..\external\openxr\lib\x64;$(ProjectDir)..\external\sqlite\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>openxr_loader.lib;sqlite3.lib;d3d12.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
-    <PostBuildEvent>
-      <Command>if not exist "$(ProjectDir)..\external\openxr\bin\x64\openxr_loader.dll" exit /b 1
-copy /Y "$(ProjectDir)..\external\openxr\bin\x64\openxr_loader.dll" "$(OutDir)openxr_loader.dll"
-if not exist "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" exit /b 1
-copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.dll"</Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="Baseball\PitchParameters.hpp" />
-    <ClInclude Include="Common\D3d12DebugOverlay.hpp" />
-    <ClInclude Include="Common\DebugWorldProjection.hpp" />
-    <ClInclude Include="Common\GraphicsBinding.hpp" />
-    <ClInclude Include="Common\BatPoseUtilities.hpp" />
-    <ClInclude Include="Common\FieldPresentationState.hpp" />
-    <ClInclude Include="Common\FieldPresentationOverlay.hpp" />
-    <ClInclude Include="Common\PitcherPresentation.hpp" />
-    <ClInclude Include="Common\StrikeZoneCalibration.hpp" />
-    <ClInclude Include="Common\StrikeZoneSettings.hpp" />
-    <ClInclude Include="Common\MetricsPanelControls.hpp" />
-    <ClInclude Include="Common\UiTextRasterization.hpp" />
-    <ClInclude Include="Common\UiTextAtlas.hpp" />
-    <ClInclude Include="Common\UiTextAtlasPipeline.hpp" />
-    <ClInclude Include="Common\D3d12RenderFrame.hpp" />
-    <ClInclude Include="Common\PreparedWorldProjection.hpp" />
-    <ClInclude Include="Common\IndexedWorldMesh.hpp" />
-    <ClInclude Include="Common\ProjectedSceneMeshes.hpp" />
-    <ClInclude Include="Common\PhaseTrajectoryTrails.hpp" />
-    <ClInclude Include="Common\TrajectoryTubeMesh.hpp" />
-    <ClInclude Include="Common\PhaseTrajectoryOverlay.hpp" />
-    <ClInclude Include="Common\BallFlightPhase.hpp" />
-    <ClInclude Include="Common\TransparentGeometry.hpp" />
-    <ClInclude Include="Common\GdiAlphaTriangleRasterizer.hpp" />
-    <ClInclude Include="Common\JsonKeyValueParser.hpp" />
-    <ClInclude Include="Common\MathUtilities.hpp" />
-    <ClInclude Include="Common\ViewProjectionState.hpp" />
-    <ClInclude Include="Core\Application.hpp" />
-    <ClInclude Include="Core\FrameStatistics.hpp" />
-    <ClInclude Include="Data\PitchPresetJsonStorage.hpp" />
-    <ClInclude Include="Data\PresetRepository.hpp" />
-    <ClInclude Include="Data\RuntimeSettingsJsonStorage.hpp" />
-    <ClInclude Include="Data\SessionLogRepository.hpp" />
-    <ClInclude Include="Framework.hpp" />
-    <ClInclude Include="Physics\BallState.hpp" />
-    <ClInclude Include="Physics\BallProperties.hpp" />
-    <ClInclude Include="Common\StrikeZoneCalibrationUi.hpp" />
-    <ClInclude Include="Physics\BatBallCollision.hpp" />
-    <ClInclude Include="Physics\BatMaterial.hpp" />
-    <ClInclude Include="Physics\BatGeometry.hpp" />
-    <ClInclude Include="Physics\BallAerodynamicsModel.hpp" />
-    <ClInclude Include="Physics\BattedBallAerodynamics.hpp" />
-    <ClInclude Include="Physics\SweptBatCollision.hpp" />
-    <ClInclude Include="Physics\PitchIntegratorType.hpp" />
-    <ClInclude Include="Physics\PitchPhysicsEngine.hpp" />
-    <ClInclude Include="Physics\Vector3.hpp" />
-    <ClInclude Include="Render\Dx12RenderBackend.hpp" />
-    <ClInclude Include="Render\IRenderBackend.hpp" />
-    <ClInclude Include="Render\NullRenderBackend.hpp" />
     <ClInclude Include="Resource.h" />
-    <ClInclude Include="Simulation\PitchSimulationService.hpp" />
-    <ClInclude Include="Simulation\PitchFlightAnalysis.hpp" />
-    <ClInclude Include="Common\HomePlateGeometry.hpp" />
-    <ClInclude Include="Common\StrikeZoneTrajectoryGeometry.hpp" />
-    <ClInclude Include="Common\PitchPresetUi.hpp" />
-    <ClInclude Include="Common\UiPointerInput.hpp" />
-    <ClInclude Include="Simulation\PitchDeliveryController.hpp" />
-    <ClInclude Include="UI\DesktopHudViewModel.hpp" />
     <ClInclude Include="targetver.h" />
-    <ClInclude Include="XR\IXrSystem.hpp" />
-    <ClInclude Include="XR\NullXrSystem.hpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Core\Application.cpp" />
-    <ClCompile Include="Core\FrameStatistics.cpp" />
-    <ClCompile Include="Data\PitchPresetJsonStorage.cpp" />
-    <ClCompile Include="Data\PresetRepository.cpp" />
-    <ClCompile Include="Data\RuntimeSettingsJsonStorage.cpp" />
-    <ClCompile Include="Data\SessionLogRepository.cpp" />
     <ClCompile Include="Main.cpp" />
-    <ClCompile Include="Physics\PitchPhysicsEngine.cpp" />
-    <ClCompile Include="Physics\BatBallCollision.cpp" />
-    <ClCompile Include="Render\Dx12RenderBackend.cpp" />
-    <ClCompile Include="Render\NullRenderBackend.cpp" />
-    <ClCompile Include="Simulation\PitchSimulationService.cpp" />
-    <ClCompile Include="Simulation\PitchFlightAnalysis.cpp" />
-    <ClCompile Include="UI\DesktopHudViewModel.cpp" />
-    <ClCompile Include="XR\NullXrSystem.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="BaseballSimulatorVR.rc" />
@@ -193,22 +86,17 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <Image Include="small.ico" />
     <None Include="BaseballSimulatorVR.manifest" />
   </ItemGroup>
-  <ItemDefinitionGroup>
-    <Manifest>
-      <AdditionalManifestFiles>$(ProjectDir)BaseballSimulatorVR.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
-    </Manifest>
-    <Link>
-      <LinkTimeCodeGeneration Condition="'$(Configuration)|$(Platform)'=='Release|x64'">UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
-    </Link>
-    <ClCompile>
-      <EnableEnhancedInstructionSet Condition="'$(Configuration)|$(Platform)'=='Release|x64'">AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
-    </ClCompile>
-  </ItemDefinitionGroup>
   <ItemGroup>
-    <BundledSettings Include="$(ProjectDir)..\PitchSettings.*.json;$(ProjectDir)..\EnvironmentSettings.*.json;$(ProjectDir)..\PlaySettings.*.json" />
+    <ProjectReference Include="BaseballSimulatorVR.Lib.vcxproj">
+      <Project>{f5d889bf-46fa-4e6c-aca3-cd2975afe51a}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Read-only presets; the folder structure (Presets\Pitch, Presets\Environment, Presets\Play) is kept next to the executable. -->
+    <BundledSettings Include="$(ProjectDir)..\Presets\**\*.json" />
   </ItemGroup>
   <Target Name="CopyBundledSettings" AfterTargets="Build">
-    <Copy SourceFiles="@(BundledSettings)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(BundledSettings)" DestinationFiles="@(BundledSettings->'$(OutDir)Presets\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

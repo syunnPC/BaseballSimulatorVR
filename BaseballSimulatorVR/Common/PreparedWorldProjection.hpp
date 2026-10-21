@@ -16,6 +16,26 @@ namespace BaseballSimulatorVR::Common
 		double y{0.0};
 		float depth{0.0F};
 	};
+
+	struct ClipDepth final
+	{
+		float z{0.0F};
+		float w{1.0F};
+	};
+
+	// Points carry a normalized *linear* view depth for CPU-side sorting. The
+	// rasterizer interpolates z/w affinely in screen space, which is only
+	// correct for a clip z that is affine in view space: rebuild w and use the
+	// standard [0,1] perspective depth so large triangles occlude correctly.
+	[[nodiscard]] inline ClipDepth ClipDepthFromNormalizedDepth(
+	    const double normalizedDepth, const double nearClip, const double farClip) noexcept
+	{
+		const double w = nearClip + std::clamp(normalizedDepth, 0.0, 1.0) * (farClip - nearClip);
+		return ClipDepth{
+			static_cast<float>(farClip / (farClip - nearClip) * (w - nearClip)),
+			static_cast<float>(w)
+		};
+	}
 	// Precompute camera rotation and asymmetric FOV for all vertices in a view.
 	class PreparedWorldProjection final
 	{
@@ -43,6 +63,67 @@ namespace BaseballSimulatorVR::Common
 			m_verticalRange = std::tan(view.fovUpRadians) - m_tanDown;
 			m_valid = m_horizontalRange > 1e-6 && m_verticalRange > 1e-6;
 		}
+		// Distance in front of the eye along the view direction.
+		[[nodiscard]] double ViewDepth(const Physics::Vector3& world) const noexcept
+		{
+			const auto delta = world - m_position;
+			return -(m_rotation[2] * delta.x + m_rotation[5] * delta.y + m_rotation[8] * delta.z);
+		}
+
+		// Projects a world triangle after clipping it against the near plane, so
+		// geometry passing beside or below the viewer keeps its visible part
+		// instead of being dropped whole when one corner is behind the eye.
+		template <typename TEmit>
+		void EmitNearClippedTriangle(const Physics::Vector3& a, const Physics::Vector3& b,
+		    const Physics::Vector3& c, TEmit&& emit) const
+		{
+			if (!m_valid)
+			{
+				return;
+			}
+			const std::array<Physics::Vector3, 3> input{a, b, c};
+			const double clipDepth = m_nearClip + 1e-7;
+			std::array<double, 3> depths{};
+			int frontCount = 0;
+			for (std::size_t i = 0; i < input.size(); ++i)
+			{
+				depths[i] = ViewDepth(input[i]);
+				frontCount += depths[i] >= clipDepth ? 1 : 0;
+			}
+			if (frontCount == 0)
+			{
+				return;
+			}
+			std::array<Physics::Vector3, 4> clipped{};
+			std::size_t count = 0;
+			for (std::size_t i = 0; i < input.size(); ++i)
+			{
+				const std::size_t next = (i + 1) % input.size();
+				const bool inside = depths[i] >= clipDepth;
+				if (inside)
+				{
+					clipped[count++] = input[i];
+				}
+				if (inside != (depths[next] >= clipDepth))
+				{
+					clipped[count++] = input[i] + (input[next] - input[i]) *
+					    ((clipDepth - depths[i]) / (depths[next] - depths[i]));
+				}
+			}
+			std::array<ScreenPoint, 4> projected{};
+			for (std::size_t i = 0; i < count; ++i)
+			{
+				if (!Project(clipped[i], &projected[i], false))
+				{
+					return;
+				}
+			}
+			for (std::size_t i = 1; i + 1 < count; ++i)
+			{
+				emit(projected[0], projected[i], projected[i + 1]);
+			}
+		}
+
 		[[nodiscard]] bool Project(const Physics::Vector3& world, ScreenPoint* projected,
 		    bool requireVisibleBounds = true) const
 		{

@@ -1,0 +1,229 @@
+name: Build and test
+
+on:
+  # Every pushed branch gets a Windows/MSVC build, not only master.
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The projects target the v145 toolset (Visual Studio 2026). On hosted images that only ship
+# Visual Studio 2022, .github/scripts/Select-PlatformToolset.ps1 switches to v143.
+# Set the repository variable WINDOWS_RUNNER to use another runner label.
+env:
+  SOLUTION: BaseballSimulatorVR.slnx
+  # GPU suites run on WARP, which is slow on shared runners.
+  BASEBALLSIM_TEST_TIMEOUT_SCALE: '4'
+
+jobs:
+  release:
+    name: Release x64 build and tests
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Select platform toolset
+        id: toolset
+        shell: pwsh
+        run: ./.github/scripts/Select-PlatformToolset.ps1
+
+      - name: Build ${{ env.SOLUTION }} (Release|x64)
+        shell: pwsh
+        run: >
+          msbuild $env:SOLUTION /m /nologo /p:Configuration=Release /p:Platform=x64
+          ${{ steps.toolset.outputs.msbuild_args }}
+          /bl:msbuild-release.binlog "/flp:logfile=msbuild-release.log;verbosity=normal"
+
+      - name: Run all test suites
+        shell: cmd
+        run: |
+          x64\Release\BaseballSimulatorVR.Tests.exe > test-release.log 2>&1
+          set TEST_EXIT=%ERRORLEVEL%
+          type test-release.log
+          exit /b %TEST_EXIT%
+
+      - name: Summarize tests
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path test-release.log) {
+            $lines = Get-Content test-release.log
+            $summary = @('### Tests (Release x64, toolset ${{ steps.toolset.outputs.toolset }})', '', '```')
+            $summary += $lines | Where-Object { $_ -match '^(FAIL|SKIP): ' -or $_ -match ' checks, ' }
+            $summary += '```'
+            $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: Upload application
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaseballSimulatorVR-Release-x64
+          path: |
+            x64/Release/BaseballSimulatorVR.exe
+            x64/Release/BaseballSimulatorVR.pdb
+            x64/Release/BaseballSimulatorVR.Tests.exe
+            x64/Release/BaseballSimulatorVR.Tests.pdb
+            x64/Release/*.dll
+            x64/Release/*.json
+            x64/Release/LICENSE.txt
+            x64/Release/THIRD_PARTY_NOTICES.md
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-release
+          path: |
+            test-release.log
+            msbuild-release.log
+            msbuild-release.binlog
+          if-no-files-found: ignore
+
+  debug:
+    name: Debug x64 build
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Select platform toolset
+        id: toolset
+        shell: pwsh
+        run: ./.github/scripts/Select-PlatformToolset.ps1
+
+      - name: Build ${{ env.SOLUTION }} (Debug|x64)
+        shell: pwsh
+        run: >
+          msbuild $env:SOLUTION /m /nologo /p:Configuration=Debug /p:Platform=x64
+          ${{ steps.toolset.outputs.msbuild_args }}
+          "/flp:logfile=msbuild-debug.log;verbosity=normal"
+
+      - name: Upload log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-debug
+          path: msbuild-debug.log
+          if-no-files-found: ignore
+
+  asan:
+    name: AddressSanitizer tests (non-blocking)
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
+    timeout-minutes: 90
+    continue-on-error: true
+    env:
+      BASEBALLSIM_TEST_TIMEOUT_SCALE: '20'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Select platform toolset
+        id: toolset
+        shell: pwsh
+        run: ./.github/scripts/Select-PlatformToolset.ps1
+
+      # Release keeps /RTC and incremental linking off, which /fsanitize=address requires.
+      - name: Build tests with /fsanitize=address
+        shell: pwsh
+        run: >
+          msbuild Tests/BaseballSimulatorVR.Tests.vcxproj /m /nologo /p:Configuration=Release /p:Platform=x64
+          /p:EnableASAN=true /p:CopyAsanBinariesToOutDir=true
+          ${{ steps.toolset.outputs.msbuild_args }}
+          "/flp:logfile=msbuild-asan.log;verbosity=normal"
+
+      - name: Run all test suites under ASan
+        shell: cmd
+        env:
+          VC_BIN: ${{ steps.toolset.outputs.vc_bin }}
+        run: |
+          rem The ASan runtime is copied next to the exe; the compiler folder is a fallback.
+          if defined VC_BIN set "PATH=%PATH%;%VC_BIN%"
+          x64\Release\BaseballSimulatorVR.Tests.exe > test-asan.log 2>&1
+          set TEST_EXIT=%ERRORLEVEL%
+          type test-asan.log
+          exit /b %TEST_EXIT%
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-asan
+          path: |
+            test-asan.log
+            msbuild-asan.log
+          if-no-files-found: ignore
+
+  analyze:
+    name: MSVC code analysis (non-blocking)
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Select platform toolset
+        id: toolset
+        shell: pwsh
+        run: ./.github/scripts/Select-PlatformToolset.ps1
+
+      # BaseballSimCodeAnalysis (Directory.Build.props) adds /analyze without /WX and skips
+      # external headers, so every warning is collected in one pass.
+      - name: Build with /analyze
+        shell: pwsh
+        run: >
+          msbuild $env:SOLUTION /m /nologo /p:Configuration=Release /p:Platform=x64
+          /p:BaseballSimCodeAnalysis=true
+          ${{ steps.toolset.outputs.msbuild_args }}
+          "/flp:logfile=msbuild-analyze.log;verbosity=normal"
+
+      - name: Summarize warnings
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path msbuild-analyze.log)) { exit 0 }
+          $warnings = Select-String -Path msbuild-analyze.log -Pattern 'warning C\d+' |
+            ForEach-Object { $_.Line.Trim() } | Sort-Object -Unique
+          $summary = @("### /analyze: $($warnings.Count) unique warnings", '')
+          if ($warnings.Count -gt 0) {
+            $summary += '```'
+            $summary += $warnings | Select-Object -First 200
+            $summary += '```'
+          }
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $warnings | Select-Object -First 50 | ForEach-Object { Write-Output "::warning::$_" }
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-analyze
+          path: msbuild-analyze.log
+          if-no-files-found: ignore

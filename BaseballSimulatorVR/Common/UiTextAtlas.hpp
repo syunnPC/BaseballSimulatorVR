@@ -341,12 +341,12 @@ namespace BaseballSimulatorVR::Common::UiText
 	[[nodiscard]] inline AtlasVertex BuildAtlasVertex(
 	    const ScreenPoint& p, float u, float v, const float* color, LONG width, LONG height)
 	{
-		const double w =
-		    DebugWorldLayout::NearClipMeters +
-		    p.depth * (DebugWorldLayout::FarClipMeters - DebugWorldLayout::NearClipMeters);
+		const auto clip = ClipDepthFromNormalizedDepth(
+		    p.depth, DebugWorldLayout::NearClipMeters, DebugWorldLayout::FarClipMeters);
+		const double w = clip.w;
 		return {{static_cast<float>((p.x / (std::max)(1L, width - 1) * 2 - 1) * w),
 		            static_cast<float>((1 - p.y / (std::max)(1L, height - 1) * 2) * w),
-		            static_cast<float>(p.depth * w), static_cast<float>(w)},
+		            clip.z, clip.w},
 		    {u, v}, {color[0], color[1], color[2], color[3]}};
 	}
 	inline void AppendUntexturedTriangle(std::vector<AtlasVertex>& vertices, const ScreenPoint& a,
@@ -544,13 +544,17 @@ namespace BaseballSimulatorVR::Common::UiText
 		for (std::size_t i = 0; i < vertices.size(); i += 3)
 		{
 			const auto& first = vertices[i];
+			// Text groups carry a normalized linear depth; recover the same measure
+			// from clip w (z/w is the non-linear hardware depth).
+			const auto linearDepth = [](const AtlasVertex& vertex)
+			{
+				return static_cast<float>((vertex.position[3] - DebugWorldLayout::NearClipMeters) /
+				    (DebugWorldLayout::FarClipMeters - DebugWorldLayout::NearClipMeters));
+			};
 			const float depth =
 			    first.sortGroup != 0
 			        ? first.sortDepth
-			        : (vertices[i].position[2] / vertices[i].position[3] +
-			              vertices[i + 1].position[2] / vertices[i + 1].position[3] +
-			              vertices[i + 2].position[2] / vertices[i + 2].position[3]) /
-			              3;
+			        : (linearDepth(vertices[i]) + linearDepth(vertices[i + 1]) + linearDepth(vertices[i + 2])) / 3;
 			triangles.push_back({{vertices[i], vertices[i + 1], vertices[i + 2]}, depth,
 			    first.sortGroup, first.sortLayer});
 		}

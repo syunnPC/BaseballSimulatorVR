@@ -54,6 +54,28 @@ namespace BaseballSimulatorVR::Common
 		return orientation->axis;
 	}
 
+	// Rotates a vector about a (not necessarily unit) rotation vector whose length is the angle.
+	[[nodiscard]] inline Physics::Vector3 RotateByRotationVector(
+	    const Physics::Vector3& vector, const Physics::Vector3& rotation) noexcept
+	{
+		const double angle = Physics::Length(rotation);
+		if (!(angle > 1e-12) || !std::isfinite(angle)) return vector;
+		const Physics::Vector3 axis = rotation / angle;
+		return vector * std::cos(angle) + Physics::Cross(axis, vector) * std::sin(angle) +
+		    axis * (Physics::Dot(axis, vector) * (1.0 - std::cos(angle)));
+	}
+
+	// The bat frame part-way through a constant-angular-velocity rotation.
+	[[nodiscard]] inline BatOrientation RotateBatOrientation(
+	    const BatOrientation& orientation, const Physics::Vector3& angularVelocity, double seconds) noexcept
+	{
+		const Physics::Vector3 rotation = angularVelocity * seconds;
+		return BatOrientation{
+			Physics::NormalizeOrZero(RotateByRotationVector(orientation.axis, rotation)),
+			Physics::NormalizeOrZero(RotateByRotationVector(orientation.up, rotation))
+		};
+	}
+
 	// Rotation of the complete controller frame, including roll about the bat
 	// axis. Axis endpoints alone cannot observe this surface velocity component.
 	[[nodiscard]] inline std::optional<Physics::Vector3> ComputeBatAngularVelocity(

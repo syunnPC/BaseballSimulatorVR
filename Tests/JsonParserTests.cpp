@@ -1,5 +1,7 @@
 #include "TestSupport.hpp"
+#include "../BaseballSimulatorVR/Common/AtomicFileWriter.hpp"
 #include "../BaseballSimulatorVR/Common/JsonKeyValueParser.hpp"
+#include "../BaseballSimulatorVR/Common/JsonWriter.hpp"
 #include "../BaseballSimulatorVR/Data/PitchPresetJsonStorage.hpp"
 #include "../BaseballSimulatorVR/Data/RuntimeSettingsJsonStorage.hpp"
 
@@ -60,6 +62,121 @@ namespace
 	  private:
 		std::locale previous_;
 	};
+
+	void CheckDocumentModelAndDiagnostics()
+	{
+		using namespace BaseballSimulatorVR::Common::JsonKeyValueParser;
+		const auto document = JsonDocument::Parse(
+		    "{\n  \"a\": 1.5,\n  \"list\": [ { \"name\": \"x\", \"v\": 2 }, { \"name\": \"y\", \"v\": 3 } ],\n"
+		    "  \"nested\": { \"flag\": true }\n}\n");
+		Tests::Check(document.IsValid(), "A valid document parses once into a DOM");
+		const auto root = document.Root();
+		Tests::Check(root.ReadDouble("a").value == 1.5 && root.ReadBool("missing").status == KeyReadStatus::Missing,
+		    "Several keys are queried from one parsed document");
+		const auto list = root.ReadObjectArray("list");
+		Tests::Check(list.value && list.value->size() == 2U && (*list.value)[1].ReadString("name").value == "y" &&
+		    (*list.value)[1].Path() == "list[1]", "Array elements are object views with their member path");
+		const auto nested = root.ReadObject("nested");
+		Tests::Check(nested.value && nested.value->ReadBool("flag").value == true, "Nested objects can be queried");
+
+		const auto typeError = (*list.value)[1].ReadBool("v");
+		Tests::Check(typeError.status == KeyReadStatus::Invalid && typeError.diagnostic.line == 3U &&
+		    typeError.diagnostic.path == "list[1].v" && !typeError.diagnostic.message.empty(),
+		    "Type errors report the line and full key path of the offending member");
+		Tests::Check(FormatDiagnostic(typeError.diagnostic).find("line 3, column") == 0U &&
+		    FormatDiagnostic(typeError.diagnostic).find("key \"list[1].v\"") != std::string::npos,
+		    "Diagnostics format as line, column and key");
+
+		const auto broken = JsonDocument::Parse("{\n  \"a\": 1,\n  \"b\": [1, 2,]\n}");
+		Tests::Check(!broken.IsValid() && broken.Error().line == 3U && broken.Error().column == 14U &&
+		    broken.Error().path == "b", "Syntax errors report the exact line, column and member path");
+		Tests::Check(ReadIntResult("{\n\"a\": 1,\n\"b\": tru }", "a").diagnostic.line == 3U,
+		    "Legacy single-key reads surface the document syntax error position");
+		const auto duplicate = JsonDocument::Parse("{\"k\": 1,\n \"k\": 2}");
+		Tests::Check(!duplicate.IsValid() && duplicate.Error().line == 2U && duplicate.Error().path == "k" &&
+		    duplicate.Error().message.find("duplicate") != std::string::npos, "Duplicate keys report their position");
+		const auto japanese = JsonDocument::Parse("{\"名前\": \"値\", \"x\": nope}");
+		Tests::Check(!japanese.IsValid() && japanese.Error().column == 18U,
+		    "Columns count Unicode characters rather than UTF-8 bytes");
+
+		const std::string bom = "\xEF\xBB\xBF{\"n\": 5}";
+		Tests::Check(ReadInt(bom, "n") == 5 && JsonDocument::Parse(bom).IsValid(),
+		    "A leading UTF-8 byte order mark (Notepad 'UTF-8 with BOM') is accepted");
+		Tests::Check(!JsonDocument::Parse("{\"n\": 5}\xEF\xBB\xBF").IsValid() &&
+		    !JsonDocument::Parse("\xEF\xBB\xBF\xEF\xBB\xBF{}").IsValid(),
+		    "Only a single leading byte order mark is skipped");
+		const auto bomError = JsonDocument::Parse("\xEF\xBB\xBF{\n\"n\": x}");
+		Tests::Check(bomError.Error().line == 2U && bomError.Error().column == 6U,
+		    "The byte order mark does not shift reported columns");
+		const auto range = root.ReadInt("a");
+		Tests::Check(range.status == KeyReadStatus::Invalid && range.diagnostic.path == "a",
+		    "Integer conversion failures identify the key");
+		JsonObjectView detached{};
+		{
+			const auto temporary = JsonDocument::Parse("{\"keep\": \"alive\"}");
+			detached = temporary.Root();
+		}
+		Tests::Check(detached.ReadString("keep").value == "alive", "Views keep their document alive");
+	}
+
+	void CheckJsonWriter()
+	{
+		using namespace BaseballSimulatorVR::Common;
+		Tests::Check(JsonWriter::FormatNumber(18.44) == "18.44" && JsonWriter::FormatNumber(0.1) == "0.1" &&
+		    JsonWriter::FormatNumber(5.0) == "5.0" && JsonWriter::FormatNumber(-0.25) == "-0.25" &&
+		    JsonWriter::FormatNumber(1e-7) == "1e-07" && JsonWriter::FormatNumber(30.555555555555554) ==
+		        "30.555555555555554", "Numbers use the shortest round-trip representation");
+		for (const double value : { 18.44, 0.1, 1.0 / 3.0, 6.02214076e23, -1e-300, 0.0064 })
+		{
+			const auto text = JsonWriter::FormatNumber(value);
+			Tests::Check(text && JsonKeyValueParser::ReadDouble("{\"v\":" + *text + "}", "v") == value,
+			    "Shortest formatting parses back to the identical double");
+		}
+		Tests::Check(!JsonWriter::FormatNumber(std::numeric_limits<double>::quiet_NaN()) &&
+		    !JsonWriter::FormatNumber(std::numeric_limits<double>::infinity()), "Non-finite numbers are rejected");
+		JsonWriter::ObjectBuilder builder;
+		builder.AddComment("name", "Quote \" and backslash \\");
+		builder.AddString("name", "\xE6\x97\xA5\n");
+		std::vector<JsonWriter::ObjectBuilder> items(1U);
+		items[0].AddInteger("i", -3);
+		builder.AddObjectArray("items", items);
+		const auto document = JsonKeyValueParser::JsonDocument::Parse(builder.BuildDocument());
+		Tests::Check(document.IsValid() && document.Root().ReadString("name").value == "\xE6\x97\xA5\n" &&
+		    document.Root().ReadString("_comment_name").value == "Quote \" and backslash \\" &&
+		    document.Root().ReadObjectArray("items").value->front().ReadInt("i").value == -3,
+		    "The object builder emits valid, escaped, nested JSON");
+		Tests::Check(!builder.AddNumber("nan", std::numeric_limits<double>::quiet_NaN()) && builder.HasFailed(),
+		    "Builders remember unrepresentable values");
+	}
+
+	void CheckAtomicSettingsWrites(const std::filesystem::path& directory)
+	{
+		using namespace BaseballSimulatorVR;
+		const auto path = directory / L"設定.json";
+		Tests::Check(Common::WriteFileAtomically(path, "{\"v\": 1}\n").succeeded, "Atomic write creates the file");
+		Common::AtomicWriteOptions options;
+		options.keepBackup = true;
+		options.isBackupContentValid = [](const std::string_view text)
+		{ return Common::JsonKeyValueParser::JsonDocument::Parse(text).IsValid(); };
+		Tests::Check(Common::WriteFileAtomically(path, "{\"v\": 2}\n", options).succeeded, "Second write succeeds");
+		Tests::Check(Tests::ReadFile(path) == "{\"v\": 2}\n" &&
+		    Tests::ReadFile(Common::BuildBackupFilePath(path)) == "{\"v\": 1}\n",
+		    "The previous good file is kept as a single .bak");
+		WriteFile(path, "{\"v\": ");
+		Tests::Check(Common::WriteFileAtomically(path, "{\"v\": 3}\n", options).succeeded &&
+		    Tests::ReadFile(Common::BuildBackupFilePath(path)) == "{\"v\": 1}\n",
+		    "A corrupted file never replaces the last good backup");
+		Tests::Check(!Common::WriteFileAtomically(directory / L"missing" / L"x.json", "{}").succeeded,
+		    "Writing into a missing directory fails without side effects");
+		{
+			std::ifstream locked(path, std::ios::binary);
+			Tests::Check(locked.is_open(), "Hold the settings file open");
+			Tests::Check(!Common::WriteFileAtomically(path, "{\"v\": 4}\n").succeeded &&
+			    Tests::ReadFile(path) == "{\"v\": 3}\n", "A failed replacement leaves the previous content intact");
+		}
+		for (const auto& entry : std::filesystem::directory_iterator(directory))
+			Tests::Check(entry.path().extension() != L".tmp", "Temporary files are removed after success and failure");
+	}
 } // namespace
 
 void RunJsonParserTests()
@@ -433,4 +550,134 @@ void RunJsonParserTests()
 	Tests::Check(
 	    runtime.LoadPlay(playPath.wstring(), error).has_value(),
 	    "Play settings accept explicit null");
+
+	CheckDocumentModelAndDiagnostics();
+	CheckJsonWriter();
+	{
+		Tests::TempDirectory atomicDirectory;
+		CheckAtomicSettingsWrites(atomicDirectory.path);
+	}
+
+	// Saved files use shortest round-trip numbers and keep a backup of the previous version.
+	EnvironmentRuntimeSettings shortest{};
+	shortest.pitchDistanceMeters = 18.44;
+	shortest.windShearFactor = 0.1;
+	Tests::Check(runtime.SaveEnvironment(environmentPath.wstring(), shortest, error), "Save environment for formatting");
+	const auto shortestText = Tests::ReadFile(environmentPath);
+	Tests::Check(shortestText.find("\"pitchDistanceMeters\": 18.44,") != std::string::npos &&
+	    shortestText.find("\"windShearFactor\": 0.1,") != std::string::npos &&
+	    shortestText.find("0000000") == std::string::npos,
+	    "Environment numbers are written without fixed max_digits10 noise");
+	Tests::Check(std::filesystem::exists(Common::BuildBackupFilePath(environmentPath)),
+	    "Replacing a valid environment file keeps a .bak copy");
+
+	// New optional environment fields: defaults when absent, persisted, validated.
+	WriteFile(environmentPath,
+	    R"({"pitchDistanceMeters":18.44,"enableMoundHeightOffset":false,"moundHeightOffsetMeters":0.18,"ballRestitutionAtReferenceSpeed":0.45})");
+	const auto legacyEnvironment = runtime.LoadEnvironment(environmentPath.wstring(), error);
+	Tests::Check(legacyEnvironment && legacyEnvironment->altitudeMeters == 0.0 &&
+	    legacyEnvironment->temperatureCelsius == 15.0 && legacyEnvironment->relativeHumidityPercent == 0.0 &&
+	    legacyEnvironment->batMassKilograms == 0.885, "Old environment files load with the new field defaults");
+	EnvironmentRuntimeSettings atmosphere{};
+	atmosphere.altitudeMeters = 1609.3;
+	atmosphere.temperatureCelsius = 31.5;
+	atmosphere.relativeHumidityPercent = 62.0;
+	atmosphere.batMassKilograms = 0.92;
+	Tests::Check(runtime.SaveEnvironment(environmentPath.wstring(), atmosphere, error), "Save atmosphere fields");
+	const auto restoredAtmosphere = runtime.LoadEnvironment(environmentPath.wstring(), error);
+	Tests::Check(restoredAtmosphere && restoredAtmosphere->altitudeMeters == 1609.3 &&
+	    restoredAtmosphere->temperatureCelsius == 31.5 && restoredAtmosphere->relativeHumidityPercent == 62.0 &&
+	    restoredAtmosphere->batMassKilograms == 0.92, "Altitude, temperature, humidity and bat mass round trip");
+	const auto atmosphereText = Tests::ReadFile(environmentPath);
+	struct InvalidEnvironmentField { std::string_view key, value; };
+	for (const auto& field : {InvalidEnvironmentField{"altitudeMeters", "-600"},
+	    InvalidEnvironmentField{"altitudeMeters", "6000"}, InvalidEnvironmentField{"temperatureCelsius", "-41"},
+	    InvalidEnvironmentField{"temperatureCelsius", "61"}, InvalidEnvironmentField{"relativeHumidityPercent", "101"},
+	    InvalidEnvironmentField{"relativeHumidityPercent", "-1"}, InvalidEnvironmentField{"batMassKilograms", "0.1"},
+	    InvalidEnvironmentField{"batMassKilograms", "2"}, InvalidEnvironmentField{"batMassKilograms", "\"0.9\""}})
+	{
+		auto invalid = atmosphereText;
+		const auto begin = invalid.find("\"" + std::string(field.key) + "\":");
+		invalid.replace(begin, invalid.find('\n', begin) - begin,
+		    "\"" + std::string(field.key) + "\": " + std::string(field.value) + ",");
+		WriteFile(environmentPath, invalid);
+		Tests::Check(!runtime.LoadEnvironment(environmentPath.wstring(), error) &&
+		    error.find(std::wstring(field.key.begin(), field.key.end())) != std::wstring::npos &&
+		    error.find(L"line ") != std::wstring::npos,
+		    "Out-of-range atmosphere and bat-mass values are rejected with key and line");
+	}
+	for (const double invalidAltitude : {-501.0, 5001.0, std::numeric_limits<double>::quiet_NaN()})
+	{
+		EnvironmentRuntimeSettings invalid{};
+		invalid.altitudeMeters = invalidAltitude;
+		Tests::Check(!runtime.SaveEnvironment(environmentPath.wstring(), invalid, error) && !error.empty(),
+		    "Invalid atmosphere values are not saved");
+	}
+
+	// Error messages name the line and key; a Notepad BOM is accepted by the storage layer.
+	WriteFile(environmentPath,
+	    "\xEF\xBB\xBF{\n  \"pitchDistanceMeters\": 18.44,\n  \"enableMoundHeightOffset\": false,\n"
+	    "  \"moundHeightOffsetMeters\": 0.18,\n  \"ballRestitutionAtReferenceSpeed\": 0.45\n}\n");
+	Tests::Check(runtime.LoadEnvironment(environmentPath.wstring(), error).has_value(),
+	    "Settings saved as UTF-8 with BOM load");
+	WriteFile(environmentPath,
+	    "{\n  \"pitchDistanceMeters\": 18.44,\n  \"enableMoundHeightOffset\": \"no\",\n"
+	    "  \"moundHeightOffsetMeters\": 0.18,\n  \"ballRestitutionAtReferenceSpeed\": 0.45\n}\n");
+	Tests::Check(!runtime.LoadEnvironment(environmentPath.wstring(), error) &&
+	    error.find(L"line 3") != std::wstring::npos && error.find(L"enableMoundHeightOffset") != std::wstring::npos,
+	    "A wrongly typed setting is reported with its line and key");
+	WriteFile(environmentPath, "{\n  \"pitchDistanceMeters\": 18.44,\n  \"enableMoundHeightOffset\": false\n  \"x\": 1\n}");
+	Tests::Check(!runtime.LoadEnvironment(environmentPath.wstring(), error) && error.find(L"line 4") != std::wstring::npos,
+	    "A syntax error is reported with its line");
+
+	// Pitch selection state lives in PlaySettings.
+	PlayRuntimeSettings selection{};
+	selection.selectedPitchSettingsFile = L"PitchSettings.Difficulty.Easy.LHP.json";
+	selection.activePitchProfileIndex = 2;
+	selection.randomPitchProfileEnabled = false;
+	selection.settingsLayoutVersion = CurrentSettingsLayoutVersion;
+	Tests::Check(runtime.SavePlay(playPath.wstring(), selection, error), "Save play selection state");
+	const auto restoredSelection = runtime.LoadPlay(playPath.wstring(), error);
+	Tests::Check(restoredSelection && restoredSelection->selectedPitchSettingsFile == selection.selectedPitchSettingsFile &&
+	    restoredSelection->activePitchProfileIndex == 2 && restoredSelection->randomPitchProfileEnabled == false &&
+	    restoredSelection->settingsLayoutVersion == CurrentSettingsLayoutVersion,
+	    "Selected pitch file, profile index, random flag and layout version round trip");
+	Tests::Check(runtime.SavePlay(playPath.wstring(), PlayRuntimeSettings{}, error), "Save default selection state");
+	const auto defaultSelection = runtime.LoadPlay(playPath.wstring(), error);
+	Tests::Check(defaultSelection && defaultSelection->selectedPitchSettingsFile.empty() &&
+	    !defaultSelection->activePitchProfileIndex && !defaultSelection->randomPitchProfileEnabled &&
+	    defaultSelection->settingsLayoutVersion == 0, "Unset selection fields stay unset");
+
+	// Display name, mirror flag and the generated opposite-hand variant.
+	PitchRuntimeSettings mirrorSource{};
+	mirrorSource.displayName = L"難易度 標準";
+	mirrorSource.mirrorForLeftHandedPitcher = true;
+	mirrorSource.pitchParameters.spinAxis = { 0.6, 0.8, 0.0 };
+	mirrorSource.pitchProfiles = { { L"スライダー", mirrorSource.pitchParameters } };
+	mirrorSource.pitchProfiles[0].pitchParameters.spinAxis = { 0.2, -0.4, 0.3 };
+	mirrorSource.activePitchProfileIndex = 0;
+	Tests::Check(presets.SavePitchSettings(presetPath.wstring(), mirrorSource, error), "Save mirror source");
+	const auto mirrorLoaded = presets.LoadPitchSettings(presetPath.wstring(), error);
+	Tests::Check(mirrorLoaded && mirrorLoaded->displayName == L"難易度 標準" && mirrorLoaded->mirrorForLeftHandedPitcher,
+	    "displayName and mirrorForLeftHandedPitcher round trip");
+	const auto mirrored = MirrorPitchSettingsForOppositeHand(*mirrorLoaded);
+	const auto& mirroredAxis = mirrored.pitchProfiles[0].pitchParameters.spinAxis;
+	Tests::Check(mirrored.pitcherThrowsLeftHanded && !mirrored.mirrorForLeftHandedPitcher &&
+	    mirroredAxis.x == 0.2 && mirroredAxis.y == 0.4 && mirroredAxis.z == -0.3 &&
+	    mirrored.pitchParameters.spinAxis.y == -0.8 && mirrored.displayName == mirrorLoaded->displayName &&
+	    mirrored.pitchProfiles[0].name == L"スライダー",
+	    "The generated left-handed variant mirrors the spin axis and flips the throwing hand");
+	Tests::Check(Tests::ReadFile(presetPath).find("0000000000") == std::string::npos,
+	    "Pitch settings numbers use shortest round-trip formatting");
+	WriteFile(presetPath, "\xEF\xBB\xBF" + Tests::ReadFile(presetPath));
+	Tests::Check(presets.LoadPitchSettings(presetPath.wstring(), error).has_value(), "Pitch settings with BOM load");
+	{
+		auto invalid = Tests::ReadFile(presetPath);
+		const auto begin = invalid.rfind("\"spinRpm\":");
+		invalid.replace(begin, invalid.find('\n', begin) - begin, "\"spinRpm\": \"fast\",");
+		WriteFile(presetPath, invalid);
+		Tests::Check(!presets.LoadPitchSettings(presetPath.wstring(), error) &&
+		    error.find(L"pitchProfiles[0].spinRpm") != std::wstring::npos && error.find(L"line ") != std::wstring::npos,
+		    "Profile errors identify the profile, key and line");
+	}
 }

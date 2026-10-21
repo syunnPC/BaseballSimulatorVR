@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <iostream>
+#include <sstream>
 #include <vector>
 
 #if defined(_WIN64)
@@ -18,7 +19,7 @@ namespace
 		HiddenRenderWindow()
 		{
 			WNDCLASSW windowClass{};
-			windowClass.lpfnWndProc = DefWindowProcW;
+			windowClass.lpfnWndProc = WindowProcedure;
 			windowClass.hInstance = GetModuleHandleW(nullptr);
 			windowClass.lpszClassName = ClassName;
 			Tests::Check(RegisterClassW(&windowClass) != 0, "Register hidden render test window class");
@@ -47,18 +48,32 @@ namespace
 		}
 		HWND handle{ nullptr };
 	  private:
+		// DefWindowProc clamps window sizes to the desktop (1024x768 on CI runners),
+		// which would silently shrink the larger client extents this test requests.
+		static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+		{
+			if (message == WM_GETMINMAXINFO)
+			{
+				auto* limits = reinterpret_cast<MINMAXINFO*>(lParam);
+				limits->ptMaxTrackSize = { 8192, 8192 };
+				return 0;
+			}
+			return DefWindowProcW(window, message, wParam, lParam);
+		}
 		static constexpr const wchar_t* ClassName = L"BaseballSimulatorVR.DesktopResizeTests";
 	};
 
-	[[nodiscard]] bool HasD3d12Runtime()
+	// Skips the suite (reported as SKIP, not PASS) when no D3D12 device can be created.
+	void RequireD3d12Runtime()
 	{
 		Microsoft::WRL::ComPtr<IDXGIFactory7> factory{};
 		const HRESULT factoryResult = CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
 		if (FAILED(factoryResult))
 		{
-			std::cout << "SKIP desktop resize: DXGI 1.6 factory unavailable (HRESULT "
-			    << std::hex << factoryResult << std::dec << ")\n";
-			return false;
+			std::ostringstream reason;
+			reason << "DXGI 1.6 factory unavailable (HRESULT 0x" << std::hex
+			    << static_cast<unsigned long>(factoryResult) << ")";
+			Tests::Skip(reason.str());
 		}
 		for (UINT index = 0;; ++index)
 		{
@@ -67,14 +82,13 @@ namespace
 			if (adapterResult == DXGI_ERROR_NOT_FOUND) break;
 			Tests::Check(SUCCEEDED(adapterResult), "Enumerate DXGI adapters without an unexpected runtime error");
 			if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
-			    __uuidof(ID3D12Device), nullptr))) return true;
+			    __uuidof(ID3D12Device), nullptr))) return;
 		}
 		Microsoft::WRL::ComPtr<IDXGIAdapter> warp{};
 		if (SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) &&
 		    SUCCEEDED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0,
-		        __uuidof(ID3D12Device), nullptr))) return true;
-		std::cout << "SKIP desktop resize: neither hardware nor WARP supports D3D12 feature level 11.0\n";
-		return false;
+		        __uuidof(ID3D12Device), nullptr))) return;
+		Tests::Skip("neither hardware nor WARP supports D3D12 feature level 11.0");
 	}
 }
 #endif
@@ -82,7 +96,7 @@ namespace
 void RunDesktopRenderResizeTests()
 {
 #if defined(_WIN64)
-	if (!HasD3d12Runtime()) return;
+	RequireD3d12Runtime();
 	// When installed, the debug layer also verifies resource lifetime/state during
 	// ResizeBuffers. Its absence does not skip the real GPU/WARP integration.
 	Microsoft::WRL::ComPtr<ID3D12Debug> debug{};
@@ -120,7 +134,7 @@ void RunDesktopRenderResizeTests()
 	const auto renderFrame = [&]
 	{
 		const auto before = backend.GetDesktopRenderStatus().presentedFrameCount;
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		const auto deadline = std::chrono::steady_clock::now() + Tests::ScaleTimeout(std::chrono::seconds(3));
 		do
 		{
 			backend.BeginFrame();
@@ -267,6 +281,6 @@ void RunDesktopRenderResizeTests()
 		}
 	}
 #else
-	std::cout << "SKIP desktop resize: DX12 backend requires 64-bit Windows\n";
+	Tests::Skip("DX12 backend requires 64-bit Windows");
 #endif
 }

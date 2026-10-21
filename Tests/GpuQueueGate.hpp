@@ -24,7 +24,8 @@ class GpuQueueGate final
 		watchdog = std::jthread(
 			[this]
 			{
-				if (WaitForSingleObject(cancel, 1000) == WAIT_TIMEOUT)
+				// One second, times BASEBALLSIM_TEST_TIMEOUT_SCALE for slow CI/sanitizer runs.
+				if (WaitForSingleObject(cancel, Tests::ScaleTimeoutMilliseconds(1000)) == WAIT_TIMEOUT)
 				{
 					timedOut = true;
 					(void)gate->Signal(1);

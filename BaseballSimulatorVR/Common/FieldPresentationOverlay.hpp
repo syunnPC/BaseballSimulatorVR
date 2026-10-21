@@ -7,6 +7,7 @@
 #include "../Physics/BatMaterial.hpp"
 #include "../Physics/BatGeometry.hpp"
 
+#include <cmath>
 #include <iomanip>
 #include <map>
 #include <sstream>
@@ -90,9 +91,11 @@ namespace BaseballSimulatorVR::Common
 		const auto signedCentimeters = [](double meters)
 		{
 			std::wostringstream stream;
-			// Round before formatting so a tiny negative displacement reads +0.0.
+			// Round before formatting and print the sign explicitly so a tiny
+			// negative displacement reads +0.0; a `cm == 0 ? 0.0 : cm` select can
+			// be folded back to the negative zero by the MSVC optimizer.
 			const double cm = std::round(meters * 1000.0) / 10.0;
-			stream << std::showpos << std::fixed << std::setprecision(1) << (cm == 0 ? 0.0 : cm);
+			stream << (cm < 0.0 ? L'-' : L'+') << std::fixed << std::setprecision(1) << std::abs(cm);
 			return stream.str();
 		};
 		const bool reveal = state.pitchMetricsVisible && state.hasPitchBreak;

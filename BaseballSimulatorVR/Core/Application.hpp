@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Data/PitchPresetJsonStorage.hpp"
+#include "../Data/PresetCatalog.hpp"
 #include "../Data/PresetRepository.hpp"
 #include "../Data/RuntimeSettingsJsonStorage.hpp"
 #include "../Data/SessionLogRepository.hpp"
@@ -18,8 +19,10 @@
 #include "../XR/IXrSystem.hpp"
 #include "FrameStatistics.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -27,6 +30,12 @@
 
 namespace BaseballSimulatorVR::Core
 {
+	// Re-seeds the calling thread's engine behind random zone and pitch
+	// selection, for reproducible tests. Without a call, each thread seeds from
+	// BASEBALLSIM_RANDOM_SEED when it holds a decimal 32-bit unsigned integer,
+	// otherwise from std::random_device.
+	void SeedRandomEngine(std::uint32_t seed);
+
 	class Application final
 	{
 	  public:
@@ -43,6 +52,7 @@ namespace BaseballSimulatorVR::Core
 
 	  private:
 		friend struct ApplicationTestAccess;
+		friend struct ApplicationSettingsTestAccess;
 		enum class OperationMode
 		{
 			PitchTrajectory,
@@ -50,24 +60,8 @@ namespace BaseballSimulatorVR::Core
 			TeeBatting
 		};
 
-		struct EnvironmentSettings final
-		{
-			double pitchDistanceMeters{ 18.44 };
-			bool enableMoundHeightOffset{ false };
-			double moundHeightOffsetMeters{ 0.18 };
-			Physics::Vector3 windVelocity{};
-			Physics::BallProperties ballProperties{};
-			bool enableHeightDependentWind{ false };
-			double windShearFactor{ 0.08 };
-			double batRadiusMeters{ 0.035 };
-			double batLengthMeters{ 0.84 };
-			double batAngleOffsetDegrees{ 0.0 };
-			double batYawOffsetDegrees{ 0.0 };
-			double groundFanRadiusMeters{ 100.0 };
-			Physics::PitchIntegratorType integratorType{
-				Physics::PitchIntegratorType::Rk4
-			};
-		};
+		// Single definition shared with the JSON storage (see Data/RuntimeSettingsJsonStorage.hpp).
+		using EnvironmentSettings = Data::EnvironmentRuntimeSettings;
 
 		[[nodiscard]] bool InitializeWindow(HINSTANCE instanceHandle, int commandShow);
 		void ApplyPreset(Data::PitchPresetType presetType);
@@ -80,7 +74,8 @@ namespace BaseballSimulatorVR::Core
 		    std::wstring_view eventType,
 		    std::wstring_view note,
 		    bool preserveDirectionalVelocityForCurrentPitch = false);
-		void HandleKeyDown(WPARAM keyCode);
+		// isAutoRepeat: WM_KEYDOWN lParam bit 30. Repeats only drive continuous adjustments.
+		void HandleKeyDown(WPARAM keyCode, bool isAutoRepeat = false);
 		void HandleXrUiCommands();
 		void HandleXrUiCommand(const Xr::UiCommand& uiCommand);
 		void ToggleIntegrator();
@@ -108,6 +103,26 @@ namespace BaseballSimulatorVR::Core
 		[[nodiscard]] bool LoadEnvironmentSettingsFromJson();
 		void SavePlaySettingsToJson();
 		[[nodiscard]] bool LoadPlaySettingsFromJson();
+		// Settings changes only mark the files dirty; they are written once no further change
+		// happened for SettingsSaveDebounceInterval, on mode switches and on shutdown.
+		void MarkPlaySettingsDirty();
+		void MarkEnvironmentSettingsDirty();
+		void FlushPendingSettingsSaves(bool force);
+		[[nodiscard]] Data::PresetCatalog BuildPresetCatalog() const;
+		[[nodiscard]] std::wstring BuildActivePitchName() const;
+		[[nodiscard]] std::wstring BuildActivePitchSettingsLabel() const;
+		// Startup loading with recovery: a user settings file that fails to load is renamed to
+		// "<name>.broken-<timestamp>.json" and restored from its ".bak" or bundled default.
+		[[nodiscard]] bool LoadStartupSettings(std::wstring& fatalErrorMessage);
+		[[nodiscard]] bool RecoverBrokenUserSettingsFile(
+		    const std::filesystem::path& filePath,
+		    std::wstring_view loadError,
+		    const std::function<bool(const std::filesystem::path&)>& isLoadable);
+		void RecordPitchOutcome();
+		[[nodiscard]] bool LogBattedBall(
+		    std::wstring_view note,
+		    const Physics::Vector3& launchVelocity,
+		    double contactFractionAlongBat);
 		void TagLatestPitchEventResult(
 		    std::wstring_view resultLabel,
 		    double resultScore,
@@ -115,7 +130,8 @@ namespace BaseballSimulatorVR::Core
 		void AdjustLatestPitchEventResultScore(double deltaScore);
 		[[nodiscard]] bool LogPitchEvent(
 		    std::wstring_view eventType,
-		    std::wstring_view note);
+		    std::wstring_view note,
+		    Data::SessionEventCategory category = Data::SessionEventCategory::Config);
 		void ApplyOverlayVisibilityChanges(std::wstring_view note = L"");
 		void CyclePitchTrajectoryDisplayMode();
 		void ToggleBattedTrajectoryVisibility();
@@ -152,7 +168,12 @@ namespace BaseballSimulatorVR::Core
 		void ApplyAutoZoneResultTag(Common::PitchZoneCall call, std::wstring_view note);
 		void SetOperationMode(OperationMode mode, std::wstring_view note = L"");
 		void StartRandomBattingDuelPitch(std::wstring_view note = L"");
+		// Picks the next duel pitch while the interval runs and solves its zone
+		// target on a worker thread, so the start of a pitch does not stall a frame.
+		void PlanNextDuelPitch();
 		[[nodiscard]] bool IsWaitingForNextDuelPitch() const noexcept;
+		// Moist-air density from the environment's altitude, temperature and humidity.
+		[[nodiscard]] double EnvironmentAirDensity() const noexcept;
 		[[nodiscard]] Xr::UiTelemetry BuildXrUiTelemetry() const;
 		void RefreshBatPoseFromXrInput();
 		void UpdateModeSpecificBallState(Physics::BallState* ballState);
@@ -169,7 +190,7 @@ namespace BaseballSimulatorVR::Core
 		void EnsureDefaultPitchProfiles();
 		[[nodiscard]] bool InitializeStoragePaths(std::wstring& errorMessage);
 		[[nodiscard]] bool EnsureRequiredUserSettingsFiles(
-		    std::wstring& errorMessage) const;
+		    std::wstring& errorMessage);
 		[[nodiscard]] std::filesystem::path ResolveUserDataPath(
 		    std::wstring_view filePath) const;
 		[[nodiscard]] std::filesystem::path ResolveBundledContentPath(
@@ -191,6 +212,11 @@ namespace BaseballSimulatorVR::Core
 			double sampleTimeSeconds{ 0.0 };
 			std::uint64_t referenceSpaceRevision{ 0 };
 			Physics::Vector3 upDirectionWorld{ 0.0, 1.0, 0.0 };
+			// Runtime-reported grip velocities (XrSpaceVelocity), when available.
+			bool hasLinearVelocity{ false };
+			Physics::Vector3 linearVelocityWorld{};
+			bool hasAngularVelocity{ false };
+			Physics::Vector3 angularVelocityWorld{};
 		};
 
 		struct BattedBallMetrics final
@@ -225,6 +251,8 @@ namespace BaseballSimulatorVR::Core
 		std::vector<Data::PitchProfileEntry> m_pitchProfiles{};
 		int m_activePitchProfileIndex{ 0 };
 		std::vector<std::wstring> m_pitchSettingsFileNames{};
+		std::vector<Data::PitchSettingsEntry> m_pitchSettingsEntries{};
+		std::optional<Data::PitchSettingsEntry> m_activePitchSettingsEntry{};
 		int m_activePitchSettingsFileIndex{ -1 };
 		std::wstring m_activePitchSettingsFileName{
 			L"PitchSettings.user.json"
@@ -234,7 +262,18 @@ namespace BaseballSimulatorVR::Core
 		bool m_pitcherThrowsLeftHanded{ false };
 		double m_pitcherArmSpeedScale{ 1.0 };
 		bool m_isSessionLogAvailable{ false };
+		// Last pitch delivery event; results and outcomes are attached to it.
 		std::int64_t m_lastLoggedPitchEventId{ 0 };
+		// Latest "bat_contact" event; UpdateBattedBallLanding can add its carry distance.
+		std::int64_t m_lastBattedBallEventId{ 0 };
+		// Pitch whose plate outcome has not been recorded yet (0 = none).
+		std::int64_t m_pitchOutcomePendingEventId{ 0 };
+		bool m_playSettingsDirty{ false };
+		bool m_environmentSettingsDirty{ false };
+		std::chrono::steady_clock::time_point m_lastSettingsChangeTime{};
+		int m_settingsLayoutVersion{ 0 };
+		std::vector<std::wstring> m_startupNotices{};
+		// Read-only bundled "Presets" folder (see Data::PresetCatalog).
 		std::wstring m_bundledContentDirectoryPath{};
 		std::wstring m_userDataDirectoryPath{};
 		std::wstring m_latestPitchResultLabel{ L"pending" };
@@ -255,31 +294,44 @@ namespace BaseballSimulatorVR::Core
 		std::optional<Physics::Vector3> m_duelPitchPredictedZonePassPoint{};
 		std::uint32_t m_duelTargetZoneMask{ 0U };
 		double m_duelPitchIntervalSeconds{ 5.0 };
-		double m_duelPitchCooldownRemainingSeconds{ 0.0 };
-		double m_duelPitchElapsedSeconds{ 0.0 };
 		bool m_duelPitchPreviewEnabled{ true };
 		bool m_batUseRightHand{ true };
 		Physics::BatMaterial m_batMaterial{ Physics::BatMaterial::Wood };
-		bool m_isWaitingForNextDuelPitch{ false };
-		bool m_hasCurrentDuelPitchPassedZone{ false };
-		bool m_hasDuelBallBeenBatted{ false };
-		bool m_hasDuelBattedBallBounced{ false };
-		double m_duelPostBounceElapsedSeconds{ 0.0 };
-		BattedBallMetrics m_duelBattedMetrics{};
-		bool m_hasPreviousDuelBallState{ false };
-		Physics::BallState m_previousDuelBallState{};
+		// Progress of the current batting-duel pitch. Assigning {} starts a fresh round.
+		struct DuelRoundState final
+		{
+			double pitchElapsedSeconds{ 0.0 };
+			bool hasPitchPassedZone{ false };
+			bool isWaitingForNextPitch{ false };
+			double cooldownRemainingSeconds{ 0.0 };
+			bool hasBallBeenBatted{ false };
+			bool hasBattedBallBounced{ false };
+			double postBounceElapsedSeconds{ 0.0 };
+			BattedBallMetrics battedMetrics{};
+			bool hasPreviousBallState{ false };
+			Physics::BallState previousBallState{};
+		};
+		// Flight of the tee ball after contact. Assigning {} puts the ball back on the tee
+		// state-wise; the last batted metrics stay in m_teeBattedMetrics for display.
+		struct TeeFlightState final
+		{
+			bool isBallInFlight{ false };
+			bool hasBattedBallBounced{ false };
+			double postBounceElapsedSeconds{ 0.0 };
+			bool hasPreviousBallState{ false };
+			Physics::BallState previousBallState{};
+		};
+		DuelRoundState m_duelRound{};
+		TeeFlightState m_teeFlight{};
+		struct DuelPitchPlan;
+		std::shared_ptr<DuelPitchPlan> m_nextDuelPitchPlan{};
 		BatPoseState m_batPoseState{};
 		BatPoseState m_previousBatPoseState{};
 		std::optional<Common::BatOverlayState> m_batOverlayState{};
 		bool m_lastBatSampleUsedRightHand{ true };
 		double m_batCollisionSuppressRemainingSeconds{ 0.0 };
-		bool m_isTeeBallInFlight{ false };
-		bool m_hasTeeBattedBallBounced{ false };
-		double m_teePostBounceElapsedSeconds{ 0.0 };
 		BattedBallMetrics m_teeBattedMetrics{};
 		std::uint64_t m_battedContactSequence{ 0 };
-		bool m_hasPreviousTeeBallState{ false };
-		Physics::BallState m_previousTeeBallState{};
 		Physics::Vector3 m_teeBallPosition{ 0.0, 1.0, 18.44 };
 		double m_pitchMetricsSpeedMetersPerSecond{ 0.0 };
 		double m_lastFrameDeltaSeconds{ 0.0 };

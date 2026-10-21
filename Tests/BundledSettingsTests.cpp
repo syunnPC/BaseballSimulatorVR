@@ -1,15 +1,32 @@
 #include "TestSupport.hpp"
 #include "../BaseballSimulatorVR/Data/PitchPresetJsonStorage.hpp"
+#include "../BaseballSimulatorVR/Data/PresetCatalog.hpp"
+#include "../BaseballSimulatorVR/Common/PitchPresetUi.hpp"
 #include "../BaseballSimulatorVR/Data/RuntimeSettingsJsonStorage.hpp"
 #include "../BaseballSimulatorVR/Physics/PitchPhysicsEngine.hpp"
 
 #include <array>
+#include <optional>
 #include <cmath>
 #include <iostream>
 #include <vector>
 
 namespace
 {
+	// Loads a catalog entry (including generated opposite-hand variants) from the bundled Presets.
+	std::optional<BaseballSimulatorVR::Data::PitchRuntimeSettings> LoadBundledPitch(
+	    const std::filesystem::path& sourceRoot, const std::wstring_view id, std::wstring& error)
+	{
+		const BaseballSimulatorVR::Data::PresetCatalog catalog{ sourceRoot / L"Presets", {} };
+		const auto entry = catalog.FindPitchSettings(id);
+		if (!entry)
+		{
+			error = L"no bundled entry " + std::wstring{ id };
+			return std::nullopt;
+		}
+		return catalog.LoadPitchSettings(*entry, error);
+	}
+
 	BaseballSimulatorVR::Physics::BallState SimulatePlateCrossing(
 	    const BaseballSimulatorVR::Baseball::PitchParameters& parameters)
 	{
@@ -62,14 +79,13 @@ namespace
 				{L"シンカー",110,-.30,-.10,2200}}, .1},
 			Level{L"Challenge2", {{L"ツーシーム",170,-.30,.25,2200}}}
 		};
-		Data::PitchPresetJsonStorage storage;
 		std::wstring error;
 		for (const auto& level : levels)
 		{
 			const std::wstring prefix = (level.name.starts_with(L"Challenge")
 				? L"PitchSettings." : L"PitchSettings.Difficulty.") + std::wstring{level.name};
-			const auto right = storage.LoadPitchSettings((sourceRoot / (prefix + L".RHP.json")).wstring(), error);
-			const auto left = storage.LoadPitchSettings((sourceRoot / (prefix + L".LHP.json")).wstring(), error);
+			const auto right = LoadBundledPitch(sourceRoot, prefix + L".RHP.json", error);
+			const auto left = LoadBundledPitch(sourceRoot, prefix + L".LHP.json", error);
 			Tests::Check(right && left, "Each training set includes a loadable right- and left-handed preset");
 			Tests::Check(!right->pitcherThrowsLeftHanded && left->pitcherThrowsLeftHanded,
 				"Preset handedness reaches the production runtime setting");
@@ -136,14 +152,14 @@ namespace
 	void CheckSlowFastballPresets(const std::filesystem::path& sourceRoot)
 	{
 		using namespace BaseballSimulatorVR;
-		Data::PitchPresetJsonStorage storage;
 		Data::RuntimeSettingsJsonStorage runtimeStorage;
 		std::wstring error;
 		constexpr std::array<double, 4> speedsKmh{70, 80, 90, 100};
 		for (const std::wstring_view kind : {L"Baseball", L"Softball"})
 		{
 			const std::wstring environmentName = L"EnvironmentSettings.SlowFastball." + std::wstring(kind) + L".json";
-			const auto environment = runtimeStorage.LoadEnvironment((sourceRoot / environmentName).wstring(), error);
+			const auto environment = runtimeStorage.LoadEnvironment(
+			    (sourceRoot / L"Presets" / L"Environment" / environmentName).wstring(), error);
 			const double radius = kind == L"Baseball" ? .037 : .0485;
 			const double mass = kind == L"Baseball" ? .145 : .190;
 			Tests::Check(environment && environment->pitchDistanceMeters == 18.44 &&
@@ -155,8 +171,8 @@ namespace
 			std::array<Physics::Vector3, 4> rightHandedVelocities{};
 			for (const std::wstring_view hand : {L"RHP", L"LHP"})
 			{
-				const auto path = sourceRoot / (L"PitchSettings.SlowFastball." + std::wstring(kind) + L"." + std::wstring(hand) + L".json");
-				const auto settings = storage.LoadPitchSettings(path.wstring(), error);
+				const auto settings = LoadBundledPitch(sourceRoot,
+				    L"PitchSettings.SlowFastball." + std::wstring(kind) + L"." + std::wstring(hand) + L".json", error);
 				Tests::Check(settings && settings->pitchProfiles.size() == speedsKmh.size() &&
 				    settings->environmentSettingsFile == environmentName && settings->randomPitchProfileEnabled &&
 				    settings->activePitchProfileIndex == 0 && settings->pitcherThrowsLeftHanded == (hand == L"LHP"),
@@ -189,38 +205,146 @@ namespace
 	}
 }
 
+namespace
+{
+	void CheckPresetLayoutAndLabels(const std::filesystem::path& sourceRoot)
+	{
+		using namespace BaseballSimulatorVR;
+		for (const auto& entry : std::filesystem::directory_iterator(sourceRoot))
+		{
+			const auto name = entry.path().filename().wstring();
+			Tests::Check(!(name.ends_with(L".json") && (name.starts_with(L"PitchSettings.") ||
+			    name.starts_with(L"EnvironmentSettings.") || name.starts_with(L"PlaySettings."))),
+			    "Settings presets live under Presets/ instead of the repository root");
+		}
+		const auto presets = sourceRoot / L"Presets";
+		Tests::Check(Data::PresetCatalog::IsBundledPresetsDirectory(presets),
+		    "Presets/ contains the pitch, environment and play defaults");
+		Data::PitchPresetJsonStorage storage;
+		std::wstring error;
+		for (const auto& entry : std::filesystem::recursive_directory_iterator(presets))
+		{
+			const auto name = entry.path().filename().wstring();
+			Tests::Check(!name.ends_with(L".sample.json") && !name.ends_with(L".user.json"),
+			    "Bundled presets use *.default.json instead of sample or user copies");
+			if (!name.starts_with(L"PitchSettings."))
+				continue;
+			Tests::Check(!name.ends_with(L".RHP.json") && !name.ends_with(L".LHP.json"),
+			    "Only one handedness file is shipped per pitch family");
+			const auto settings = storage.LoadPitchSettings(entry.path().wstring(), error);
+			Tests::Check(settings && !settings->displayName.empty() && !settings->pitcherThrowsLeftHanded,
+			    "Every bundled pitch preset declares its displayName and the authored right hand");
+		}
+
+		const Data::PresetCatalog catalog{ presets, {} };
+		const auto entries = catalog.EnumeratePitchSettings();
+		const auto label = [&](const std::wstring& id)
+		{
+			for (const auto& entry : entries)
+				if (entry.id == id) return entry.BuildLabel();
+			return std::wstring{};
+		};
+		for (const auto hand : {L"RHP", L"LHP"})
+		{
+			const std::wstring expectedHand = std::wstring_view{hand} == L"RHP" ? L"右投げ" : L"左投げ";
+			for (const auto variant : {L"Beginner.Softball.", L"Beginner.BigBreak.Softball."})
+			{
+				const auto text = label(std::wstring{L"PitchSettings."} + variant + hand + L".json");
+				Tests::Check(text.find(L"初心者") != std::wstring::npos && text.find(L"ソフトボール") != std::wstring::npos &&
+				    text.find(expectedHand) != std::wstring::npos,
+				    "Both beginner variants identify training level, ball type and throwing hand");
+				Tests::Check(text.find(std::wstring_view{variant}.starts_with(L"Beginner.BigBreak") ?
+				    L"大きな変化" : L"標準変化") != std::wstring::npos,
+				    "Normal and large beginner breaking pitches remain distinguishable");
+			}
+			for (const auto ball : {L"Baseball", L"Softball"})
+			{
+				const auto text = label(std::wstring{L"PitchSettings.SlowFastball."} + ball + L"." + hand + L".json");
+				Tests::Check(text.find(L"低速ストレート") != std::wstring::npos && text.find(expectedHand) != std::wstring::npos &&
+				    text.find(std::wstring_view{ball} == L"Baseball" ? L"硬式野球" : L"ソフトボール") != std::wstring::npos,
+				    "Slow fastball labels preserve ball type and throwing hand");
+			}
+			for (const auto difficulty : {L"VeryEasy", L"Easy", L"Normal", L"Hard", L"Expert"})
+			{
+				const auto text = label(std::wstring{L"PitchSettings.Difficulty."} + difficulty + L"." + hand + L".json");
+				Tests::Check(text.find(L"難易度") != std::wstring::npos && text.ends_with(L" / " + expectedHand),
+				    "Every bundled difficulty identifies the throwing hand");
+			}
+			Tests::Check(label(std::wstring{L"PitchSettings.Difficulty.VeryEasy."} + hand + L".json") ==
+			    L"難易度 ベリーイージー / " + expectedHand,
+			    "The very easy preset displays its Japanese name and throwing hand");
+			for (const auto challenge : {L"Challenge1", L"Challenge2"})
+			{
+				Tests::Check(label(std::wstring{L"PitchSettings."} + challenge + L"." + hand + L".json") ==
+				    std::wstring{std::wstring_view{challenge} == L"Challenge1" ? L"チャレンジ1 / " : L"チャレンジ2 / "} + expectedHand,
+				    "Challenge presets display distinct Japanese labels with their throwing hand");
+			}
+		}
+		Tests::Check(label(L"PitchSettings.Toss.Baseball.json") == L"トス\n硬式野球" &&
+		    label(L"PitchSettings.Toss.Softball.json") == L"トス\nソフトボール" &&
+		    label(L"PitchSettings.Yamamoto.json") == L"山本由伸\n硬式野球 / 右投げ",
+		    "Single-hand presets keep their labels without a generated hand suffix");
+		for (const auto& entry : entries)
+		{
+			if (!entry.id.ends_with(L".LHP.json"))
+				continue;
+			const auto settings = catalog.LoadPitchSettings(entry, error);
+			Tests::Check(entry.mirrored && entry.pitcherThrowsLeftHanded == true && settings &&
+			    settings->pitcherThrowsLeftHanded && entry.sourcePath.filename().wstring().find(L"LHP") == std::wstring::npos,
+			    "Left-handed variants are generated from the right-handed file at load time");
+		}
+		const auto defaultPitch = storage.LoadPitchSettings(
+		    (presets / L"Pitch" / L"PitchSettings.default.json").wstring(), error);
+		Tests::Check(defaultPitch && defaultPitch->displayName == L"ユーザー設定" &&
+		    defaultPitch->environmentSettingsFile == L"EnvironmentSettings.user.json" &&
+		    !catalog.FindPitchSettings(L"PitchSettings.default.json"),
+		    "The default pitch template seeds the user's file and is not listed itself");
+	}
+}
+
+void RunApplicationSettingsTests(const std::filesystem::path& sourceRoot);
+
 void RunBundledSettingsTests(const std::filesystem::path& sourceRoot)
 {
+	// Application-level persistence of these settings (read-only presets, selection state,
+	// debounced saves, startup recovery and session-log semantics).
+	RunApplicationSettingsTests(sourceRoot);
 	using namespace BaseballSimulatorVR;
 	std::wstring error;
-	Data::PitchPresetJsonStorage pitchStorage;
 	Data::RuntimeSettingsJsonStorage runtimeStorage;
 	CheckTrainingPresets(sourceRoot);
 	CheckSlowFastballPresets(sourceRoot);
-	for (const auto& entry : std::filesystem::directory_iterator(sourceRoot))
+	CheckPresetLayoutAndLabels(sourceRoot);
+	const Data::PresetCatalog catalog{ sourceRoot / L"Presets", {} };
+	const auto entries = catalog.EnumeratePitchSettings();
+	Tests::Check(entries.size() == 25U, "The bundled catalog offers every preset and both hands of mirrored families");
+	for (const auto& entry : entries)
 	{
-		const auto name = entry.path().filename().wstring();
-		if (name.starts_with(L"PitchSettings.") && name.ends_with(L".json"))
+		const auto settings = catalog.LoadPitchSettings(entry, error);
+		if (!settings) std::wcerr << entry.id << L": " << error << L'\n';
+		Tests::Check(settings.has_value(), "All bundled pitch settings load with production loader");
+		const auto environmentPath = catalog.ResolveEnvironmentReference(settings->environmentSettingsFile, entry.sourcePath);
+		Tests::Check(runtimeStorage.LoadEnvironment(environmentPath.wstring(), error).has_value(),
+		             "Referenced environment file loads");
+	}
+	for (const auto& directory : {L"Environment", L"Play"})
+	{
+		for (const auto& entry : std::filesystem::directory_iterator(sourceRoot / L"Presets" / directory))
 		{
-			const auto settings = pitchStorage.LoadPitchSettings(entry.path().wstring(), error);
-			if (!settings) std::wcerr << name << L": " << error << L'\n';
-			Tests::Check(settings.has_value(), "All bundled pitch settings load with production loader");
-			const auto environmentPath = sourceRoot / settings->environmentSettingsFile;
-			Tests::Check(runtimeStorage.LoadEnvironment(environmentPath.wstring(), error).has_value(),
-			             "Referenced environment file loads");
-		}
-		if (name.starts_with(L"EnvironmentSettings.") && name.ends_with(L".json"))
-		{
-			Tests::Check(runtimeStorage.LoadEnvironment(entry.path().wstring(), error).has_value(),
-			             "All bundled environment settings load");
-		}
-		if (name.starts_with(L"PlaySettings.") && name.ends_with(L".json"))
-		{
-			Tests::Check(runtimeStorage.LoadPlay(entry.path().wstring(), error).has_value(),
-			             "All bundled play settings load");
+			const auto name = entry.path().filename().wstring();
+			if (name.starts_with(L"EnvironmentSettings.") && name.ends_with(L".json"))
+			{
+				Tests::Check(runtimeStorage.LoadEnvironment(entry.path().wstring(), error).has_value(),
+				             "All bundled environment settings load");
+			}
+			if (name.starts_with(L"PlaySettings.") && name.ends_with(L".json"))
+			{
+				Tests::Check(runtimeStorage.LoadPlay(entry.path().wstring(), error).has_value(),
+				             "All bundled play settings load");
+			}
 		}
 	}
-	const auto yamamoto = pitchStorage.LoadPitchSettings((sourceRoot / L"PitchSettings.Yamamoto.json").wstring(), error);
+	const auto yamamoto = LoadBundledPitch(sourceRoot, L"PitchSettings.Yamamoto.json", error);
 	Tests::Check(yamamoto && yamamoto->pitchProfiles.size() == 6, "Six Yamamoto pitch profiles");
 	Tests::Check(!yamamoto->randomPitchProfileEnabled && yamamoto->activePitchProfileIndex == 0,
 	             "Yamamoto starts on FourSeam with explicit profile selection");

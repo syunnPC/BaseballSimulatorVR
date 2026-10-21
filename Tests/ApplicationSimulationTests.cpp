@@ -11,6 +11,8 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <optional>
+#include <vector>
 
 namespace
 {
@@ -33,6 +35,21 @@ namespace
 		void SetFieldPresentationState(const Common::FieldPresentationState&) override {}
 		void SetUiTelemetry(const Xr::UiTelemetry&) override {}
 		void PollInput() override {}
+		void SubmitFrame() override {}
+		Xr::FrameTiming GetFrameTiming() const noexcept override { return {}; }
+		bool IsInputFocused() const noexcept override { return true; }
+		bool IsExitRequested() const noexcept override { return false; }
+		void ApplyHapticPulse(const bool onRightHand, const double amplitude, const double durationSeconds) override
+		{
+			hapticPulses.push_back({ onRightHand, amplitude, durationSeconds });
+		}
+		struct HapticPulse
+		{
+			bool rightHand{};
+			double amplitude{};
+			double durationSeconds{};
+		};
+		std::vector<HapticPulse> hapticPulses{};
 		std::vector<Xr::UiCommand> ConsumePendingUiCommands() override { return {}; }
 		void Shutdown() override {}
 		std::wstring_view GetRuntimeName() const noexcept override { return L"test"; }
@@ -75,7 +92,7 @@ namespace
 		}
 	};
 
-	bool Near(const double a, const double b) { return std::abs(a - b) < 1e-8; }
+	bool Near(const double a, const double b) { return Tests::Near(a, b, 1e-8, 0.0); }
 	bool SamePosition(const Physics::Vector3& a, const Physics::Vector3& b)
 	{
 		return Near(a.x, b.x) && Near(a.y, b.y) && Near(a.z, b.z);
@@ -126,11 +143,11 @@ namespace BaseballSimulatorVR::Core
 			SetUpTee(*app);
 			MoveBat(*app, *xr, -0.2, 1.0);
 			(void)UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight && app->m_hasPreviousTeeBallState,
+			Tests::Check(!app->m_teeFlight.isBallInFlight && app->m_teeFlight.hasPreviousBallState,
 			             "A resting tee ball retains history for the next swept bat test");
 			MoveBat(*app, *xr, 0.2, 1.01);
 			const auto hit = UpdateBall(*app);
-			Tests::Check(app->m_isTeeBallInFlight && app->m_teeBattedMetrics.hasContact,
+			Tests::Check(app->m_teeFlight.isBallInFlight && app->m_teeBattedMetrics.hasContact,
 			             "Moving a tracked bat across the resting tee ball launches it");
 			Tests::Check(hit.velocity.x > 1.0 && hit.position.x > 0.0,
 			             "The application applies bat contact velocity and advances the outgoing ball");
@@ -163,7 +180,7 @@ namespace BaseballSimulatorVR::Core
 			(void)UpdateBall(*app);
 			MoveBat(*app, *xr, 0.2, 2.01);
 			const auto pausedBall = UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight && !app->m_teeBattedMetrics.hasContact &&
+			Tests::Check(!app->m_teeFlight.isBallInFlight && !app->m_teeBattedMetrics.hasContact &&
 			    Physics::LengthSquared(pausedBall.velocity) == 0.0,
 			    "A physical swing cannot launch a tee ball while playback is paused");
 		}
@@ -172,19 +189,19 @@ namespace BaseballSimulatorVR::Core
 		{
 			auto app = MakeApplication();
 			SetUpTee(*app);
-			app->m_isTeeBallInFlight = true;
-			app->m_hasTeeBattedBallBounced = true;
-			app->m_teePostBounceElapsedSeconds = 4.0;
+			app->m_teeFlight.isBallInFlight = true;
+			app->m_teeFlight.hasBattedBallBounced = true;
+			app->m_teeFlight.postBounceElapsedSeconds = 4.0;
 			app->m_teeBattedMetrics.hasContact = true;
-			app->m_hasPreviousTeeBallState = true;
-			app->m_previousTeeBallState.position = { 20.0, 3.0, 4.0 };
-			app->m_pitchSimulationService.SetBallState(app->m_previousTeeBallState);
+			app->m_teeFlight.hasPreviousBallState = true;
+			app->m_teeFlight.previousBallState.position = { 20.0, 3.0, 4.0 };
+			app->m_pitchSimulationService.SetBallState(app->m_teeFlight.previousBallState);
 			app->m_environmentSettings.moundHeightOffsetMeters = 0.30;
 			app->ApplyEnvironmentSettingsChanges(L"test_reset", false);
 			const auto resetBall = app->m_pitchSimulationService.GetBallState();
-			Tests::Check(!app->m_isTeeBallInFlight && !app->m_hasTeeBattedBallBounced &&
-			    !app->m_hasPreviousTeeBallState && app->m_teeBattedMetrics.hasContact &&
-			    app->m_teePostBounceElapsedSeconds == 0.0,
+			Tests::Check(!app->m_teeFlight.isBallInFlight && !app->m_teeFlight.hasBattedBallBounced &&
+			    !app->m_teeFlight.hasPreviousBallState && app->m_teeBattedMetrics.hasContact &&
+			    app->m_teeFlight.postBounceElapsedSeconds == 0.0,
 			    "Changing the environment resets tee flight and collision history while retaining its last hit result");
 			Tests::Check(SamePosition(resetBall.position, app->BuildTeeBallState().position) &&
 			    Physics::LengthSquared(resetBall.velocity) == 0.0,
@@ -207,10 +224,10 @@ namespace BaseballSimulatorVR::Core
 			    "The duel test begins with a released moving pitch");
 			app->m_duelZonePassMarker = Physics::Vector3{ 99.0, 99.0, 99.0 };
 			app->m_duelPitchPredictedZonePassPoint = Physics::Vector3{ 99.0, 99.0, 99.0 };
-			app->m_hasPreviousDuelBallState = true;
-			app->m_hasDuelBallBeenBatted = true;
-			app->m_isWaitingForNextDuelPitch = true;
-			app->m_duelPitchCooldownRemainingSeconds = 2.0;
+			app->m_duelRound.hasPreviousBallState = true;
+			app->m_duelRound.hasBallBeenBatted = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
+			app->m_duelRound.cooldownRemainingSeconds = 2.0;
 			app->m_environmentSettings.pitchDistanceMeters = 17.0;
 			app->ApplyEnvironmentSettingsChanges(L"test_duel_reset", false);
 			const auto state = app->BuildFieldPresentationState();
@@ -219,8 +236,8 @@ namespace BaseballSimulatorVR::Core
 			    Near(state.pitcher.secondsFromRelease, -Simulation::PitchDeliveryController::WindupSeconds) &&
 			    !state.ballVisible && Near(resetBall.flightTimeSeconds, 0.0) && Near(resetBall.position.z, 0.0),
 			    "Resetting a released duel pitch synchronizes hidden ball and pitcher windup");
-			Tests::Check(!app->m_isWaitingForNextDuelPitch && !app->m_hasPreviousDuelBallState &&
-			    !app->m_hasDuelBallBeenBatted && app->m_duelPitchCooldownRemainingSeconds == 0.0 &&
+			Tests::Check(!app->m_duelRound.isWaitingForNextPitch && !app->m_duelRound.hasPreviousBallState &&
+			    !app->m_duelRound.hasBallBeenBatted && app->m_duelRound.cooldownRemainingSeconds == 0.0 &&
 			    !app->m_duelZonePassMarker,
 			    "Resetting a duel pitch discards previous flight, cooldown and result markers");
 			Tests::Check(app->m_duelPitchPredictedZonePassPoint &&
@@ -234,20 +251,22 @@ namespace BaseballSimulatorVR::Core
 			auto app = MakeApplication();
 			SetUpTee(*app);
 			app->m_environmentSettings.moundHeightOffsetMeters = 0.18;
-			app->m_isTeeBallInFlight = true;
+			app->m_teeFlight.isBallInFlight = true;
 			app->m_teeBattedMetrics.hasContact = true;
 			app->m_teeBattedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
-			app->m_hasPreviousTeeBallState = true;
-			app->m_previousTeeBallState.position = { 0.0, 0.2 - 0.18, 10.0 };
+			app->m_teeFlight.hasPreviousBallState = true;
+			app->m_teeFlight.previousBallState.position = { 0.0, 0.2 - 0.18, 10.0 };
 			Physics::BallState falling;
 			falling.position = { 0.0, 0.027 - 0.18, 9.9 };
 			falling.velocity = { 0.0, -2.0, -5.0 };
 			falling.flightTimeSeconds = 2.0;
 			app->m_pitchSimulationService.SetBallState(falling);
 			const auto bounced = UpdateBall(*app);
-			Tests::Check(Near(bounced.position.y + 0.18, 0.037) && bounced.velocity.y > 0.0,
+			// The 1 cm penetration below physical ground plus ball radius is reflected with the
+			// 0.5 ground restitution, independent of where the frame boundary fell.
+			Tests::Check(Near(bounced.position.y + 0.18, 0.037 + 0.010 * 0.50) && bounced.velocity.y > 0.0,
 			             "With a mound offset the ball bounces at physical ground plus ball radius");
-			Tests::Check(app->m_teeBattedMetrics.hasFirstGroundContact && app->m_hasTeeBattedBallBounced,
+			Tests::Check(app->m_teeBattedMetrics.hasFirstGroundContact && app->m_teeFlight.hasBattedBallBounced,
 			             "Ground response and first-ground-contact statistics use the same offset plane");
 			Tests::Check(SamePosition(bounced.position, app->m_pitchSimulationService.GetBallState().position),
 			             "Ground response writes its corrected position back into the simulation");
@@ -263,25 +282,25 @@ namespace BaseballSimulatorVR::Core
 			(void)app->m_pitchDeliveryController.Advance(std::chrono::duration<double>(1.2));
 			app->m_lastFrameDeltaSeconds = 0.25;
 			app->m_lastSimulationDeltaSeconds = 0.5;
-			app->m_hasDuelBallBeenBatted = true;
-			app->m_duelBattedMetrics.hasContact = true;
-			app->m_duelBattedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
-			app->m_hasPreviousDuelBallState = true;
-			app->m_previousDuelBallState.position = { 0.0, 0.137, 18.44 - 100.0 };
-			app->m_previousDuelBallState.flightTimeSeconds = 4.0;
+			app->m_duelRound.hasBallBeenBatted = true;
+			app->m_duelRound.battedMetrics.hasContact = true;
+			app->m_duelRound.battedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
+			app->m_duelRound.hasPreviousBallState = true;
+			app->m_duelRound.previousBallState.position = { 0.0, 0.137, 18.44 - 100.0 };
+			app->m_duelRound.previousBallState.flightTimeSeconds = 4.0;
 			Physics::BallState falling{};
 			falling.position = { 0.0, -0.063, 18.44 - 120.0 };
 			falling.velocity = { 0.0, -2.0, -40.0 };
 			falling.flightTimeSeconds = 4.5;
 			app->m_pitchSimulationService.SetBallState(falling);
 			(void)UpdateBall(*app);
-			Tests::Check(app->m_duelBattedMetrics.hasFirstGroundContact &&
-			    Near(app->m_duelBattedMetrics.firstGroundDistanceMeters, 110.0),
+			Tests::Check(app->m_duelRound.battedMetrics.hasFirstGroundContact &&
+			    Near(app->m_duelRound.battedMetrics.firstGroundDistanceMeters, 110.0),
 			    "Carry beyond the ground fan interpolates the first landing rather than the coarse frame endpoint");
-			Tests::Check(app->m_isWaitingForNextDuelPitch,
+			Tests::Check(app->m_duelRound.isWaitingForNextPitch,
 			    "An out-of-field landing still starts the duel interval after measuring carry");
 			(void)UpdateBall(*app);
-			Tests::Check(Near(app->m_duelBattedMetrics.firstGroundDistanceMeters, 110.0),
+			Tests::Check(Near(app->m_duelRound.battedMetrics.firstGroundDistanceMeters, 110.0),
 			    "The first landing distance remains frozen throughout the next-pitch interval");
 
 			TestXrSystem* xr = nullptr;
@@ -299,9 +318,9 @@ namespace BaseballSimulatorVR::Core
 			app->RefreshBatPoseFromXrInput();
 			const auto bounced = UpdateBall(*app);
 			Tests::Check(app->m_teeBattedMetrics.hasContact &&
-			    app->m_teeBattedMetrics.hasFirstGroundContact && app->m_hasTeeBattedBallBounced,
+			    app->m_teeBattedMetrics.hasFirstGroundContact && app->m_teeFlight.hasBattedBallBounced,
 			    "A downward tee hit records its first landing even when impact and bounce share one frame");
-			Tests::Check(bounced.velocity.y > 0.0 && Near(bounced.position.y, 0.037),
+			Tests::Check(bounced.velocity.y > 0.0 && bounced.position.y >= 0.037 - 1e-12,
 			    "Same-frame tee landing also applies the physical ground response");
 			const double firstCarry = app->m_teeBattedMetrics.firstGroundDistanceMeters;
 			Tests::Check(firstCarry > 0.0 && firstCarry < 2.0,
@@ -309,7 +328,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_teeBattedMetrics.maxHeightMeters >=
 			    app->m_teeBattedMetrics.contactPosition.y,
 			    "A same-frame downward hit includes contact height in its recorded maximum height");
-			app->m_previousTeeBallState.position = { 0.0, 0.137, 8.0 };
+			app->m_teeFlight.previousBallState.position = { 0.0, 0.137, 8.0 };
 			falling.position = { 0.0, -0.063, 7.0 };
 			app->m_pitchSimulationService.SetBallState(falling);
 			(void)UpdateBall(*app);
@@ -371,10 +390,10 @@ namespace BaseballSimulatorVR::Core
 			    Near(frozen.pitcher.releasePositionWorld.y, 1.98 + 0.18),
 			    "Changing the selected preset cannot mix its name or parameters into the delivered pitch snapshot");
 
-			app->m_hasDuelBallBeenBatted = true;
-			app->m_duelBattedMetrics.hasContact = true;
-			app->m_duelBattedMetrics.contactPosition = { 0.2, 1.5, app->m_environmentSettings.pitchDistanceMeters };
-			app->m_duelBattedMetrics.launchVelocity = { 30.0, 0.0, -40.0 };
+			app->m_duelRound.hasBallBeenBatted = true;
+			app->m_duelRound.battedMetrics.hasContact = true;
+			app->m_duelRound.battedMetrics.contactPosition = { 0.2, 1.5, app->m_environmentSettings.pitchDistanceMeters };
+			app->m_duelRound.battedMetrics.launchVelocity = { 30.0, 0.0, -40.0 };
 			Physics::BallState slowerBall{};
 			slowerBall.velocity = { 3.0, -1.0, -5.0 };
 			app->m_pitchSimulationService.SetBallState(slowerBall);
@@ -385,7 +404,7 @@ namespace BaseballSimulatorVR::Core
 			    Near(batted.battedContactWorld->x, 0.2) && Near(batted.battedContactWorld->y, 1.68) &&
 			    Near(batted.battedContactWorld->z, -Common::DebugWorldLayout::BatterToPlateDistanceMeters),
 			    "Current contact displays its launch speed independently of later ball deceleration and reports world contact coordinates");
-			app->m_isWaitingForNextDuelPitch = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
 			const auto interval = app->BuildFieldPresentationState();
 			Tests::Check(interval.statistics.hasBattedMetrics && !interval.statistics.battedMetricsLive,
 			    "A completed current-ball result remains visible during the inter-pitch interval");
@@ -423,8 +442,8 @@ namespace BaseballSimulatorVR::Core
 			app->m_pitchFlightAnalysis.FinishContact(app->m_pitchSimulationService.GetBallState().position);
 			Tests::Check(app->BuildFieldPresentationState().statistics.pitchName == L"次のスプリット",
 			    "Resolving the next delivery publishes its own frozen pitch name");
-			app->m_duelBattedMetrics.hasContact = true;
-			app->m_duelBattedMetrics.launchVelocity = { 50.0, 0.0, 0.0 };
+			app->m_duelRound.battedMetrics.hasContact = true;
+			app->m_duelRound.battedMetrics.launchVelocity = { 50.0, 0.0, 0.0 };
 			app->ResetPitchSimulation();
 			Tests::Check(!app->BuildFieldPresentationState().statistics.hasBattedMetrics &&
 			    !app->BuildXrUiTelemetry().hasBattedMetrics,
@@ -466,9 +485,9 @@ namespace BaseballSimulatorVR::Core
 					Tests::Check(app->BuildFieldPresentationState().statistics.pitchMetricsVisible == preview &&
 					    app->BuildXrUiTelemetry().pitchInformationVisible,
 					    "Released pitch information appears on the handheld while the board still awaits the plate result");
-					app->m_hasDuelBallBeenBatted = true;
-					app->m_duelBattedMetrics.hasContact = true;
-					app->m_isWaitingForNextDuelPitch = true;
+					app->m_duelRound.hasBallBeenBatted = true;
+					app->m_duelRound.battedMetrics.hasContact = true;
+					app->m_duelRound.isWaitingForNextPitch = true;
 					const auto interval = app->BuildFieldPresentationState();
 					Tests::Check(!interval.ballVisible && !interval.trajectoryLifecycle.clearBatted &&
 					    interval.ballFlightPhase == Common::BallFlightPhase::Batted,
@@ -534,7 +553,7 @@ namespace BaseballSimulatorVR::Core
 				app->m_lastSimulationDeltaSeconds = .001;
 				const double endDepth = 9. + Common::HomePlateDepthMeters + .037;
 				bool checkedFront = false, checkedRearMargin = false;
-				for (int step = 0; step < 600 && !app->m_isWaitingForNextDuelPitch; ++step)
+				for (int step = 0; step < 600 && !app->m_duelRound.isWaitingForNextPitch; ++step)
 				{
 					app->AdvancePitchSimulation(std::chrono::duration<double>(.001));
 					auto ball = app->m_pitchSimulationService.GetBallState();
@@ -563,7 +582,7 @@ namespace BaseballSimulatorVR::Core
 					}
 				}
 				const auto result = app->BuildFieldPresentationState().statistics;
-				Tests::Check(checkedFront && checkedRearMargin && app->m_isWaitingForNextDuelPitch &&
+				Tests::Check(checkedFront && checkedRearMargin && app->m_duelRound.isWaitingForNextPitch &&
 				    result.pitchMetricsVisible && result.zoneCall == test.call && result.pitchName == L"実投球の判定" &&
 				    Near(result.pitchSpeedMetersPerSecond,Physics::Length(parameters.initialVelocity)) &&
 				    Near(result.pitchSpinRpm,2300.) && result.hasPitchBreak && !result.pitchTrace.empty() &&
@@ -665,7 +684,7 @@ namespace BaseballSimulatorVR::Core
 			SetUpTee(*app);
 			const auto seedContact = [&]
 			{
-				app->m_isTeeBallInFlight = true;
+				app->m_teeFlight.isBallInFlight = true;
 				app->m_teeBattedMetrics.hasContact = true;
 				app->m_teeBattedMetrics.hasFirstGroundContact = true;
 				app->m_teeBattedMetrics.launchVelocity = { 18.0, 24.0, 0.0 };
@@ -704,8 +723,8 @@ namespace BaseballSimulatorVR::Core
 			app->RefreshTeeBallSpawnFromZoneSelection(L"test_board_tee_spawn");
 			checkRetainedResult();
 			seedContact();
-			app->m_hasTeeBattedBallBounced = true;
-			app->m_teePostBounceElapsedSeconds = 100.0;
+			app->m_teeFlight.hasBattedBallBounced = true;
+			app->m_teeFlight.postBounceElapsedSeconds = 100.0;
 			Physics::BallState settled{};
 			settled.position = { 0.0, 0.037, app->m_environmentSettings.pitchDistanceMeters };
 			app->m_pitchSimulationService.SetBallState(settled);
@@ -777,6 +796,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(Near(Common::GetStrikeZoneBottomMeters(), 0.336) &&
 			    Near(Common::GetStrikeZoneTopMeters(), 0.84),
 			    "Calibration updates the geometry used by rendering and zone decisions");
+			app->FlushPendingSettingsSaves(true);
 			Tests::Check(std::filesystem::exists(output.path / "PlaySettings.user.json") &&
 			    !std::filesystem::exists(output.path / "environment.json"),
 			    "Completed calibration persists the player's zone without creating or modifying an environment file");
@@ -808,6 +828,7 @@ namespace BaseballSimulatorVR::Core
 			for (const auto expected : {PitchDisplay::Full, PitchDisplay::ZoneOnly, PitchDisplay::None})
 			{
 				app->HandleKeyDown('1');
+				app->FlushPendingSettingsSaves(true);
 				Tests::Check(app->m_overlayVisibility.pitchTrajectoryDisplayMode == expected &&
 				    app->m_overlayVisibility.showBattedTrajectory &&
 				    app->m_overlayVisibility.strikeZoneDisplayMode == ZoneDisplay::None &&
@@ -821,6 +842,7 @@ namespace BaseballSimulatorVR::Core
 			for (const auto expected : {ZoneDisplay::Plane, ZoneDisplay::Box, ZoneDisplay::None})
 			{
 				app->HandleKeyDown('2');
+				app->FlushPendingSettingsSaves(true);
 				Tests::Check(app->m_overlayVisibility.strikeZoneDisplayMode == expected &&
 				    app->m_overlayVisibility.pitchTrajectoryDisplayMode == PitchDisplay::None &&
 				    xr->overlayVisibility.strikeZoneDisplayMode == expected &&
@@ -856,6 +878,7 @@ namespace BaseballSimulatorVR::Core
 				    !app->m_overlayVisibility.showBattedTrajectory,
 				    "Operation mode changes preserve both display modes and the independent batted preference");
 			}
+			app->FlushPendingSettingsSaves(true);
 			const auto json = Tests::ReadFile(settingsPath);
 			Tests::Check(json.find("\"pitchTrajectoryDisplayMode\"") != std::string::npos &&
 			    json.find("\"strikeZoneDisplayMode\"") != std::string::npos &&
@@ -895,6 +918,7 @@ namespace BaseballSimulatorVR::Core
 				    app->m_batOverlayState->material == material &&
 				    app->BuildXrUiTelemetry().batMaterial == material,
 				    "XR and keyboard material commands cycle all three bats and update the existing presentation");
+				app->FlushPendingSettingsSaves(true);
 				auto restored = MakeApplication();
 				restored->m_userDataDirectoryPath = output.path.wstring();
 				Tests::Check(restored->LoadPlaySettingsFromJson() && restored->m_batMaterial == material,
@@ -978,7 +1002,7 @@ namespace BaseballSimulatorVR::Core
 				}
 				app->RefreshBatPoseFromXrInput();
 				(void)UpdateBall(*app);
-				Tests::Check(!app->m_isTeeBallInFlight && !app->m_teeBattedMetrics.hasContact,
+				Tests::Check(!app->m_teeFlight.isBallInFlight && !app->m_teeBattedMetrics.hasContact,
 				    "Tracking loss, coordinate/hand changes, stale time, gaps and nonfinite samples cannot invent a swing");
 			}
 
@@ -992,18 +1016,18 @@ namespace BaseballSimulatorVR::Core
 			    "Starting or resetting a pitch discards both sides of the previous bat-motion interval");
 			MoveBat(*app, *xr, 0.2, 2.01);
 			(void)UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight, "The first post-reset sample establishes a pose without a collision sweep");
+			Tests::Check(!app->m_teeFlight.isBallInFlight, "The first post-reset sample establishes a pose without a collision sweep");
 			app->TogglePlaybackPause(L"test");
 			MoveBat(*app, *xr, -0.2, 2.02);
 			(void)UpdateBall(*app);
 			app->TogglePlaybackPause(L"test");
 			MoveBat(*app, *xr, 0.2, 2.03);
 			(void)UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight,
+			Tests::Check(!app->m_teeFlight.isBallInFlight,
 			    "Resuming playback cannot convert a movement made during pause into an impact");
 			MoveBat(*app, *xr, -0.2, 2.04);
 			(void)UpdateBall(*app);
-			Tests::Check(app->m_isTeeBallInFlight,
+			Tests::Check(app->m_teeFlight.isBallInFlight,
 			    "Two fresh tracked poses after resuming still produce the real physical swing");
 		}
 
@@ -1038,10 +1062,10 @@ namespace BaseballSimulatorVR::Core
 			ball.spinAxis = { 1.0, 0.0, 0.0 };
 			ball.spinRpm = 2300.0;
 			ball.flightTimeSeconds = 0.46;
-			app->m_previousDuelBallState = ball;
-			app->m_previousDuelBallState.position.z -= 0.4;
-			app->m_previousDuelBallState.flightTimeSeconds -= 0.01;
-			app->m_hasPreviousDuelBallState = true;
+			app->m_duelRound.previousBallState = ball;
+			app->m_duelRound.previousBallState.position.z -= 0.4;
+			app->m_duelRound.previousBallState.flightTimeSeconds -= 0.01;
+			app->m_duelRound.hasPreviousBallState = true;
 			const double ballWorldZ = -Common::DebugWorldLayout::BatterToPlateDistanceMeters;
 			xr->rightHand = { true, 3.0, 1,
 			    { -0.70 + Physics::BatGripCenterRatio * .85, 0.98, ballWorldZ + 0.2 },
@@ -1050,17 +1074,17 @@ namespace BaseballSimulatorVR::Core
 			xr->rightHand.position.z -= 0.4;
 			xr->rightHand.sampleTimeSeconds = 3.01;
 			app->RefreshBatPoseFromXrInput();
-			app->m_pitchSimulationService.SetBallState(app->m_previousDuelBallState);
+			app->m_pitchSimulationService.SetBallState(app->m_duelRound.previousBallState);
 			for (int sample = 0; sample < 11; ++sample)
 				app->AdvancePitchSimulation(std::chrono::duration<double>(.001));
 			app->AdvancePitchSimulation(std::chrono::duration<double>(.00025));
 			ball = app->m_pitchSimulationService.GetBallState();
 			const double incomingFrameEndTime = ball.flightTimeSeconds;
-			const double incomingFrameStartTime = app->m_previousDuelBallState.flightTimeSeconds;
+			const double incomingFrameStartTime = app->m_duelRound.previousBallState.flightTimeSeconds;
 			Tests::Check(!app->m_pendingPitchSamples.empty() && app->m_pendingPitchSamples.back().position.z > depth,
 			    "The contact frame buffers real incoming physics samples beyond the eventual impact and front plane");
 			app->UpdateModeSpecificBallState(&ball);
-			Tests::Check(app->m_hasDuelBallBeenBatted && app->m_duelBattedMetrics.hasContact,
+			Tests::Check(app->m_duelRound.hasBallBeenBatted && app->m_duelRound.battedMetrics.hasContact,
 			    "The production duel update reaches the real swept oblique bat collision solver");
 			Tests::Check(ball.aerodynamicsModel == Physics::BallAerodynamicsModel::Physical &&
 			    ball.spinRpm > 0.0 && !Near(ball.spinRpm, 2300.0) &&
@@ -1073,15 +1097,15 @@ namespace BaseballSimulatorVR::Core
 			    !Near(after.battedLaunchSpeedMetersPerSecond, before.pitchSpeedMetersPerSecond),
 			    "Real contact preserves delivered pitch name/speed/spin while publishing the new batted launch speed");
 			Tests::Check(app->m_pendingPitchSamples.empty() &&
-			    app->m_duelBattedMetrics.contactFlightTimeSeconds > incomingFrameStartTime &&
-			    app->m_duelBattedMetrics.contactFlightTimeSeconds < incomingFrameEndTime,
+			    app->m_duelRound.battedMetrics.contactFlightTimeSeconds > incomingFrameStartTime &&
+			    app->m_duelRound.battedMetrics.contactFlightTimeSeconds < incomingFrameEndTime,
 			    "The real collision commits the contact-time prefix and discards all buffered post-contact samples");
 			for (const auto& point : after.pitchTrace)
-				Tests::Check(point.z <= app->m_duelBattedMetrics.contactPosition.z + 1e-8,
+				Tests::Check(point.z <= app->m_duelRound.battedMetrics.contactPosition.z + 1e-8,
 				    "Buffered incoming overshoot cannot place future points beyond the physical impact into the trace");
 			Tests::Check(after.pitchMetricsVisible && after.zoneCall == Common::PitchZoneCall::Contact &&
 			    !after.hasPitchBreak && !after.pitchTrace.empty() &&
-			    SamePosition(after.pitchTrace.back(),app->m_duelBattedMetrics.contactPosition) &&
+			    SamePosition(after.pitchTrace.back(),app->m_duelRound.battedMetrics.contactPosition) &&
 			    !SamePosition(after.pitchTrace.back(),ball.position),
 			    "An early real hit reveals the incoming trace up to impact without inventing a future plate crossing or break");
 			Tests::Check(after.hasBatContactPosition && after.batContactFraction >= 0. && after.batContactFraction <= 1. &&
@@ -1099,7 +1123,7 @@ namespace BaseballSimulatorVR::Core
 			    later.zoneCall == Common::PitchZoneCall::Contact && later.hasBatContactPosition &&
 			    Near(later.batContactFraction,after.batContactFraction) && Near(later.contactBatLengthMeters,.85),
 			    "Outgoing flight and later bat adjustments cannot alter the incoming trace or stored impact position");
-			app->m_isWaitingForNextDuelPitch = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
 			const auto interval = app->BuildFieldPresentationState().statistics;
 			Tests::Check(interval.hasBatContactPosition && Near(interval.batContactFraction,after.batContactFraction) &&
 			    Near(interval.contactBatLengthMeters,.85) && interval.zoneCall == Common::PitchZoneCall::Contact &&
@@ -1118,61 +1142,82 @@ namespace BaseballSimulatorVR::Core
 			    "A new delivery clears the old bat contact marker and incoming flight report together");
 		}
 
-		static void TestRequiredSettingsProvisioning()
+		static void TestRequiredSettingsProvisioning(const std::filesystem::path& sourceRoot)
 		{
 			Tests::TempDirectory output;
-			const auto bundled = output.path / "bundled";
 			const auto user = output.path / "user";
-			Tests::Check(std::filesystem::create_directory(bundled) &&
-			    std::filesystem::create_directory(user), "Create isolated bundled and user settings roots");
-			const std::array<std::string_view, 33> names{
-			    "PitchSettings.user.json", "PitchSettings.Yamamoto.json",
-			    "PitchSettings.Difficulty.VeryEasy.RHP.json", "PitchSettings.Difficulty.VeryEasy.LHP.json",
-			    "PitchSettings.Challenge1.RHP.json", "PitchSettings.Challenge1.LHP.json",
-			    "PitchSettings.Challenge2.RHP.json", "PitchSettings.Challenge2.LHP.json",
-			    "PitchSettings.Difficulty.Easy.RHP.json", "PitchSettings.Difficulty.Easy.LHP.json",
-			    "PitchSettings.Difficulty.Normal.RHP.json", "PitchSettings.Difficulty.Normal.LHP.json",
-			    "PitchSettings.Difficulty.Hard.RHP.json", "PitchSettings.Difficulty.Hard.LHP.json",
-			    "PitchSettings.Difficulty.Expert.RHP.json", "PitchSettings.Difficulty.Expert.LHP.json",
-			    "EnvironmentSettings.user.json", "PlaySettings.user.json",
-			    "PitchSettings.Toss.Baseball.json", "PitchSettings.Toss.Softball.json",
-			    "EnvironmentSettings.Toss.Baseball.json", "EnvironmentSettings.Toss.Softball.json",
-			    "PitchSettings.SlowFastball.Baseball.RHP.json", "PitchSettings.SlowFastball.Baseball.LHP.json",
-			    "PitchSettings.SlowFastball.Softball.RHP.json", "PitchSettings.SlowFastball.Softball.LHP.json",
-			    "EnvironmentSettings.SlowFastball.Baseball.json", "EnvironmentSettings.SlowFastball.Softball.json",
-			    "PitchSettings.Beginner.Softball.RHP.json", "PitchSettings.Beginner.Softball.LHP.json",
-			    "PitchSettings.Beginner.BigBreak.Softball.RHP.json", "PitchSettings.Beginner.BigBreak.Softball.LHP.json",
-			    "EnvironmentSettings.Beginner.Softball.json" };
-			for (const auto name : names)
-			{
-				std::ofstream stream(bundled / name);
-				stream << "bundled " << name;
-			}
+			const auto bundled = sourceRoot / "Presets";
 			auto app = MakeApplication();
 			app->m_bundledContentDirectoryPath = bundled.wstring();
 			app->m_userDataDirectoryPath = user.wstring();
 			std::wstring error;
-			Tests::Check(app->EnsureRequiredUserSettingsFiles(error),
-			    "A new installation provisions all difficulty, toss and slow-fastball settings");
-			for (const auto name : names)
-				Tests::Check(Tests::ReadFile(user / name) == "bundled " + std::string(name),
-				    "First-run provisioning copies each bundled file without changing its contents");
+			Tests::Check(app->EnsureRequiredUserSettingsFiles(error) && app->m_startupNotices.empty(),
+			    "A new installation creates the user directory and its settings silently");
+			const auto seededPlay = app->m_runtimeSettingsJsonStorage.LoadPlay(
+			    (user / "PlaySettings.user.json").wstring(), error);
+			Tests::Check(seededPlay && seededPlay->settingsLayoutVersion == Data::CurrentSettingsLayoutVersion &&
+			    Tests::ReadFile(user / "EnvironmentSettings.user.json") ==
+			        Tests::ReadFile(bundled / "Environment" / "EnvironmentSettings.default.json") &&
+			    Tests::ReadFile(user / "PitchSettings.user.json") ==
+			        Tests::ReadFile(bundled / "Pitch" / "PitchSettings.default.json"),
+			    "Only the three user files are created, from the bundled *.default.json templates");
+			std::size_t userFiles = 0;
+			for (const auto& entry : std::filesystem::directory_iterator(user))
+				userFiles += entry.is_regular_file() && entry.path().extension() == L".json" ? 1U : 0U;
+			Tests::Check(userFiles == 3U, "Bundled presets are no longer copied into the user directory");
+			Tests::Check(app->m_settingsLayoutVersion == Data::CurrentSettingsLayoutVersion,
+			    "The settings layout version is recorded");
+
 			{
-				std::ofstream existing(user / names[0]);
+				std::ofstream existing(user / "PitchSettings.user.json");
 				existing << "user modified";
 			}
+			Tests::Check(app->EnsureRequiredUserSettingsFiles(error) &&
+			    Tests::ReadFile(user / "PitchSettings.user.json") == "user modified",
+			    "Provisioning never overwrites an existing user settings file");
+
+			// Upgrade from the old layout: every bundled preset had been copied (and rewritten) here.
+			Tests::TempDirectory legacy;
+			for (const auto name : {L"PitchSettings.Difficulty.Easy.RHP.json", L"PitchSettings.Difficulty.Easy.LHP.json",
+			         L"PitchSettings.Yamamoto.json", L"EnvironmentSettings.Toss.Baseball.json"})
 			{
-				std::ofstream existing(user / names[3]);
-				existing << "custom left-handed preset";
+				std::ofstream stale(legacy.path / name);
+				stale << "{\"stale\": true}";
 			}
-			Tests::Check(std::filesystem::remove(user / names[8]), "Remove one preset to emulate an incomplete installation");
-			Tests::Check(app->EnsureRequiredUserSettingsFiles(error),
-			    "An existing installation fills missing difficulty presets");
-			Tests::Check(Tests::ReadFile(user / names[0]) == "user modified" &&
-			    Tests::ReadFile(user / names[3]) == "custom left-handed preset",
-			    "Provisioning never overwrites existing user settings or modified difficulty files");
-			Tests::Check(Tests::ReadFile(user / names[8]) == "bundled " + std::string(names[8]),
-			    "Provisioning restores exactly the missing difficulty file from bundled content");
+			{
+				std::ofstream custom(legacy.path / "PitchSettings.MyOwn.json");
+				custom << "{\"mine\": true}";
+			}
+			auto upgraded = MakeApplication();
+			upgraded->m_bundledContentDirectoryPath = bundled.wstring();
+			upgraded->m_userDataDirectoryPath = legacy.path.wstring();
+			Tests::Check(upgraded->EnsureRequiredUserSettingsFiles(error) && upgraded->m_startupNotices.size() == 1U,
+			    "The first start after the upgrade explains the preset migration once");
+			Tests::Check(!std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.RHP.json") &&
+			    !std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.LHP.json") &&
+			    !std::filesystem::exists(legacy.path / "PitchSettings.Yamamoto.json") &&
+			    !std::filesystem::exists(legacy.path / "EnvironmentSettings.Toss.Baseball.json") &&
+			    std::filesystem::exists(legacy.path / "PitchSettings.MyOwn.json") &&
+			    std::filesystem::exists(legacy.path / "PitchSettings.user.json"),
+			    "Stale provisioned copies of bundled presets move out of the way; user files stay");
+			std::size_t backedUp = 0;
+			for (const auto& entry : std::filesystem::recursive_directory_iterator(legacy.path / "LegacyPresetBackup"))
+				backedUp += entry.is_regular_file() ? 1U : 0U;
+			Tests::Check(backedUp == 4U, "Every moved copy is kept in LegacyPresetBackup");
+			const auto play = upgraded->m_runtimeSettingsJsonStorage.LoadPlay(
+			    (legacy.path / "PlaySettings.user.json").wstring(), error);
+			Tests::Check(play && play->settingsLayoutVersion == Data::CurrentSettingsLayoutVersion,
+			    "The migration is recorded in PlaySettings");
+			{
+				std::ofstream customized(legacy.path / "PitchSettings.Yamamoto.json");
+				customized << "{\"customized\": true}";
+			}
+			auto restarted = MakeApplication();
+			restarted->m_bundledContentDirectoryPath = bundled.wstring();
+			restarted->m_userDataDirectoryPath = legacy.path.wstring();
+			Tests::Check(restarted->EnsureRequiredUserSettingsFiles(error) && restarted->m_startupNotices.empty() &&
+			    std::filesystem::exists(legacy.path / "PitchSettings.Yamamoto.json"),
+			    "Later customizations of a bundled preset are kept as user overrides");
 		}
 
 		static void TestPitcherHandednessAndPresetTempoLifecycle()
@@ -1219,7 +1264,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(presentation.ballVisible && Near(presentation.pitcher.secondsFromRelease, 0.0) &&
 			    SamePosition(pose.leftHand, releaseWorld),
 			    "Left-handed presentation releases the ball at the delivery controller's exact release time");
-			app->m_isWaitingForNextDuelPitch = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
 			Tests::Check(app->BuildFieldPresentationState().pitcher.throwsLeftHanded &&
 			    Near(app->BuildFieldPresentationState().pitcher.armSpeedScale, 1.0),
 			    "The interval preserves pitcher hand and preset tempo");
@@ -1386,12 +1431,12 @@ namespace BaseballSimulatorVR::Core
 			auto grounded = tee;
 			grounded.position = {0, .04, app->m_environmentSettings.pitchDistanceMeters - 1.0};
 			grounded.velocity = {0, -1, 0};
-			app->m_isTeeBallInFlight = true;
-			app->m_hasPreviousTeeBallState = true;
-			app->m_previousTeeBallState = grounded;
-			app->m_previousTeeBallState.position.y = .2;
+			app->m_teeFlight.isBallInFlight = true;
+			app->m_teeFlight.hasPreviousBallState = true;
+			app->m_teeFlight.previousBallState = grounded;
+			app->m_teeFlight.previousBallState.position.y = .2;
 			app->UpdateModeSpecificBallState(&grounded);
-			Tests::Check(Near(grounded.position.y, .0485) && grounded.velocity.y > 0,
+			Tests::Check(Near(grounded.position.y, .0485 + (.0485 - .04) * .50) && grounded.velocity.y > 0,
 			    "Softball ground collision uses its physical radius");
 			app->m_operationMode = Application::OperationMode::PitchTrajectory;
 			{
@@ -1442,18 +1487,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::TempDirectory output;
 			auto app = MakeApplication();
 			app->m_userDataDirectoryPath = output.path.wstring();
-			for (const std::wstring_view kind : {L"Baseball", L"Softball"})
-			{
-				const std::wstring environment = L"EnvironmentSettings.SlowFastball." + std::wstring(kind) + L".json";
-				Tests::Check(std::filesystem::copy_file(sourceRoot / environment, output.path / environment),
-				    "Copy the shipped normal-distance slow-fastball environment into an isolated user directory");
-				for (const std::wstring_view hand : {L"RHP", L"LHP"})
-				{
-					const std::wstring name = L"PitchSettings.SlowFastball." + std::wstring(kind) + L"." + std::wstring(hand) + L".json";
-					Tests::Check(std::filesystem::copy_file(sourceRoot / name, output.path / name),
-					    "Copy the shipped right- or left-handed slow-fastball preset for application testing");
-				}
-			}
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
 			for (const std::wstring_view kind : {L"Baseball", L"Softball"})
 			{
 				const double radius = kind == L"Baseball" ? .037 : .0485;
@@ -1461,7 +1495,7 @@ namespace BaseballSimulatorVR::Core
 				for (const std::wstring_view hand : {L"RHP", L"LHP"})
 				{
 					const std::wstring name = L"PitchSettings.SlowFastball." + std::wstring(kind) + L"." + std::wstring(hand) + L".json";
-					Tests::Check(app->LoadUserPresetFromJsonFile((output.path / name).wstring()) &&
+					Tests::Check(app->LoadUserPresetFromJsonFile(name) &&
 					    app->LoadEnvironmentSettingsFromJson() && app->m_pitchProfiles.size() == 4 &&
 					    app->m_randomPitchProfileEnabled && app->m_pitcherThrowsLeftHanded == (hand == L"LHP") &&
 					    Near(app->m_environmentSettings.pitchDistanceMeters, 18.44) &&
@@ -1517,17 +1551,18 @@ namespace BaseballSimulatorVR::Core
 			Tests::TempDirectory output;
 			auto app = MakeApplication();
 			app->m_userDataDirectoryPath = output.path.wstring();
-			Tests::Check(std::filesystem::copy_file(sourceRoot / "EnvironmentSettings.user.json",
-			    output.path / "EnvironmentSettings.user.json"), "Copy the standard environment for additional training presets");
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
+			Tests::Check(std::filesystem::copy_file(sourceRoot / "Presets" / "Environment" / "EnvironmentSettings.default.json",
+			    output.path / "EnvironmentSettings.user.json"), "Seed the standard user environment for additional training presets");
 			for (const auto kind : {L"Difficulty.VeryEasy", L"Challenge1", L"Challenge2"})
 			for (const auto hand : {L"RHP", L"LHP"})
 			{
 				const bool lowRelease = std::wstring_view{kind} == L"Challenge1";
 				const double releaseHeight = lowRelease ? .1 : 1.8;
 				const std::wstring name = L"PitchSettings." + std::wstring{kind} + L"." + hand + L".json";
-				Tests::Check(std::filesystem::copy_file(sourceRoot / name, output.path / name) &&
-				    app->LoadUserPresetFromJsonFile((output.path / name).wstring()) && app->LoadEnvironmentSettingsFromJson(),
-				    "The additional training preset loads through the application with its referenced environment");
+				Tests::Check(app->LoadUserPresetFromJsonFile(name) && app->LoadEnvironmentSettingsFromJson() &&
+				    app->m_environmentSettingsFilePath == (output.path / "EnvironmentSettings.user.json").wstring(),
+				    "The additional training preset loads through the application with the user's environment");
 				const double mound = app->m_environmentSettings.moundHeightOffsetMeters;
 				app->m_operationMode = Application::OperationMode::BattingDuel;
 				for (int profile = 0; profile < static_cast<int>(app->m_pitchProfiles.size()); ++profile)
@@ -1563,11 +1598,9 @@ namespace BaseballSimulatorVR::Core
 		static void TestBeginnerSoftballZoneTargeting(const std::filesystem::path& sourceRoot)
 		{
 			Tests::TempDirectory output;
-			const std::wstring environment = L"EnvironmentSettings.Beginner.Softball.json";
-			Tests::Check(std::filesystem::copy_file(sourceRoot / environment, output.path / environment),
-			    "Copy the shipped beginner softball environment for application targeting tests");
 			auto app = MakeApplication();
 			app->m_userDataDirectoryPath = output.path.wstring();
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
 			constexpr std::array<double, 6> speedsKmh{90, 75, 80, 85, 85, 80};
 			for (const bool bigBreak : {false, true})
 			{
@@ -1575,8 +1608,7 @@ namespace BaseballSimulatorVR::Core
 				{
 					const std::wstring name = std::wstring(L"PitchSettings.Beginner.") +
 					    (bigBreak ? L"BigBreak." : L"") + L"Softball." + (leftHanded ? L"LHP.json" : L"RHP.json");
-					Tests::Check(std::filesystem::copy_file(sourceRoot / name, output.path / name) &&
-					    app->LoadUserPresetFromJsonFile((output.path / name).wstring()) && app->LoadEnvironmentSettingsFromJson() &&
+					Tests::Check(app->LoadUserPresetFromJsonFile(name) && app->LoadEnvironmentSettingsFromJson() &&
 					    app->m_pitchProfiles.size() == 6 && app->m_randomPitchProfileEnabled,
 					    "Both handedness choices load all six beginner softball pitches for normal and large breaks");
 					for (int profile = 0; profile < 6; ++profile)
@@ -1625,17 +1657,20 @@ namespace BaseballSimulatorVR::Core
 			    L"EnvironmentSettings.user.json", L"EnvironmentSettings.Toss.Baseball.json",
 			    L"EnvironmentSettings.Toss.Softball.json", L"EnvironmentSettings.SlowFastball.Baseball.json",
 			    L"EnvironmentSettings.SlowFastball.Softball.json"};
+			Tests::Check(std::filesystem::copy_file(sourceRoot / "Presets" / "Environment" / "EnvironmentSettings.default.json",
+			    output.path / "EnvironmentSettings.user.json"), "Seed the player's environment from the bundled default");
+			const auto environmentPathFor = [&](const std::wstring_view name)
+			{
+				return name == L"EnvironmentSettings.user.json" ? output.path / name
+				                                                : sourceRoot / "Presets" / "Environment" / name;
+			};
 			std::array<std::string, 5> environmentContents{};
 			for (std::size_t index = 0; index < presets.size(); ++index)
-			{
-				Tests::Check(std::filesystem::copy_file(sourceRoot / presets[index], output.path / presets[index]) &&
-				    std::filesystem::copy_file(sourceRoot / environments[index], output.path / environments[index]),
-				    "Copy normal, toss and slow-fastball settings into the isolated player directory");
-				environmentContents[index] = Tests::ReadFile(output.path / environments[index]);
-			}
+				environmentContents[index] = Tests::ReadFile(environmentPathFor(environments[index]));
 			TestXrSystem* xr = nullptr;
 			auto app = MakeApplication(&xr);
 			app->m_userDataDirectoryPath = output.path.wstring();
+			app->m_bundledContentDirectoryPath = (sourceRoot / L"Presets").wstring();
 			app->m_strikeZoneSettings.widthMeters = .46;
 			app->BeginStrikeZoneCalibration(L"test_player_zone");
 			for (int frame = 0; frame <= 270; ++frame)
@@ -1647,13 +1682,14 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_strikeZoneCalibrator.IsComplete(), "Calibrate the player zone before switching presets");
 			for (const auto preset : presets)
 			{
-				Tests::Check(app->LoadUserPresetFromJsonFile((output.path / preset).wstring()) &&
+				Tests::Check(app->LoadUserPresetFromJsonFile(preset) &&
 				    app->LoadEnvironmentSettingsFromJson() && Near(app->m_strikeZoneSettings.bottomMeters, .336) &&
 				    Near(app->m_strikeZoneSettings.heightMeters, .504) &&
 				    Near(app->m_strikeZoneSettings.widthMeters, .46) &&
 				    Near(Common::GetStrikeZoneBottomMeters(), .336) && Near(Common::GetStrikeZoneTopMeters(), .84),
 				    "Normal, toss and slow-fastball environment loads preserve the calibrated player zone");
 			}
+			app->FlushPendingSettingsSaves(true);
 			{
 				auto restarted = MakeApplication();
 				restarted->m_userDataDirectoryPath = output.path.wstring();
@@ -1665,6 +1701,7 @@ namespace BaseballSimulatorVR::Core
 				    "A completed automatic calibration survives restart as the saved player zone");
 			}
 			app->BeginStrikeZoneCalibration(L"test_cancel_pending_calibration");
+			app->FlushPendingSettingsSaves(true);
 			{
 				auto restarted = MakeApplication();
 				restarted->m_userDataDirectoryPath = output.path.wstring();
@@ -1711,13 +1748,14 @@ namespace BaseballSimulatorVR::Core
 			{
 				app->m_strikeZoneSettings = test.initial;
 				app->HandleXrUiCommand({test.command});
+				app->FlushPendingSettingsSaves(true);
 				std::wstring error;
 				const auto saved = app->m_runtimeSettingsJsonStorage.LoadPlay((output.path / "PlaySettings.user.json").wstring(), error);
 				Tests::Check(Near(Common::GetStrikeZoneBottomMeters(), test.bottom) && Near(Common::GetStrikeZoneTopMeters(), test.top),
 				    "Manual commands enforce floor, ceiling and height bounds while keeping the opposite edge fixed");
 				Tests::Check(saved && saved->strikeZoneConfigured && Near(saved->strikeZoneBottomMeters, test.bottom) &&
 				    Near(saved->strikeZoneBottomMeters + saved->strikeZoneHeightMeters, test.top),
-				    "Every clamped boundary adjustment remains valid and is persisted immediately");
+				    "Every clamped boundary adjustment remains valid and is persisted on the next settings flush");
 			}
 			SetUpTee(*app);
 			app->m_strikeZoneSettings = {.5, .8, .44};
@@ -1732,18 +1770,19 @@ namespace BaseballSimulatorVR::Core
 			    app->m_teeBattedMetrics.hasContact && Near(Physics::Length(app->m_teeBattedMetrics.launchVelocity), 30) &&
 			    app->m_battedContactSequence == 11,
 			    "Moving the zone updates a selected stationary tee without discarding the previous hit or its trail sequence");
-			app->m_isTeeBallInFlight = true;
+			app->m_teeFlight.isBallInFlight = true;
 			const auto activeBall = app->m_pitchSimulationService.GetBallState();
 			app->HandleXrUiCommand({Xr::UiCommandType::AdjustStrikeZoneBottomDown});
-			Tests::Check(app->m_isTeeBallInFlight &&
+			Tests::Check(app->m_teeFlight.isBallInFlight &&
 			    SamePosition(app->m_pitchSimulationService.GetBallState().position, activeBall.position),
 			    "Moving the zone during a tee hit never respawns the active ball");
 			const auto savedZone = app->m_strikeZoneSettings;
 			for (const auto preset : presets)
-				Tests::Check(app->LoadUserPresetFromJsonFile((output.path / preset).wstring()) &&
+				Tests::Check(app->LoadUserPresetFromJsonFile(preset) &&
 				    app->LoadEnvironmentSettingsFromJson() && Near(app->m_strikeZoneSettings.bottomMeters, savedZone.bottomMeters) &&
 				    Near(app->m_strikeZoneSettings.heightMeters, savedZone.heightMeters),
 				    "Manual player boundaries survive every normal, toss and slow-fastball preset load");
+			app->FlushPendingSettingsSaves(true);
 			auto restarted = MakeApplication(&xr);
 			restarted->m_userDataDirectoryPath = output.path.wstring();
 			Tests::Check(restarted->LoadPlaySettingsFromJson() &&
@@ -1751,14 +1790,96 @@ namespace BaseballSimulatorVR::Core
 			    Near(Common::GetStrikeZoneTopMeters(), savedZone.bottomMeters + savedZone.heightMeters),
 			    "An application restart restores the player's independent strike-zone boundaries");
 			for (std::size_t index = 0; index < environments.size(); ++index)
-				Tests::Check(Tests::ReadFile(output.path / environments[index]) == environmentContents[index],
+			{
+				Tests::Check(Tests::ReadFile(environmentPathFor(environments[index])) == environmentContents[index],
 				    "Calibration and manual player-zone changes never modify preset environment files");
+				Tests::Check(environments[index] == L"EnvironmentSettings.user.json" ||
+				    !std::filesystem::exists(output.path / environments[index]),
+				    "Player-zone changes never create customized copies of bundled environments");
+			}
+		}
+
+		static void TestBatVelocitySourcesAndHaptics()
+		{
+			// The application owns its XR system, so copy the pulses out before it is destroyed.
+			std::vector<TestXrSystem::HapticPulse> pulses{};
+			const auto hitWith = [&pulses](const std::optional<double> reportedSpeed)
+			{
+				TestXrSystem* xr = nullptr;
+				auto app = MakeApplication(&xr);
+				SetUpTee(*app);
+				const auto pose = [&](const double x, const double time)
+				{
+					Xr::HandPoseState hand{ true, time, 1,
+					    { x, 1.0, -2.1 + Physics::BatGripCenterRatio * app->m_environmentSettings.batLengthMeters },
+					    { 0.0, 0.0, 1.0 }, { 0.0, 1.0, 0.0 } };
+					if (reportedSpeed)
+					{
+						hand.hasLinearVelocity = true;
+						hand.linearVelocity = { *reportedSpeed, 0.0, 0.0 };
+						hand.hasAngularVelocity = true;
+					}
+					return hand;
+				};
+				xr->rightHand = pose(-0.2, 1.0);
+				app->RefreshBatPoseFromXrInput();
+				(void)UpdateBall(*app);
+				xr->rightHand = pose(0.2, 1.01);
+				app->RefreshBatPoseFromXrInput();
+				(void)UpdateBall(*app);
+				Tests::Check(app->m_teeBattedMetrics.hasContact, "Each velocity source still hits the tee ball");
+				pulses = xr->hapticPulses;
+				return Physics::Length(app->m_teeBattedMetrics.launchVelocity);
+			};
+			const double differenced = hitWith(std::nullopt);
+			Tests::Check(pulses.size() == 1 && pulses.front().rightHand &&
+			    pulses.front().amplitude > 0.0 && pulses.front().amplitude <= 1.0 &&
+			    pulses.front().durationSeconds > 0.0,
+			    "A bat contact sends one bounded vibration pulse to the bat hand");
+			const double reported = hitWith(32.0);
+			const double implausible = hitWith(90.0);
+			Tests::Check(reported < differenced - 1.0,
+			    "Runtime-reported grip velocity replaces the 40 m/s finite difference of predicted poses");
+			Tests::Check(std::abs(implausible - differenced) < 1e-9,
+			    "A runtime velocity far from the measured motion falls back to finite differences");
+
+			const Common::BatOrientation previous{ { 0.0, 0.0, 1.0 }, { 0.0, 1.0, 0.0 } };
+			const Common::BatOrientation current{
+			    { std::sin(0.5), 0.0, std::cos(0.5) }, { 0.0, 1.0, 0.0 } };
+			const auto omega = Common::ComputeBatAngularVelocity(previous, current, 0.011);
+			const auto halfway = Common::RotateBatOrientation(previous, *omega, 0.0055);
+			const auto end = Common::RotateBatOrientation(previous, *omega, 0.011);
+			Tests::Check(omega && Physics::Length(end.axis - current.axis) < 1e-12 &&
+			    std::abs(halfway.axis.x - std::sin(0.25)) < 1e-12 && std::abs(Physics::Length(halfway.axis) - 1.0) < 1e-12,
+			    "Sub-step bat frames follow the rigid rotation instead of shortening along the chord");
+		}
+
+		static void TestPlannedDuelPitch()
+		{
+			// The plan type is private to Application.cpp; check its observable lifecycle.
+			auto app = MakeApplication();
+			app->m_operationMode = Application::OperationMode::BattingDuel;
+			app->m_duelTargetZoneMask = 1U << 12;
+			app->PlanNextDuelPitch();
+			Tests::Check(app->m_nextDuelPitchPlan != nullptr,
+			    "The interval plans the next duel pitch and starts its zone solve in the background");
+			app->StartRandomBattingDuelPitch(L"test_planned");
+			Tests::Check(app->m_nextDuelPitchPlan == nullptr && app->m_duelPitchPredictedZonePassPoint.has_value(),
+			    "Starting the pitch consumes the plan and predicts the pass point from its solution");
+
+			app->PlanNextDuelPitch();
+			app->m_duelTargetZoneMask = 1U << 0;
+			app->StartRandomBattingDuelPitch(L"test_replanned");
+			Tests::Check(app->m_nextDuelPitchPlan == nullptr && app->m_duelPitchPredictedZonePassPoint.has_value(),
+			    "A plan made for a different zone selection is discarded and the pitch is planned again");
 		}
 
 		static void Run(const std::filesystem::path& sourceRoot)
 		{
 			const RuntimeSettingsGuard settingsGuard;
 			TestTeeCollisionAndPause();
+			TestBatVelocitySourcesAndHaptics();
+			TestPlannedDuelPitch();
 			TestBatGripAndFullLength();
 			TestBatTrackingDiscontinuities();
 			TestObliqueBatCollisionIntegration();
@@ -1775,7 +1896,7 @@ namespace BaseballSimulatorVR::Core
 			TestIndependentTrajectoryCommandsAndPersistence();
 			TestBatMaterialSelectionAndPersistence();
 			TestPitcherHandednessAndPresetTempoLifecycle();
-			TestRequiredSettingsProvisioning();
+			TestRequiredSettingsProvisioning(sourceRoot);
 			TestTossFileSwitchingAndBallProperties();
 			TestSlowFastballFilesAndZoneTargeting(sourceRoot);
 			TestAdditionalTrainingPresets(sourceRoot);

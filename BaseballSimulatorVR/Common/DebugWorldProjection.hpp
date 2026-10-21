@@ -335,28 +335,11 @@ namespace BaseballSimulatorVR::Common
 	    const float* const color,
 	    TDrawTriangleFn&& drawTriangle)
 	{
-		ScreenPoint projectedPoint0{};
-		ScreenPoint projectedPoint1{};
-		ScreenPoint projectedPoint2{};
-		if (!TryProjectWorldTriangle(
-		        worldPoint0,
-		        worldPoint1,
-		        worldPoint2,
-		        projectionState,
-		        width,
-		        height,
-		        &projectedPoint0,
-		        &projectedPoint1,
-		        &projectedPoint2))
-		{
-			return;
-		}
-
-		drawTriangle(
-		    projectedPoint0,
-		    projectedPoint1,
-		    projectedPoint2,
-		    color);
+		const PreparedWorldProjection projection(projectionState, width, height,
+		    DebugWorldLayout::NearClipMeters, DebugWorldLayout::FarClipMeters);
+		projection.EmitNearClippedTriangle(worldPoint0, worldPoint1, worldPoint2,
+		    [&](const ScreenPoint& p0, const ScreenPoint& p1, const ScreenPoint& p2)
+		    { drawTriangle(p0, p1, p2, color); });
 	}
 
 	template <typename TDrawTriangleFn>

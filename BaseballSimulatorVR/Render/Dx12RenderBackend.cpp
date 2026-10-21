@@ -33,6 +33,10 @@ namespace BaseballSimulatorVR::Render
 		constexpr UINT MaxDebugVertices = 262144;
 		constexpr DXGI_FORMAT DepthBufferFormat = DXGI_FORMAT_D32_FLOAT;
 		constexpr UINT RequestedMsaaSampleCount = 4U;
+		// The flip-model swap chain stays UNORM; every render target view and
+		// intermediate target uses sRGB like the XR swapchains, so the mirror
+		// shows the same colors and blends in linear space like the headset.
+		constexpr DXGI_FORMAT DesktopColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 #if defined(BASEBALLSIMVR_DISABLE_WORLD_DRAW)
 		constexpr bool EnableDebugDraw = false;
 #else
@@ -209,7 +213,7 @@ namespace BaseballSimulatorVR::Render
 		m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 		m_msaaSampleCount = 1U;
 		D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels{};
-		msaaQualityLevels.Format = swapChainDescription.Format;
+		msaaQualityLevels.Format = DesktopColorFormat;
 		msaaQualityLevels.SampleCount = RequestedMsaaSampleCount;
 		msaaQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
 		msaaQualityLevels.NumQualityLevels = 0;
@@ -353,9 +357,12 @@ namespace BaseballSimulatorVR::Render
 				return false;
 			}
 
+			D3D12_RENDER_TARGET_VIEW_DESC backBufferRtvDescription{};
+			backBufferRtvDescription.Format = DesktopColorFormat;
+			backBufferRtvDescription.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 			m_device->CreateRenderTargetView(
 			    m_renderTargets[bufferIndex].Get(),
-			    nullptr,
+			    &backBufferRtvDescription,
 			    rtvHandle);
 			rtvHandle.ptr += static_cast<SIZE_T>(m_rtvDescriptorSize);
 
@@ -372,13 +379,14 @@ namespace BaseballSimulatorVR::Render
 
 				D3D12_RESOURCE_DESC msaaRenderTargetDescription =
 				    renderTargetDescription;
+				msaaRenderTargetDescription.Format = DesktopColorFormat;
 				msaaRenderTargetDescription.SampleDesc.Count = m_msaaSampleCount;
 				msaaRenderTargetDescription.SampleDesc.Quality = 0;
 				msaaRenderTargetDescription.Flags =
 				    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
 				D3D12_CLEAR_VALUE renderTargetClearValue{};
-				renderTargetClearValue.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+				renderTargetClearValue.Format = DesktopColorFormat;
 				renderTargetClearValue.Color[0] = m_clearColor[0];
 				renderTargetClearValue.Color[1] = m_clearColor[1];
 				renderTargetClearValue.Color[2] = m_clearColor[2];
@@ -396,7 +404,7 @@ namespace BaseballSimulatorVR::Render
 				}
 
 				D3D12_RENDER_TARGET_VIEW_DESC msaaRtvDescription{};
-				msaaRtvDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+				msaaRtvDescription.Format = DesktopColorFormat;
 				msaaRtvDescription.ViewDimension =
 				    D3D12_RTV_DIMENSION_TEXTURE2DMS;
 				m_device->CreateRenderTargetView(
@@ -466,7 +474,7 @@ namespace BaseballSimulatorVR::Render
 
 		}
 
-		if (!InitializeFxaaResources(DXGI_FORMAT_R8G8B8A8_UNORM))
+		if (!InitializeFxaaResources(DesktopColorFormat))
 		{
 			return false;
 		}
@@ -489,7 +497,7 @@ namespace BaseballSimulatorVR::Render
 
 		if (!Common::DebugOverlay::InitializePipeline(
 		        m_device.Get(),
-		        DXGI_FORMAT_R8G8B8A8_UNORM,
+		        DesktopColorFormat,
 		        DepthBufferFormat,
 		        &m_debugRootSignature,
 		        &m_debugPipelineState,
@@ -509,7 +517,7 @@ namespace BaseballSimulatorVR::Render
 	bool Dx12RenderBackend::InitializeTextAtlasPipelines()
 	{
 		for (auto& pipeline : m_textAtlasPipelines)
-			if (!pipeline.Initialize(m_device.Get(), DXGI_FORMAT_R8G8B8A8_UNORM,
+			if (!pipeline.Initialize(m_device.Get(), DesktopColorFormat,
 			    DepthBufferFormat, m_msaaSampleCount)) return false;
 		return true;
 	}
@@ -576,6 +584,7 @@ namespace BaseballSimulatorVR::Render
 			const D3D12_RESOURCE_DESC backBufferDescription =
 			    m_renderTargets[bufferIndex]->GetDesc();
 			D3D12_RESOURCE_DESC sceneDescription = backBufferDescription;
+			sceneDescription.Format = swapChainFormat;
 			sceneDescription.SampleDesc.Count = 1;
 			sceneDescription.SampleDesc.Quality = 0;
 			sceneDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
@@ -647,7 +656,7 @@ namespace BaseballSimulatorVR::Render
 		Common::FxaaPipelineObjects fxaaPipelineObjects{};
 		if (!Common::BuildFxaaPipeline(
 		        m_device.Get(),
-		        DXGI_FORMAT_R8G8B8A8_UNORM,
+		        DesktopColorFormat,
 		        1U,
 		        &fxaaPipelineObjects))
 		{
@@ -1051,8 +1060,7 @@ namespace BaseballSimulatorVR::Render
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			m_commandList->ResourceBarrier(1, &msaaToResolveBarrier);
 
-			const DXGI_FORMAT resolveFormat =
-			    m_renderTargets[currentFrame]->GetDesc().Format;
+			const DXGI_FORMAT resolveFormat = DesktopColorFormat;
 			m_commandList->ResolveSubresource(
 			    m_sceneColorTargets[currentFrame].Get(),
 			    0,
@@ -1140,7 +1148,8 @@ namespace BaseballSimulatorVR::Render
 					1.0F / height,
 					m_renderQuality.fxaaEdgeThreshold,
 					m_renderQuality.fxaaEdgeThresholdMin,
-					m_renderQuality.fxaaBlendFactor
+					m_renderQuality.fxaaBlendFactor,
+					1.0F
 				};
 				m_commandList->SetGraphicsRootDescriptorTable(
 				    0,
@@ -1580,10 +1589,10 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 			constexpr float whiteUv = 1.5F / Common::UiText::GlyphAtlas::Width;
 			for (const auto& vertex : alphaScratch)
 			{
-				const float clipW = static_cast<float>(Common::DebugWorldLayout::NearClipMeters +
-				    vertex.position[2] * (Common::DebugWorldLayout::FarClipMeters - Common::DebugWorldLayout::NearClipMeters));
-				alphaVertices.push_back({ { vertex.position[0] * clipW, vertex.position[1] * clipW,
-				    vertex.position[2] * clipW, clipW }, { whiteUv, whiteUv },
+				const auto clip = Common::ClipDepthFromNormalizedDepth(vertex.position[2],
+				    Common::DebugWorldLayout::NearClipMeters, Common::DebugWorldLayout::FarClipMeters);
+				alphaVertices.push_back({ { vertex.position[0] * clip.w, vertex.position[1] * clip.w,
+				    clip.z, clip.w }, { whiteUv, whiteUv },
 				    { vertex.color[0], vertex.color[1], vertex.color[2], vertex.color[3] } });
 			}
 		};

@@ -1,10 +1,8 @@
 #include "PitchPhysicsEngine.hpp"
 #include "BattedBallAerodynamics.hpp"
 
-#include "../Common/MathUtilities.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <numbers>
 #include <stdexcept>
@@ -13,23 +11,6 @@ namespace BaseballSimulatorVR::Physics
 {
 	namespace
 	{
-		constexpr std::array<double, 4> SpeedBreakpoints{ 20.0, 30.0, 40.0, 50.0 };
-		constexpr std::array<double, 3> SpinBreakpoints{ 0.0, 1.0, 2.0 };
-
-		constexpr std::array<std::array<double, 3>, 4> DragCoefficientTable{
-			std::array<double, 3>{ 0.00054, 0.00055, 0.00056 },
-			std::array<double, 3>{ 0.00049, 0.00050, 0.00051 },
-			std::array<double, 3>{ 0.00045, 0.00046, 0.00047 },
-			std::array<double, 3>{ 0.00043, 0.00044, 0.00045 },
-		};
-
-		constexpr std::array<std::array<double, 3>, 4> LiftCoefficientTable{
-			std::array<double, 3>{ 0.00036, 0.00052, 0.00064 },
-			std::array<double, 3>{ 0.00044, 0.00062, 0.00078 },
-			std::array<double, 3>{ 0.00050, 0.00070, 0.00090 },
-			std::array<double, 3>{ 0.00056, 0.00078, 0.00100 },
-		};
-
 		constexpr double ReferenceWindHeightMeters = 1.0;
 		constexpr double SeamDragInfluence = 0.20;
 		constexpr double SeamLiftInfluence = 0.40;
@@ -87,78 +68,6 @@ namespace BaseballSimulatorVR::Physics
 			        defaults.flightTimeSeconds));
 			return sanitized;
 		}
-
-		struct BracketingIndices final
-		{
-			std::size_t lower{ 0 };
-			std::size_t upper{ 0 };
-			double blend{ 0.0 };
-		};
-
-		template <std::size_t N>
-		    requires(N > 1)
-		[[nodiscard]] BracketingIndices LocateBracketingIndices(const std::array<double, N>& breakpoints, double value)
-		{
-			if (value <= breakpoints.front())
-			{
-				return BracketingIndices{ 0, 0, 0.0 };
-			}
-
-			if (value >= breakpoints.back())
-			{
-				return BracketingIndices{ N - 1, N - 1, 0.0 };
-			}
-
-			for (std::size_t index = 0; (index + 1) < N; ++index)
-			{
-				const double lowerValue = breakpoints[index];
-				const double upperValue = breakpoints[index + 1];
-				if ((value >= lowerValue) && (value <= upperValue))
-				{
-					const double range = upperValue - lowerValue;
-					if (range <= 0.0)
-					{
-						return BracketingIndices{ index, index + 1, 0.0 };
-					}
-
-					const double blend = (value - lowerValue) / range;
-					return BracketingIndices{ index, index + 1, std::clamp(blend, 0.0, 1.0) };
-				}
-			}
-
-			return BracketingIndices{ N - 1, N - 1, 0.0 };
-		}
-
-		template <std::size_t RowCount, std::size_t ColumnCount>
-		    requires((RowCount > 1) && (ColumnCount > 1))
-		[[nodiscard]] double Interpolate2D(
-		    const std::array<std::array<double, ColumnCount>, RowCount>& table,
-		    const std::array<double, RowCount>& rowBreakpoints,
-		    const std::array<double, ColumnCount>& columnBreakpoints,
-		    double rowValue,
-		    double columnValue)
-		{
-			const BracketingIndices row = LocateBracketingIndices(rowBreakpoints, rowValue);
-			const BracketingIndices column = LocateBracketingIndices(columnBreakpoints, columnValue);
-
-			const double rowLowerColumnLower = table[row.lower][column.lower];
-			const double rowLowerColumnUpper = table[row.lower][column.upper];
-			const double rowUpperColumnLower = table[row.upper][column.lower];
-			const double rowUpperColumnUpper = table[row.upper][column.upper];
-
-			const double lowerRowInterpolated = Common::Math::Lerp(
-			    rowLowerColumnLower,
-			    rowLowerColumnUpper,
-			    column.blend);
-			const double upperRowInterpolated = Common::Math::Lerp(
-			    rowUpperColumnLower,
-			    rowUpperColumnUpper,
-			    column.blend);
-			return Common::Math::Lerp(
-			    lowerRowInterpolated,
-			    upperRowInterpolated,
-			    row.blend);
-		}
 	} // namespace
 
 	PitchPhysicsEngine::PitchPhysicsEngine(Vector3 gravity)
@@ -201,6 +110,10 @@ namespace BaseballSimulatorVR::Physics
 				break;
 		}
 
+		if (nextState.aerodynamicsModel == BallAerodynamicsModel::Physical)
+		{
+			nextState.spinRpm *= std::exp(-deltaSeconds / PhysicalSpinDecayTimeConstantSeconds);
+		}
 		return nextState;
 	}
 
@@ -218,12 +131,20 @@ namespace BaseballSimulatorVR::Physics
 
 	BallState PitchPhysicsEngine::StepRk4(const BallState& currentState, const Baseball::PitchParameters& pitchParameters, double deltaSeconds) const
 	{
+		const bool decaysSpin = currentState.aerodynamicsModel == BallAerodynamicsModel::Physical;
 		const auto accelerationAtState = [&](const Vector3& position, const Vector3& velocity, double flightTimeSeconds) -> Vector3
 		{
 			BallState sampleState = currentState;
 			sampleState.position = position;
 			sampleState.velocity = velocity;
 			sampleState.flightTimeSeconds = flightTimeSeconds;
+			if (decaysSpin)
+			{
+				// Evaluate each stage with the spin it has at that time, so the exponential
+				// decay keeps RK4's step-size convergence.
+				sampleState.spinRpm *= std::exp(
+				    -(flightTimeSeconds - currentState.flightTimeSeconds) / PhysicalSpinDecayTimeConstantSeconds);
+			}
 			return m_gravity + ComputeAerodynamicAcceleration(sampleState, pitchParameters);
 		};
 
@@ -283,11 +204,14 @@ namespace BaseballSimulatorVR::Physics
 			return Vector3{};
 		}
 
+		const double airDensity = IsPlausibleAirDensity(pitchParameters.airDensityKilogramsPerCubicMeter)
+		    ? pitchParameters.airDensityKilogramsPerCubicMeter
+		    : StandardAirDensityKilogramsPerCubicMeter;
 		switch (currentState.aerodynamicsModel)
 		{
 			case BallAerodynamicsModel::Physical:
 				return ComputeBattedBallAerodynamicAcceleration(relativeAirVelocity,
-				    currentState.spinAxis, currentState.spinRpm, currentState.properties);
+				    currentState.spinAxis, currentState.spinRpm, currentState.properties, airDensity);
 			case BallAerodynamicsModel::PitchProfile:
 				break;
 			default:
@@ -304,9 +228,17 @@ namespace BaseballSimulatorVR::Physics
 		const bool hasMeaningfulSpin =
 		    (spinFactor > 1e-6) &&
 		    (LengthSquared(normalizedSpinAxis) > 1e-12);
-		auto [dragCoefficient, liftCoefficient] = ResolveAerodynamicCoefficients(speed, spinFactor, pitchParameters);
+		auto [dragCoefficient, liftCoefficient] = ResolveAerodynamicCoefficients(
+		    speed, FiniteOr(currentState.spinRpm, 0.0), spinFactor, currentState.properties, pitchParameters);
 		dragCoefficient = std::max(0.0, FiniteOr(dragCoefficient, 0.0));
 		liftCoefficient = FiniteOr(liftCoefficient, 0.0);
+		if (!pitchParameters.useCoefficientTable)
+		{
+			// Fixed profile coefficients are specified at standard air density.
+			const double densityScale = airDensity / StandardAirDensityKilogramsPerCubicMeter;
+			dragCoefficient *= densityScale;
+			liftCoefficient *= densityScale;
+		}
 
 		double seamWave = 0.0;
 		const double seamAmplitude = std::clamp(
@@ -336,7 +268,8 @@ namespace BaseballSimulatorVR::Physics
 		}
 		const Vector3 dragAcceleration =
 		    -velocityDirection * (dragCoefficient * speedSquared);
-		const Vector3 magnusDirection = NormalizeOrZero(Cross(normalizedSpinAxis, velocityDirection));
+		// Unnormalized: |axis x direction| = sin(angle), so gyro spin produces no Magnus force.
+		const Vector3 magnusDirection = Cross(normalizedSpinAxis, velocityDirection);
 		const Vector3 magnusAcceleration = magnusDirection * (liftCoefficient * speed * spinFactor);
 
 		Vector3 seamSideAcceleration{};
@@ -351,7 +284,9 @@ namespace BaseballSimulatorVR::Physics
 		return dragAcceleration + magnusAcceleration + seamSideAcceleration;
 	}
 
-	std::pair<double, double> PitchPhysicsEngine::ResolveAerodynamicCoefficients(double speed, double spinFactor, const Baseball::PitchParameters& pitchParameters) const
+	std::pair<double, double> PitchPhysicsEngine::ResolveAerodynamicCoefficients(
+	    const double speed, const double spinRpm, const double spinFactor,
+	    const BallProperties& ballProperties, const Baseball::PitchParameters& pitchParameters) const
 	{
 		if (!pitchParameters.useCoefficientTable)
 		{
@@ -361,24 +296,26 @@ namespace BaseballSimulatorVR::Physics
 			};
 		}
 
-		const double tableDragCoefficient = Interpolate2D(
-		    DragCoefficientTable,
-		    SpeedBreakpoints,
-		    SpinBreakpoints,
-		    std::max(0.0, FiniteOr(speed, SpeedBreakpoints.front())),
-		    std::clamp(
-		        FiniteOr(spinFactor, 0.0),
-		        SpinBreakpoints.front(),
-		        SpinBreakpoints.back()));
-		const double tableLiftCoefficient = Interpolate2D(
-		    LiftCoefficientTable,
-		    SpeedBreakpoints,
-		    SpinBreakpoints,
-		    std::max(0.0, FiniteOr(speed, SpeedBreakpoints.front())),
-		    std::clamp(
-		        FiniteOr(spinFactor, 0.0),
-		        SpinBreakpoints.front(),
-		        SpinBreakpoints.back()));
-		return std::pair<double, double>{ tableDragCoefficient, tableLiftCoefficient };
+		// Speed/spin-dependent coefficients from the same Nathan (2017) fits as the
+		// physical model, expressed in the profile model's units: drag [1/m] multiplies
+		// v^2 and lift [1/s] multiplies v * spinFactor.
+		const double airDensity = IsPlausibleAirDensity(pitchParameters.airDensityKilogramsPerCubicMeter)
+		    ? pitchParameters.airDensityKilogramsPerCubicMeter
+		    : StandardAirDensityKilogramsPerCubicMeter;
+		const BallProperties properties = ballProperties.IsValid() ? ballProperties : BallProperties{};
+		const double scale = AerodynamicAccelerationScale(properties, airDensity);
+		const double drag = scale * NathanDragCoefficient(spinRpm);
+		const double angularSpeed = std::abs(spinRpm) * (2.0 * std::numbers::pi / 60.0);
+		if (!(speed > 1e-6) || !(spinFactor > 1e-9))
+		{
+			return std::pair<double, double>{ drag, 0.0 };
+		}
+		// Nathan's fit comes from batted balls and over-predicts pitched-ball lift by
+		// about 1.3x: scaled so a 95 mph, 2300 rpm four-seamer with 90% active spin
+		// gets the MLB-typical ~16 in of induced vertical break.
+		constexpr double PitchedBallLiftScale = 0.78;
+		const double liftCoefficient = PitchedBallLiftScale *
+		    NathanLiftCoefficient(properties.radiusMeters * angularSpeed / speed);
+		return std::pair<double, double>{ drag, scale * liftCoefficient * speed / spinFactor };
 	}
 } // namespace BaseballSimulatorVR::Physics

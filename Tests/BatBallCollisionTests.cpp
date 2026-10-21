@@ -11,7 +11,7 @@ namespace
 {
 	[[nodiscard]] bool Near(double left, double right)
 	{
-		return std::abs(left - right) < 1e-9;
+		return Tests::Near(left, right, 1e-9, 0.0);
 	}
 
 	struct BatRecoil final
@@ -202,6 +202,23 @@ namespace
 
 void RunBatBallCollisionTests()
 {
+	{
+		BaseballSimulatorVR::Physics::BatBallCollisionInput input;
+		input.ballVelocityWorld = {-38.0, 0.0, 0.0};
+		input.batContactVelocityWorld = {30.0, 0.0, 0.0};
+		input.collisionNormal = {1.0, 0.0, 0.0};
+		input.batAxisDirectionWorld = {0.0, 1.0, 0.0};
+		input.batSurfaceOffsetWorld = input.collisionNormal * input.batRadiusMeters;
+		input.contactDistanceFromHandleMeters = input.batLengthMeters * 28.0 / 34.0;
+		const auto standard = BaseballSimulatorVR::Physics::ResolveBatBallCollision(input);
+		input.batMassKilograms = 0.70;
+		const auto light = BaseballSimulatorVR::Physics::ResolveBatBallCollision(input);
+		Tests::Check(standard.hasImpulse && light.hasImpulse &&
+		    light.ballVelocityWorld.x < standard.ballVelocityWorld.x - 0.5 &&
+		    light.effectiveBatMassKilograms < standard.effectiveBatMassKilograms,
+		    "At the same bat speed a lighter bat has less effective mass and a slower exit");
+	}
+
 	using namespace BaseballSimulatorVR::Physics;
 	CheckMaterialsAndSweetSpot();
 	CheckPhysicalSurfaceOffsets();

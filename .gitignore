@@ -1,5 +1,6 @@
 # Visual Studio local state
 /.vs/
+ipch/
 *.user
 *.VC.db
 *.VC.db-*
@@ -8,25 +9,34 @@
 *.suo
 *.rsuser
 *.sln.docstates
+*.aps
 
-# Build outputs
+# Other editors
+.vscode/
+.idea/
+
+# Build outputs (Directory.Build.props puts everything under /x64/)
 /x64/
+/out/
+/build/
 /BaseballSimulatorVR/x64/
 /BaseballSimulatorVR/Debug/
 /BaseballSimulatorVR/Release/
-/BaseballSimulatorVR/Baseball.a85445c2/
 *.obj
 *.idb
 *.pdb
 *.ilk
 *.iobj
 *.ipdb
+*.pch
 *.tlog
 *.lastbuildstate
 *.recipe
 *.res
 *.log
 *.FileListAbsolute.txt
+*.nativecodeanalysis.xml
+*.sarif
 
 # Runtime-generated data
 SessionHistory.sqlite3

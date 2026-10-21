@@ -14,6 +14,20 @@
 
 namespace BaseballSimulatorVR::Data
 {
+	// Validated ranges of the optional atmosphere and bat-mass environment fields.
+	namespace EnvironmentLimits
+	{
+		inline constexpr double MinimumAltitudeMeters = -500.0;
+		inline constexpr double MaximumAltitudeMeters = 5000.0;
+		inline constexpr double MinimumTemperatureCelsius = -40.0;
+		inline constexpr double MaximumTemperatureCelsius = 60.0;
+		inline constexpr double MinimumRelativeHumidityPercent = 0.0;
+		inline constexpr double MaximumRelativeHumidityPercent = 100.0;
+		inline constexpr double MinimumBatMassKilograms = 0.30;
+		inline constexpr double MaximumBatMassKilograms = 1.50;
+	} // namespace EnvironmentLimits
+
+	// Single definition of the environment settings used by the application and the JSON files.
 	struct EnvironmentRuntimeSettings final
 	{
 		double pitchDistanceMeters{ 18.44 };
@@ -31,7 +45,16 @@ namespace BaseballSimulatorVR::Data
 		Physics::PitchIntegratorType integratorType{
 			Physics::PitchIntegratorType::Rk4
 		};
+		// Optional fields (absent in older files): site altitude above sea level, air temperature,
+		// relative humidity and bat mass. Stored and validated here; physics consumes them later.
+		double altitudeMeters{ 0.0 };
+		double temperatureCelsius{ 15.0 };
+		double relativeHumidityPercent{ 0.0 };
+		double batMassKilograms{ 0.885 };
 	};
+
+	// Currently written layout of the user's settings directory (see PresetCatalog).
+	inline constexpr int CurrentSettingsLayoutVersion = 2;
 
 	struct PlayRuntimeSettings final
 	{
@@ -49,11 +72,21 @@ namespace BaseballSimulatorVR::Data
 		Common::PitchTrajectoryDisplayMode pitchTrajectoryDisplayMode{ Common::PitchTrajectoryDisplayMode::Full };
 		Common::StrikeZoneDisplayMode strikeZoneDisplayMode{ Common::StrikeZoneDisplayMode::Box };
 		bool battedTrajectoryVisible{ true };
+		// Pitch selection state. Presets are read-only at runtime, so the selected pitch settings
+		// entry, its active profile and the random flag are remembered here instead.
+		std::wstring selectedPitchSettingsFile{};
+		std::optional<int> activePitchProfileIndex{};
+		std::optional<bool> randomPitchProfileEnabled{};
+		// 0 for files written before the Presets/ layout; see PresetCatalog::MigrateLegacyUserCopies.
+		int settingsLayoutVersion{ 0 };
 	};
+
+	[[nodiscard]] bool IsValidEnvironmentSettings(const EnvironmentRuntimeSettings& settings, std::wstring& errorMessage);
 
 	class RuntimeSettingsJsonStorage final
 	{
 	  public:
+		// Saves replace the file atomically and keep the previous valid file as "<name>.bak".
 		[[nodiscard]] bool SaveEnvironment(
 		    std::wstring_view filePath,
 		    const EnvironmentRuntimeSettings& settings,

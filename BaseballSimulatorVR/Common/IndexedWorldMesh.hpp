@@ -25,7 +25,8 @@ namespace BaseballSimulatorVR::Common
 		    TTriangle&& triangle)
 		{
 			// Reuse storage each frame and project each shared world vertex once.
-			// Face order and the existing all-corners-visible rule remain intact.
+			// Faces crossing the near plane are clipped rather than dropped, which
+			// otherwise cut holes into the floor right around the player.
 			m_projected.resize(mesh.vertices.size());
 			m_valid.resize(mesh.vertices.size());
 			for (std::size_t i = 0; i < mesh.vertices.size(); ++i)
@@ -39,6 +40,13 @@ namespace BaseballSimulatorVR::Common
 				{
 					triangle(m_projected[indices[0]], m_projected[indices[1]],
 					    m_projected[indices[2]], face.color.data());
+				}
+				else
+				{
+					projection.EmitNearClippedTriangle(mesh.vertices[indices[0]],
+					    mesh.vertices[indices[1]], mesh.vertices[indices[2]],
+					    [&](const ScreenPoint& a, const ScreenPoint& b, const ScreenPoint& c)
+					    { triangle(a, b, c, face.color.data()); });
 				}
 			}
 		}
