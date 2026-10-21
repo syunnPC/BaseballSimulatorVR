@@ -172,6 +172,7 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="Common\JsonWriter.hpp" />
     <ClInclude Include="Common\TextConversion.hpp" />
     <ClInclude Include="Data\JsonSettingsReader.hpp" />
+    <ClInclude Include="Common\CrashReporting.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Core\Application.cpp" />
@@ -191,6 +192,7 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClCompile Include="XR\NullXrSystem.cpp" />
     <ClCompile Include="Common\AppLog.cpp" />
     <ClCompile Include="Common\AtomicFileWriter.cpp" />
+    <ClCompile Include="Common\CrashReporting.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="BaseballSimulatorVR.rc" />
