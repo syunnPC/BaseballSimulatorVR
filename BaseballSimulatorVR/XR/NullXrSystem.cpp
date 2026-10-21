@@ -66,8 +66,10 @@ namespace BaseballSimulatorVR::Xr
 		constexpr wchar_t ActiveRuntimeValueName[] = L"ActiveRuntime";
 		constexpr wchar_t OpenXrRegistryPath[] = L"SOFTWARE\\Khronos\\OpenXR\\1";
 		constexpr XrViewConfigurationType PrimaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+		// Both eyes clear to the same sky color; different colors per eye cause
+		// binocular rivalry wherever the sky shows.
 		constexpr std::array<float, 4> LeftEyeClearColor{ 0.02F, 0.03F, 0.08F, 1.0F };
-		constexpr std::array<float, 4> RightEyeClearColor{ 0.03F, 0.02F, 0.07F, 1.0F };
+		constexpr std::array<float, 4> RightEyeClearColor = LeftEyeClearColor;
 		constexpr std::array<DXGI_FORMAT, 4> PreferredSwapchainFormats{
 			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
 			DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -237,6 +239,11 @@ namespace BaseballSimulatorVR::Xr
 		[[nodiscard]] bool IsSameLuid(const LUID& lhs, const LUID& rhs) noexcept
 		{
 			return (lhs.LowPart == rhs.LowPart) && (lhs.HighPart == rhs.HighPart);
+		}
+
+		[[nodiscard]] bool IsSrgbFormat(const DXGI_FORMAT format) noexcept
+		{
+			return (format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) || (format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
 		}
 
 		[[nodiscard]] DXGI_FORMAT ResolveRtvFormat(const DXGI_FORMAT format) noexcept
@@ -3295,14 +3302,17 @@ namespace BaseballSimulatorVR::Xr
 		}
 		for (auto& swapchain : m_projectionSwapchains)
 		{
-			const HRESULT result = swapchain.frame.Initialize(m_d3d12Device.Get(),
-			    ResolveRtvFormat(m_colorSwapchainFormat), DepthBufferFormat,
-			    m_projectionSampleCount, MaxDebugVertices);
-			if (FAILED(result))
+			for (auto& frame : swapchain.frames)
 			{
-				m_sessionName = L"Session(unavailable): " + BuildD3d12ErrorMessage(L"XR per-view resources", result);
-				DestroyProjectionSwapchains();
-				return false;
+				const HRESULT result = frame.Initialize(m_d3d12Device.Get(),
+				    ResolveRtvFormat(m_colorSwapchainFormat), DepthBufferFormat,
+				    m_projectionSampleCount, MaxDebugVertices);
+				if (FAILED(result))
+				{
+					m_sessionName = L"Session(unavailable): " + BuildD3d12ErrorMessage(L"XR per-view resources", result);
+					DestroyProjectionSwapchains();
+					return false;
+				}
 			}
 		}
 
@@ -6092,8 +6102,10 @@ namespace BaseballSimulatorVR::Xr
 	    const float* clearColor,
 	    const XrView& view)
 	{
-		if ((swapchainContext.frame.allocator == nullptr) ||
-		    (swapchainContext.frame.commands == nullptr) ||
+		Common::D3d12RenderFrame& frame = swapchainContext.frames[swapchainContext.nextFrame];
+		swapchainContext.nextFrame = (swapchainContext.nextFrame + 1) % swapchainContext.frames.size();
+		if ((frame.allocator == nullptr) ||
+		    (frame.commands == nullptr) ||
 		    (m_d3d12Queue == nullptr))
 		{
 			m_lastProjectionLayerStatus = L"command-missing";
@@ -6145,7 +6157,7 @@ namespace BaseballSimulatorVR::Xr
 			return false;
 		}
 
-		const HRESULT beginResult = swapchainContext.frame.Begin(m_xrFence.Get(), m_xrFenceEvent);
+		const HRESULT beginResult = frame.Begin(m_xrFence.Get(), m_xrFenceEvent);
 		if (FAILED(beginResult))
 		{
 			m_projectionRenderingFailed = true;
@@ -6155,7 +6167,7 @@ namespace BaseballSimulatorVR::Xr
 		}
 		auto closeCommandListOnFailure = [&]() noexcept
 		{
-			(void)swapchainContext.frame.commands->Close();
+			(void)frame.commands->Close();
 			m_projectionRenderingFailed = true;
 		};
 
@@ -6184,7 +6196,7 @@ namespace BaseballSimulatorVR::Xr
 			sceneToDrawBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		}
-		if (toDrawBarrierCount > 0) swapchainContext.frame.commands->ResourceBarrier(toDrawBarrierCount, toDrawBarriers);
+		if (toDrawBarrierCount > 0) frame.commands->ResourceBarrier(toDrawBarrierCount, toDrawBarriers);
 
 		D3D12_CPU_DESCRIPTOR_HANDLE swapchainRtvHandle =
 		    swapchainContext.rtvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -6202,25 +6214,25 @@ namespace BaseballSimulatorVR::Xr
 		    useSceneDrawPath ? sceneRtvHandle : swapchainRtvHandle;
 		D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = swapchainContext.dsvHeap->GetCPUDescriptorHandleForHeapStart();
 		dsvHandle.ptr += static_cast<SIZE_T>(imageIndex) * static_cast<SIZE_T>(m_dsvDescriptorSize);
-		swapchainContext.frame.commands->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-		swapchainContext.frame.commands->ClearDepthStencilView(
+		frame.commands->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+		frame.commands->ClearDepthStencilView(
 		    dsvHandle,
 		    D3D12_CLEAR_FLAG_DEPTH,
 		    1.0F,
 		    0,
 		    0,
 		    nullptr);
-		swapchainContext.frame.commands->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
+		frame.commands->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
 #if defined(BASEBALLSIMVR_DISABLE_WORLD_DRAW)
 		(void)view;
 		m_lastProjectionLayerStatus = L"world-draw-disabled";
 #else
-		D3D12_VERTEX_BUFFER_VIEW activeVertexBufferView = swapchainContext.frame.vertexView;
-		UINT activeVertexCapacity = swapchainContext.frame.vertexCapacity;
+		D3D12_VERTEX_BUFFER_VIEW activeVertexBufferView = frame.vertexView;
+		UINT activeVertexCapacity = frame.vertexCapacity;
 		ID3D12RootSignature* activeRootSignature = m_debugRootSignature.Get();
 		ID3D12PipelineState* activeOpaquePipelineState = m_debugPipelineState.Get();
-		ID3D12Resource* activeVertexBuffer = swapchainContext.frame.vertices.Get();
+		ID3D12Resource* activeVertexBuffer = frame.vertices.Get();
 		if (!activeRootSignature || !activeOpaquePipelineState || !activeVertexBuffer)
 		{
 			m_lastProjectionLayerStatus = L"view-resources-missing";
@@ -7810,10 +7822,10 @@ namespace BaseballSimulatorVR::Xr
 			        closeCommandListOnFailure();
 			        return false;
 			    }
-			    swapchainContext.frame.vertices=std::move(grownBuffer);
-			    swapchainContext.frame.vertexView=grownView;
-			    swapchainContext.frame.vertexCapacity=grownCapacity;
-			    activeVertexBuffer=swapchainContext.frame.vertices.Get();
+			    frame.vertices=std::move(grownBuffer);
+			    frame.vertexView=grownView;
+			    frame.vertexCapacity=grownCapacity;
+			    activeVertexBuffer=frame.vertices.Get();
 			    activeVertexBufferView=grownView;
 			    activeVertexCapacity=grownCapacity;
 			}
@@ -7826,11 +7838,11 @@ namespace BaseballSimulatorVR::Xr
 			Common::UiText::SortAtlasTrianglesBackToFront(atlasVertices);
 			if(!opaqueVertices.empty() &&
 			    (!Common::DebugOverlay::UploadVertices(activeVertexBuffer,opaqueVertices) ||
-			     !Common::DebugOverlay::IssueDrawCommands(swapchainContext.frame.commands.Get(),width,height,activeRootSignature,
+			     !Common::DebugOverlay::IssueDrawCommands(frame.commands.Get(),width,height,activeRootSignature,
 			         activeOpaquePipelineState,activeVertexBufferView,static_cast<UINT>(opaqueVertices.size())))) {
 			    m_lastProjectionLayerStatus=L"opaque-overlay-draw-failed";closeCommandListOnFailure();return false;
 			}
-			if(!swapchainContext.frame.text.UploadAndDraw(swapchainContext.frame.commands.Get(),m_uiTextAtlas,atlasVertices,width,height)) {
+			if(!frame.text.UploadAndDraw(frame.commands.Get(),m_uiTextAtlas,atlasVertices,width,height)) {
 			    m_lastProjectionLayerStatus=L"ui-atlas-draw-failed";closeCommandListOnFailure();return false;
 			}
 		}
@@ -7851,11 +7863,11 @@ namespace BaseballSimulatorVR::Xr
 			    D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
 			swapchainToResolveSourceBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			swapchainContext.frame.commands->ResourceBarrier(
+			frame.commands->ResourceBarrier(
 			    1,
 			    &swapchainToResolveSourceBarrier);
 
-			swapchainContext.frame.commands->ResolveSubresource(
+			frame.commands->ResolveSubresource(
 			    sceneColorTexture,
 			    0,
 			    renderTargetTexture,
@@ -7875,7 +7887,7 @@ namespace BaseballSimulatorVR::Xr
 			    D3D12_RESOURCE_STATE_RENDER_TARGET;
 			swapchainBackToRenderBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			swapchainContext.frame.commands->ResourceBarrier(
+			frame.commands->ResourceBarrier(
 			    1,
 			    &swapchainBackToRenderBarrier);
 		}
@@ -7894,7 +7906,7 @@ namespace BaseballSimulatorVR::Xr
 			    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 			sceneToShaderBarrier.Transition.Subresource =
 			    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			swapchainContext.frame.commands->ResourceBarrier(1, &sceneToShaderBarrier);
+			frame.commands->ResourceBarrier(1, &sceneToShaderBarrier);
 		}
 
 		bool usedFxaaPass = false;
@@ -7925,38 +7937,39 @@ namespace BaseballSimulatorVR::Xr
 			ID3D12DescriptorHeap* const descriptorHeaps[]{
 				swapchainContext.sceneSrvHeap.Get()
 			};
-			swapchainContext.frame.commands->SetDescriptorHeaps(
+			frame.commands->SetDescriptorHeaps(
 			    static_cast<UINT>(std::size(descriptorHeaps)),
 			    descriptorHeaps);
-			swapchainContext.frame.commands->RSSetViewports(1, &viewport);
-			swapchainContext.frame.commands->RSSetScissorRects(1, &scissorRect);
-			swapchainContext.frame.commands->OMSetRenderTargets(
+			frame.commands->RSSetViewports(1, &viewport);
+			frame.commands->RSSetScissorRects(1, &scissorRect);
+			frame.commands->OMSetRenderTargets(
 			    1,
 			    &swapchainRtvHandle,
 			    FALSE,
 			    nullptr);
-			swapchainContext.frame.commands->SetGraphicsRootSignature(
+			frame.commands->SetGraphicsRootSignature(
 			    m_fxaaRootSignature.Get());
-			swapchainContext.frame.commands->SetPipelineState(
+			frame.commands->SetPipelineState(
 			    m_fxaaPipelineState.Get());
-			swapchainContext.frame.commands->IASetPrimitiveTopology(
+			frame.commands->IASetPrimitiveTopology(
 			    D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 			const float fxaaParameters[Common::FxaaParameterCount]{
 				1.0F / static_cast<float>((std::max)(1, swapchainContext.width)),
 				1.0F / static_cast<float>((std::max)(1, swapchainContext.height)),
 				m_renderQuality.fxaaEdgeThreshold,
 				m_renderQuality.fxaaEdgeThresholdMin,
-				m_renderQuality.fxaaBlendFactor
+				m_renderQuality.fxaaBlendFactor,
+				IsSrgbFormat(m_colorSwapchainFormat) ? 1.0F : 0.0F
 			};
-			swapchainContext.frame.commands->SetGraphicsRootDescriptorTable(
+			frame.commands->SetGraphicsRootDescriptorTable(
 			    0,
 			    sceneSrvGpuHandle);
-			swapchainContext.frame.commands->SetGraphicsRoot32BitConstants(
+			frame.commands->SetGraphicsRoot32BitConstants(
 			    1,
 			    Common::FxaaParameterCount,
 			    fxaaParameters,
 			    0);
-			swapchainContext.frame.commands->DrawInstanced(3, 1, 0, 0);
+			frame.commands->DrawInstanced(3, 1, 0, 0);
 			usedFxaaPass = true;
 			m_xrPostProcessStatus = L"fxaa";
 		}
@@ -7995,11 +8008,11 @@ namespace BaseballSimulatorVR::Xr
 				    D3D12_RESOURCE_STATE_COPY_SOURCE;
 				sceneToCopySourceBarrier.Transition.Subresource =
 				    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				swapchainContext.frame.commands->ResourceBarrier(
+				frame.commands->ResourceBarrier(
 				    static_cast<UINT>(std::size(toCopyBarriers)),
 				    toCopyBarriers);
 
-				swapchainContext.frame.commands->CopyResource(
+				frame.commands->CopyResource(
 				    renderTargetTexture,
 				    sceneColorTexture);
 
@@ -8033,7 +8046,7 @@ namespace BaseballSimulatorVR::Xr
 				    D3D12_RESOURCE_STATE_RENDER_TARGET;
 				swapchainFromCopyDestBarrier.Transition.Subresource =
 				    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				swapchainContext.frame.commands->ResourceBarrier(
+				frame.commands->ResourceBarrier(
 				    static_cast<UINT>(std::size(fromCopyBarriers)),
 				    fromCopyBarriers);
 
@@ -8052,7 +8065,7 @@ namespace BaseballSimulatorVR::Xr
 
 		// xrReleaseSwapchainImage requires RENDER_TARGET availability on
 		// the bound queue; all resolve/copy paths restore that state above.
-		const HRESULT submit = swapchainContext.frame.Submit(m_d3d12Queue.Get(),
+		const HRESULT submit = frame.Submit(m_d3d12Queue.Get(),
 		    m_xrFence.Get(), m_xrFenceValue++);
 		if (FAILED(submit))
 		{

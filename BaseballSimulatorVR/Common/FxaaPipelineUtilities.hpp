@@ -16,7 +16,9 @@
 
 namespace BaseballSimulatorVR::Common
 {
-	constexpr UINT FxaaParameterCount = 5U;
+	// inverse resolution (2), edge threshold, edge threshold min, blend factor,
+	// and 1 when the sampled scene is linear (an sRGB view) rather than gamma-encoded.
+	constexpr UINT FxaaParameterCount = 6U;
 
 	struct FxaaPipelineObjects final
 	{

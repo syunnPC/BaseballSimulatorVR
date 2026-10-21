@@ -21,6 +21,7 @@
 #include <wrl/client.h>
 #endif
 
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -59,9 +60,13 @@ namespace BaseballSimulatorVR::Xr
 		[[nodiscard]] static std::wstring QueryActiveRuntimePath();
 		[[nodiscard]] static std::wstring BuildRuntimeDisplayName(const std::wstring& runtimePath);
 #if defined(_WIN64)
+		// Two frames of per-view command, vertex and glyph resources, so recording
+		// a view does not wait for the GPU to finish that view's previous frame.
+		static constexpr std::size_t FramesInFlight = 2;
 		struct SwapchainContext final
 		{
-			Common::D3d12RenderFrame frame;
+			std::array<Common::D3d12RenderFrame, FramesInFlight> frames;
+			std::size_t nextFrame{ 0 };
 			XrSwapchain swapchainHandle{ XR_NULL_HANDLE };
 			int32_t width{ 0 };
 			int32_t height{ 0 };
