@@ -1829,11 +1829,32 @@ namespace BaseballSimulatorVR::Core
 			    "Sub-step bat frames follow the rigid rotation instead of shortening along the chord");
 		}
 
+		static void TestPlannedDuelPitch()
+		{
+			// The plan type is private to Application.cpp; check its observable lifecycle.
+			auto app = MakeApplication();
+			app->m_operationMode = Application::OperationMode::BattingDuel;
+			app->m_duelTargetZoneMask = 1U << 12;
+			app->PlanNextDuelPitch();
+			Tests::Check(app->m_nextDuelPitchPlan != nullptr,
+			    "The interval plans the next duel pitch and starts its zone solve in the background");
+			app->StartRandomBattingDuelPitch(L"test_planned");
+			Tests::Check(app->m_nextDuelPitchPlan == nullptr && app->m_duelPitchPredictedZonePassPoint.has_value(),
+			    "Starting the pitch consumes the plan and predicts the pass point from its solution");
+
+			app->PlanNextDuelPitch();
+			app->m_duelTargetZoneMask = 1U << 0;
+			app->StartRandomBattingDuelPitch(L"test_replanned");
+			Tests::Check(app->m_nextDuelPitchPlan == nullptr && app->m_duelPitchPredictedZonePassPoint.has_value(),
+			    "A plan made for a different zone selection is discarded and the pitch is planned again");
+		}
+
 		static void Run(const std::filesystem::path& sourceRoot)
 		{
 			const RuntimeSettingsGuard settingsGuard;
 			TestTeeCollisionAndPause();
 			TestBatVelocitySourcesAndHaptics();
+			TestPlannedDuelPitch();
 			TestBatGripAndFullLength();
 			TestBatTrackingDiscontinuities();
 			TestObliqueBatCollisionIntegration();

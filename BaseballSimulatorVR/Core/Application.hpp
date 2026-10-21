@@ -158,6 +158,9 @@ namespace BaseballSimulatorVR::Core
 		void ApplyAutoZoneResultTag(Common::PitchZoneCall call, std::wstring_view note);
 		void SetOperationMode(OperationMode mode, std::wstring_view note = L"");
 		void StartRandomBattingDuelPitch(std::wstring_view note = L"");
+		// Picks the next duel pitch while the interval runs and solves its zone
+		// target on a worker thread, so the start of a pitch does not stall a frame.
+		void PlanNextDuelPitch();
 		[[nodiscard]] bool IsWaitingForNextDuelPitch() const noexcept;
 		[[nodiscard]] Xr::UiTelemetry BuildXrUiTelemetry() const;
 		void RefreshBatPoseFromXrInput();
@@ -272,6 +275,8 @@ namespace BaseballSimulatorVR::Core
 		bool m_batUseRightHand{ true };
 		Physics::BatMaterial m_batMaterial{ Physics::BatMaterial::Wood };
 		bool m_isWaitingForNextDuelPitch{ false };
+		struct DuelPitchPlan;
+		std::shared_ptr<DuelPitchPlan> m_nextDuelPitchPlan{};
 		bool m_hasCurrentDuelPitchPassedZone{ false };
 		bool m_hasDuelBallBeenBatted{ false };
 		bool m_hasDuelBattedBallBounced{ false };

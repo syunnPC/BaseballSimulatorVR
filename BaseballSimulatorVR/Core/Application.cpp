@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <future>
 #include <shlobj.h>
 #include <iomanip>
 #include <numbers>
@@ -4701,33 +4702,86 @@ namespace BaseballSimulatorVR::Core
 		UpdateWindowTitle();
 	}
 
-	void Application::StartRandomBattingDuelPitch(const std::wstring_view note)
+	// Everything a duel pitch depends on, chosen on the main thread. The zone
+	// solve is a pure function of these inputs and may run on a worker thread.
+	struct Application::DuelPitchPlan final
 	{
-		std::mt19937& randomEngine = GetThreadLocalRandomEngine();
+		int profileIndex{ -1 };
+		Baseball::PitchParameters parameters{};
+		int zoneIndex{ -1 };
+		std::optional<DuelZoneCellBounds> zoneBounds{};
+		std::optional<Physics::Vector3> zoneTarget{};
+		double pitchDistanceMeters{ 0.0 };
+		double verticalOffsetMeters{ 0.0 };
+		std::uint32_t zoneMask{ 0U };
+		bool randomProfile{ false };
+		Physics::Vector3 fallbackOffset{};
+		std::shared_future<std::optional<TrajectoryTargetVelocity>> solution{};
+	};
 
+	namespace
+	{
+		[[nodiscard]] bool SamePitchParameters(const Baseball::PitchParameters& a, const Baseball::PitchParameters& b)
+		{
+			const auto sameVector = [](const Physics::Vector3& u, const Physics::Vector3& v)
+			{ return u.x == v.x && u.y == v.y && u.z == v.z; };
+			return sameVector(a.initialVelocity, b.initialVelocity) && a.launchElevationDegrees == b.launchElevationDegrees &&
+			    a.usePhysicalAerodynamics == b.usePhysicalAerodynamics && a.underhandToss == b.underhandToss &&
+			    a.ballProperties.radiusMeters == b.ballProperties.radiusMeters &&
+			    a.ballProperties.massKilograms == b.ballProperties.massKilograms &&
+			    a.releaseHeightMeters == b.releaseHeightMeters && sameVector(a.spinAxis, b.spinAxis) &&
+			    sameVector(a.windVelocity, b.windVelocity) && a.spinRpm == b.spinRpm &&
+			    a.dragCoefficient == b.dragCoefficient && a.liftCoefficient == b.liftCoefficient &&
+			    a.integratorType == b.integratorType && a.useCoefficientTable == b.useCoefficientTable &&
+			    a.enableHeightDependentWind == b.enableHeightDependentWind && a.windShearFactor == b.windShearFactor &&
+			    a.enableSeamPerturbation == b.enableSeamPerturbation &&
+			    a.seamPerturbationAmplitude == b.seamPerturbationAmplitude &&
+			    a.seamPerturbationFrequencyHz == b.seamPerturbationFrequencyHz &&
+			    a.seamPerturbationPhase == b.seamPerturbationPhase &&
+			    a.airDensityKilogramsPerCubicMeter == b.airDensityKilogramsPerCubicMeter;
+		}
+
+		[[nodiscard]] std::optional<TrajectoryTargetVelocity> SolveDuelPitchPlan(
+		    const Baseball::PitchParameters& parameters, const double pitchDistanceMeters, const int zoneIndex,
+		    const std::optional<DuelZoneCellBounds>& zoneBounds, const std::optional<Physics::Vector3>& zoneTarget,
+		    const double verticalOffsetMeters)
+		{
+			if (!zoneBounds.has_value() || !zoneTarget.has_value())
+			{
+				return std::nullopt;
+			}
+			return ResolveTrajectoryZoneTargetVelocity(parameters, pitchDistanceMeters, zoneIndex,
+			    *zoneBounds, *zoneTarget, verticalOffsetMeters);
+		}
+	} // namespace
+
+	void Application::PlanNextDuelPitch()
+	{
+		m_nextDuelPitchPlan.reset();
 		EnsureDefaultPitchProfiles();
 		if (m_pitchProfiles.empty())
 		{
 			return;
 		}
-
-		int selectedProfileIndex = m_activePitchProfileIndex;
+		std::mt19937& randomEngine = GetThreadLocalRandomEngine();
+		auto plan = std::make_shared<DuelPitchPlan>();
+		plan->randomProfile = m_randomPitchProfileEnabled;
+		plan->profileIndex = m_activePitchProfileIndex;
 		if (m_randomPitchProfileEnabled)
 		{
 			std::uniform_int_distribution<int> profileDistribution(
 			    0,
 			    static_cast<int>(m_pitchProfiles.size()) - 1);
-			selectedProfileIndex = profileDistribution(randomEngine);
+			plan->profileIndex = profileDistribution(randomEngine);
 		}
-		selectedProfileIndex = std::clamp(
-		    selectedProfileIndex,
+		plan->profileIndex = std::clamp(
+		    plan->profileIndex,
 		    0,
 		    static_cast<int>(m_pitchProfiles.size()) - 1);
-		m_activePitchProfileIndex = selectedProfileIndex;
-		m_activePresetType = Data::PitchPresetType::Custom;
-		m_activePitchParameters =
-		    m_pitchProfiles[static_cast<std::size_t>(m_activePitchProfileIndex)]
-		        .pitchParameters;
+		plan->parameters = m_pitchProfiles[static_cast<std::size_t>(plan->profileIndex)].pitchParameters;
+		plan->zoneMask = m_duelTargetZoneMask;
+		plan->pitchDistanceMeters = m_environmentSettings.pitchDistanceMeters;
+		plan->verticalOffsetMeters = m_environmentSettings.moundHeightOffsetMeters;
 
 		std::vector<int> candidateZoneIndices =
 		    HasDuelTargetZoneSelection()
@@ -4741,65 +4795,93 @@ namespace BaseballSimulatorVR::Core
 				candidateZoneIndices.push_back(zoneIndex);
 			}
 		}
+		std::uniform_int_distribution<std::size_t> selectedZoneDistribution(
+		    0U,
+		    candidateZoneIndices.size() - 1U);
+		plan->zoneIndex = candidateZoneIndices[selectedZoneDistribution(randomEngine)];
+		plan->zoneBounds = ResolveDuelZoneCellBounds(plan->zoneIndex);
+		plan->zoneTarget = ResolveRandomDuelZoneCellPosition(
+		    plan->zoneIndex,
+		    plan->pitchDistanceMeters,
+		    randomEngine);
+		std::uniform_real_distribution<double> lateralFallbackDistribution(-1.2, 1.2);
+		std::uniform_real_distribution<double> verticalFallbackDistribution(-0.35, 0.35);
+		plan->fallbackOffset = Physics::Vector3{
+			lateralFallbackDistribution(randomEngine),
+			verticalFallbackDistribution(randomEngine),
+			0.0
+		};
+		plan->solution = std::async(std::launch::async, SolveDuelPitchPlan, plan->parameters,
+		    plan->pitchDistanceMeters, plan->zoneIndex, plan->zoneBounds, plan->zoneTarget,
+		    plan->verticalOffsetMeters).share();
+		m_nextDuelPitchPlan = std::move(plan);
+	}
 
-		int selectedZoneIndex = -1;
-		bool zoneSolveSucceeded = false;
-		std::optional<Physics::Vector3> selectedZoneTargetWorldPosition{};
-		if (!candidateZoneIndices.empty())
+	void Application::StartRandomBattingDuelPitch(const std::wstring_view note)
+	{
+		EnsureDefaultPitchProfiles();
+		if (m_pitchProfiles.empty())
 		{
-			const double zoneWorldVerticalOffsetMeters =
-			    m_environmentSettings.moundHeightOffsetMeters;
-			std::uniform_int_distribution<std::size_t> selectedZoneDistribution(
-			    0U,
-			    candidateZoneIndices.size() - 1U);
-			selectedZoneIndex = candidateZoneIndices[selectedZoneDistribution(
-			    randomEngine)];
-			const std::optional<DuelZoneCellBounds> targetZoneCellBounds =
-			    ResolveDuelZoneCellBounds(selectedZoneIndex);
-			selectedZoneTargetWorldPosition = ResolveRandomDuelZoneCellPosition(
-			    selectedZoneIndex,
-			    m_environmentSettings.pitchDistanceMeters,
-			    randomEngine);
-			const std::optional<TrajectoryTargetVelocity> targetVelocity =
-			    (targetZoneCellBounds.has_value() &&
-			     selectedZoneTargetWorldPosition.has_value())
-			        ? ResolveTrajectoryZoneTargetVelocity(
-			              m_activePitchParameters,
-			              m_environmentSettings.pitchDistanceMeters,
-			              selectedZoneIndex,
-			              targetZoneCellBounds.value(),
-			              selectedZoneTargetWorldPosition.value(),
-			              zoneWorldVerticalOffsetMeters)
-			        : std::nullopt;
-			if (targetVelocity.has_value())
+			return;
+		}
+
+		// Use the pitch planned during the interval unless something it depends
+		// on changed since; otherwise plan now and solve synchronously.
+		std::shared_ptr<DuelPitchPlan> plan = std::move(m_nextDuelPitchPlan);
+		m_nextDuelPitchPlan.reset();
+		const bool planIsCurrent = plan &&
+		    plan->profileIndex < static_cast<int>(m_pitchProfiles.size()) &&
+		    SamePitchParameters(plan->parameters,
+		        m_pitchProfiles[static_cast<std::size_t>(plan->profileIndex)].pitchParameters) &&
+		    plan->randomProfile == m_randomPitchProfileEnabled &&
+		    (plan->randomProfile || plan->profileIndex == std::clamp(m_activePitchProfileIndex, 0,
+		        static_cast<int>(m_pitchProfiles.size()) - 1)) &&
+		    plan->zoneMask == m_duelTargetZoneMask &&
+		    plan->pitchDistanceMeters == m_environmentSettings.pitchDistanceMeters &&
+		    plan->verticalOffsetMeters == m_environmentSettings.moundHeightOffsetMeters;
+		const auto currentBounds = plan ? ResolveDuelZoneCellBounds(plan->zoneIndex) : std::nullopt;
+		const bool boundsUnchanged = planIsCurrent && currentBounds.has_value() == plan->zoneBounds.has_value() &&
+		    (!currentBounds.has_value() ||
+		        (currentBounds->left == plan->zoneBounds->left && currentBounds->right == plan->zoneBounds->right &&
+		         currentBounds->top == plan->zoneBounds->top && currentBounds->bottom == plan->zoneBounds->bottom));
+		if (!boundsUnchanged)
+		{
+			PlanNextDuelPitch();
+			plan = std::move(m_nextDuelPitchPlan);
+			m_nextDuelPitchPlan.reset();
+			if (!plan)
 			{
-				m_activePitchParameters.initialVelocity.x = std::clamp(
-				    targetVelocity->x,
-				    MinimumHorizontalSpeed,
-				    MaximumHorizontalSpeed);
-				m_activePitchParameters.initialVelocity.y = std::clamp(
-				    targetVelocity->y,
-				    MinimumVerticalSpeed,
-				    MaximumVerticalSpeed);
-				zoneSolveSucceeded = true;
+				return;
 			}
 		}
-		if (!zoneSolveSucceeded)
+
+		m_activePitchProfileIndex = plan->profileIndex;
+		m_activePresetType = Data::PitchPresetType::Custom;
+		m_activePitchParameters = plan->parameters;
+		const int selectedZoneIndex = plan->zoneIndex;
+		const std::optional<Physics::Vector3> selectedZoneTargetWorldPosition = plan->zoneTarget;
+		const std::optional<TrajectoryTargetVelocity> targetVelocity = plan->solution.get();
+		bool zoneSolveSucceeded = false;
+		if (targetVelocity.has_value())
 		{
-			std::uniform_real_distribution<double> lateralFallbackDistribution(
-			    -1.2,
-			    1.2);
-			std::uniform_real_distribution<double> verticalFallbackDistribution(
-			    -0.35,
-			    0.35);
 			m_activePitchParameters.initialVelocity.x = std::clamp(
-			    m_activePitchParameters.initialVelocity.x +
-			        lateralFallbackDistribution(randomEngine),
+			    targetVelocity->x,
 			    MinimumHorizontalSpeed,
 			    MaximumHorizontalSpeed);
 			m_activePitchParameters.initialVelocity.y = std::clamp(
-			    m_activePitchParameters.initialVelocity.y +
-			        verticalFallbackDistribution(randomEngine),
+			    targetVelocity->y,
+			    MinimumVerticalSpeed,
+			    MaximumVerticalSpeed);
+			zoneSolveSucceeded = true;
+		}
+		else
+		{
+			m_activePitchParameters.initialVelocity.x = std::clamp(
+			    m_activePitchParameters.initialVelocity.x + plan->fallbackOffset.x,
+			    MinimumHorizontalSpeed,
+			    MaximumHorizontalSpeed);
+			m_activePitchParameters.initialVelocity.y = std::clamp(
+			    m_activePitchParameters.initialVelocity.y + plan->fallbackOffset.y,
 			    MinimumVerticalSpeed,
 			    MaximumVerticalSpeed);
 		}
@@ -5196,6 +5278,7 @@ namespace BaseballSimulatorVR::Core
 			m_isWaitingForNextDuelPitch = true;
 			m_duelPitchCooldownRemainingSeconds = m_duelPitchIntervalSeconds;
 			m_duelPitchElapsedSeconds = 0.0;
+			PlanNextDuelPitch();
 			if (m_hasPreviousDuelBallState)
 			{
 				*ballState = m_previousDuelBallState;
@@ -5232,6 +5315,7 @@ namespace BaseballSimulatorVR::Core
 			m_isWaitingForNextDuelPitch = true;
 			m_duelPitchCooldownRemainingSeconds = m_duelPitchIntervalSeconds;
 			m_duelPitchElapsedSeconds = 0.0;
+			PlanNextDuelPitch();
 		}
 		applyPendingTrajectoryReset(ballState);
 	}
