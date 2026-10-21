@@ -69,8 +69,9 @@ namespace BaseballSimulatorVR::Core
 		constexpr double MaximumVerticalSpeed = 12.0;
 		constexpr double MinimumReleaseHeightMeters = 0.10;
 		constexpr double MaximumReleaseHeightMeters = 2.50;
-		constexpr double MinimumSpinRpm = 500.0;
-		constexpr double MaximumSpinRpm = 3500.0;
+		// Bundled presets include 0 rpm forkballs and 3900 rpm softball curves.
+		constexpr double MinimumSpinRpm = 0.0;
+		constexpr double MaximumSpinRpm = 4000.0;
 		constexpr double MinimumWindForwardVelocity = -8.0;
 		constexpr double MaximumWindForwardVelocity = 8.0;
 		constexpr double MinimumWindCrossVelocity = -8.0;
@@ -904,9 +905,13 @@ namespace BaseballSimulatorVR::Core
 				return;
 			}
 
+			const double penetrationMeters = groundContactHeight - ballState->position.y;
 			ballState->position.y = groundContactHeight;
 			if (ballState->velocity.y < GroundBounceVelocityThreshold)
 			{
+				// Reflect the part of the frame spent below ground so the bounce height
+				// does not depend on where the frame boundary fell.
+				ballState->position.y += penetrationMeters * GroundBounceRestitution;
 				ballState->velocity.y =
 				    -ballState->velocity.y * GroundBounceRestitution;
 				ballState->velocity.x *= GroundBounceTangentialVelocityScale;
@@ -4196,7 +4201,13 @@ namespace BaseballSimulatorVR::Core
 		const double remainingSeconds = (m_operationMode == OperationMode::TeeBatting && !m_isTeeBallInFlight)
 		    ? m_lastSimulationDeltaSeconds * (1.0 - contact->frameFraction)
 		    : flightDeltaSeconds * (1.0 - contact->frameFraction);
-		m_pitchSimulationService.Tick(std::chrono::duration<double>(remainingSeconds));
+		// Integrate the rest of the contact frame with the same fixed step as normal flight.
+		for (double remaining = remainingSeconds; remaining > 1e-12;)
+		{
+			const double step = (std::min)(remaining, FixedSimulationStep.count());
+			m_pitchSimulationService.Tick(std::chrono::duration<double>(step));
+			remaining -= step;
+		}
 		*ballState = m_pitchSimulationService.GetBallState();
 		m_batCollisionSuppressRemainingSeconds = BatCollisionSuppressDurationSeconds;
 		BattedBallMetrics& activeMetrics =

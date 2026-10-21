@@ -11,6 +11,34 @@ namespace BaseballSimulatorVR::Physics
 	inline constexpr double AerodynamicBaseballRadiusMeters = .037;
 	inline constexpr double AerodynamicBaseballMassKilograms = .145;
 	inline constexpr double StandardAirDensityKilogramsPerCubicMeter = 1.225;
+	// Spin decay time constant for a flying baseball (Nathan's trajectory calculator uses
+	// roughly 25-30 s); only the physical model applies it.
+	inline constexpr double PhysicalSpinDecayTimeConstantSeconds = 25.0;
+
+	[[nodiscard]] inline bool IsPlausibleAirDensity(const double density) noexcept
+	{
+		return std::isfinite(density) && density >= 0.5 && density <= 1.6;
+	}
+
+	// rho * A / (2 m): converts dimensionless C_D / C_L into acceleration per speed squared.
+	[[nodiscard]] inline double AerodynamicAccelerationScale(
+	    const BallProperties& properties, const double airDensity) noexcept
+	{
+		return airDensity * std::numbers::pi * properties.radiusMeters * properties.radiusMeters /
+		    (2. * properties.massKilograms);
+	}
+
+	// Nathan (2017) drag fit; the spin term is the RPM-dependent part.
+	[[nodiscard]] inline double NathanDragCoefficient(const double spinRpm) noexcept
+	{
+		return .297 + .0292 * (std::abs(spinRpm) / 1000.);
+	}
+
+	// Nathan (2017) lift fit as a function of the transverse spin factor S = r w / v.
+	[[nodiscard]] inline double NathanLiftCoefficient(const double spinFactor) noexcept
+	{
+		return spinFactor > 0. ? 1.120 * spinFactor / (.583 + 2.333 * spinFactor) : 0.;
+	}
 
 	struct BattedBallAerodynamicCoefficients final
 	{
@@ -27,7 +55,7 @@ namespace BaseballSimulatorVR::Physics
 	    const BallProperties& properties = {})
 	{
 		BattedBallAerodynamicCoefficients result;
-		result.drag = .297 + .0292 * (std::abs(spinRpm) / 1000.);
+		result.drag = NathanDragCoefficient(spinRpm);
 		const double speed = Length(relativeAirVelocity);
 		if (speed <= 1e-6)
 		{
@@ -47,15 +75,15 @@ namespace BaseballSimulatorVR::Physics
 		}
 
 		result.transverseSpinFactor = properties.radiusMeters * transverseSpin / speed;
-		result.lift =
-		    1.120 * result.transverseSpinFactor / (.583 + 2.333 * result.transverseSpinFactor);
+		result.lift = NathanLiftCoefficient(result.transverseSpinFactor);
 		result.liftDirection = transverseAngularVelocity / transverseSpin;
 		return result;
 	}
 
 	[[nodiscard]] inline Vector3 ComputeBattedBallAerodynamicAcceleration(
 	    const Vector3& relativeAirVelocity, const Vector3& spinAxis, double spinRpm,
-	    const BallProperties& properties = {})
+	    const BallProperties& properties = {},
+	    const double airDensity = StandardAirDensityKilogramsPerCubicMeter)
 	{
 		const double speed = Length(relativeAirVelocity);
 		if (speed <= 1e-6)
@@ -64,9 +92,7 @@ namespace BaseballSimulatorVR::Physics
 		}
 		const auto coefficients =
 		    ResolveBattedBallAerodynamicCoefficients(relativeAirVelocity, spinAxis, spinRpm, properties);
-		const double accelerationScale = StandardAirDensityKilogramsPerCubicMeter *
-		    std::numbers::pi * properties.radiusMeters * properties.radiusMeters /
-		    (2. * properties.massKilograms);
+		const double accelerationScale = AerodynamicAccelerationScale(properties, airDensity);
 		const double dynamicPressurePerMass = accelerationScale * speed * speed;
 		return -(relativeAirVelocity / speed) * (dynamicPressurePerMass * coefficients.drag) +
 		       coefficients.liftDirection * (dynamicPressurePerMass * coefficients.lift);

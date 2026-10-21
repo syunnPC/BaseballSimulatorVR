@@ -1,7 +1,7 @@
 {
   "_comment_preset": "Baseball fastballs, 70-100 km/h release speed, LHP.",
-  "initialSpeedMetersPerSecond": 19.15457007904049,
-  "launchElevationDegrees": 9.905713866,
+  "initialSpeedMetersPerSecond": 19.153847444447017,
+  "launchElevationDegrees": 9.91808415898362,
   "releaseHeightMeters": 1.8,
   "usePhysicalAerodynamics": true,
   "underhandToss": false,
@@ -24,8 +24,8 @@
     {
       "name": "ストレート 70km/h",
       "_comment_speed": "70 km/h release speed; forward component = speed * cos(elevation).",
-      "initialSpeedMetersPerSecond": 19.15457007904049,
-      "launchElevationDegrees": 9.905713866,
+      "initialSpeedMetersPerSecond": 19.153847444447017,
+      "launchElevationDegrees": 9.91808415898362,
       "releaseHeightMeters": 1.8,
       "usePhysicalAerodynamics": true,
       "underhandToss": false,
@@ -44,8 +44,8 @@
     {
       "name": "ストレート 80km/h",
       "_comment_speed": "80 km/h release speed; forward component = speed * cos(elevation).",
-      "initialSpeedMetersPerSecond": 22.087960291195152,
-      "launchElevationDegrees": 6.301431707,
+      "initialSpeedMetersPerSecond": 22.087475356660395,
+      "launchElevationDegrees": 6.312812881912655,
       "releaseHeightMeters": 1.8,
       "usePhysicalAerodynamics": true,
       "underhandToss": false,
@@ -64,8 +64,8 @@
     {
       "name": "ストレート 90km/h",
       "_comment_speed": "90 km/h release speed; forward component = speed * cos(elevation).",
-      "initialSpeedMetersPerSecond": 24.940455332142765,
-      "launchElevationDegrees": 3.95526241,
+      "initialSpeedMetersPerSecond": 24.94013841842865,
+      "launchElevationDegrees": 3.9657781528419824,
       "releaseHeightMeters": 1.8,
       "usePhysicalAerodynamics": true,
       "underhandToss": false,
@@ -84,8 +84,8 @@
     {
       "name": "ストレート 100km/h",
       "_comment_speed": "100 km/h release speed; forward component = speed * cos(elevation).",
-      "initialSpeedMetersPerSecond": 27.754746021980438,
-      "launchElevationDegrees": 2.333363588,
+      "initialSpeedMetersPerSecond": 27.754553392655517,
+      "launchElevationDegrees": 2.3431023319212816,
       "releaseHeightMeters": 1.8,
       "usePhysicalAerodynamics": true,
       "underhandToss": false,

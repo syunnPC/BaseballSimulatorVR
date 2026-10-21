@@ -109,11 +109,12 @@ namespace
 	void CheckFlightReferences()
 	{
 		// Independent RK4 reference implementation of Nathan 2017 Eqs. 7-11,
-		// R=.037m, m=.145kg, rho=1.225kg/m3, contact center height1m, ground center .037m.
-		// Reference distances are numerical integrations of the equations.
+		// R=.037m, m=.145kg, rho=1.225kg/m3, contact center height1m, ground center .037m,
+		// with continuous spin decay w(t) = w0 exp(-t / 25 s).
+		// Reference distances are numerical integrations of the equations (dt = .1 ms).
 		constexpr std::array<std::array<double, 4>, 3> expected{
-		    {{119.624, 123.357, 123.654, 121.000}, {136.877, 139.612, 138.778, 134.863},
-		        {152.887, 154.561, 152.586, 147.431}}};
+		    {{119.297, 123.176, 123.595, 121.033}, {136.547, 139.463, 138.768, 134.949},
+		        {152.586, 154.466, 152.637, 147.571}}};
 		for (std::size_t speed = 0; speed < expected.size(); ++speed)
 		{
 			for (std::size_t angle = 0; angle < expected[speed].size(); ++angle)
@@ -197,9 +198,14 @@ namespace
 		    "A batted ball cannot inherit pitch-specific drag, lift, table, seam, or spin "
 		    "configuration");
 		Tests::Check(nominal.aerodynamicsModel == Physics::BallAerodynamicsModel::Physical &&
-		                 nominal.spinRpm == batted.spinRpm &&
+		                 std::abs(nominal.spinRpm - batted.spinRpm *
+		                     std::exp(-.01 / Physics::PhysicalSpinDecayTimeConstantSeconds)) < 1e-9 &&
 		                 Near(nominal.spinAxis, batted.spinAxis),
-		    "Integrator preserves the selected aerodynamic model and physical spin state");
+		    "Integrator preserves the selected aerodynamic model and decays physical spin exponentially");
+		Physics::BallState profilePitch = batted;
+		profilePitch.aerodynamicsModel = Physics::BallAerodynamicsModel::PitchProfile;
+		Tests::Check(engine.Step(profilePitch, parameters, std::chrono::duration<double>(.01)).spinRpm == profilePitch.spinRpm,
+		    "Fitted pitch profiles keep their configured spin rate");
 
 		auto movingAir = parameters;
 		movingAir.windVelocity = {3, 0, -5};
@@ -280,6 +286,79 @@ namespace
 		                 simulation.GetBallState().spinRpm == delivered.spinRpm,
 		    "The next delivery restores pitch-profile aerodynamics and the original pitch spin");
 	}
+
+	struct PlateCrossing
+	{
+		Physics::BallState state;
+		double releaseSpeed{};
+	};
+
+	PlateCrossing FlyPitch(const Baseball::PitchParameters& parameters, double liftCoefficient)
+	{
+		Physics::PitchPhysicsEngine engine;
+		auto withLift = parameters;
+		withLift.liftCoefficient = liftCoefficient;
+		Physics::BallState state;
+		state.position = {0, withLift.releaseHeightMeters, 0};
+		state.velocity = withLift.initialVelocity;
+		state.spinAxis = withLift.spinAxis;
+		state.spinRpm = withLift.spinRpm;
+		for (int step = 0; step < 2000; ++step)
+		{
+			const auto next = engine.Step(state, withLift, std::chrono::duration<double>(.001));
+			if (next.position.z >= 18.44)
+				return {next, Physics::Length(withLift.initialVelocity)};
+			state = next;
+		}
+		throw std::runtime_error("Pitch must reach the plate");
+	}
+
+	void CheckPitchProfileAerodynamics()
+	{
+		Baseball::PitchParameters fastball;
+		fastball.initialVelocity = {0, 0, 145. / 3.6};
+		fastball.spinAxis = {-1, 0, 0};
+		fastball.spinRpm = 2300;
+		fastball.useCoefficientTable = true;
+		const auto table = FlyPitch(fastball, 0);
+		const double speedLoss = 1. - Physics::Length(table.state.velocity) / table.releaseSpeed;
+		Tests::Check(speedLoss > .06 && speedLoss < .12 && table.state.flightTimeSeconds > .44,
+		    "Speed/spin-dependent pitch drag loses a realistic 6-12% of release speed before the plate");
+		auto noSpin = fastball;
+		noSpin.spinRpm = 0;
+		const double inducedRise = table.state.position.y - FlyPitch(noSpin, 0).state.position.y;
+		Tests::Check(inducedRise > .30 && inducedRise < .65,
+		    "A 2300 rpm backspin fastball gets MLB-like induced vertical break from the physical coefficients");
+
+		auto fixed = fastball;
+		fixed.useCoefficientTable = false;
+		fixed.dragCoefficient = .0066;
+		const auto fixedFlight = FlyPitch(fixed, .12);
+		auto thinAir = fixed;
+		thinAir.airDensityKilogramsPerCubicMeter = 1.225 * .8;
+		const auto thinFlight = FlyPitch(thinAir, .12);
+		Tests::Check(Physics::Length(thinFlight.state.velocity) > Physics::Length(fixedFlight.state.velocity) &&
+		    thinFlight.state.position.y < fixedFlight.state.position.y,
+		    "Thinner air reduces both profile drag and Magnus lift");
+
+		auto gyro = fixed;
+		gyro.spinAxis = {0, 0, 1};
+		auto sideways = gyro;
+		sideways.spinAxis = {0, .2, 1};
+		const auto gyroFlight = FlyPitch(gyro, .12);
+		const auto nearGyroFlight = FlyPitch(sideways, .12);
+		const auto spinless = FlyPitch(fixed, 0);
+		auto pureSide = fixed;
+		pureSide.spinAxis = {0, 1, 0};
+		const double sideBreak = FlyPitch(pureSide, .12).state.position.x - spinless.state.position.x;
+		// Only the transverse component that appears as gravity bends the path acts.
+		Tests::Check(std::abs(gyroFlight.state.position.x - spinless.state.position.x) < .1 * sideBreak &&
+		    std::abs(gyroFlight.state.position.y - spinless.state.position.y) < .01 * sideBreak,
+		    "Gyro spin along the release direction produces almost no profile Magnus force");
+		const double nearGyroBreak = nearGyroFlight.state.position.x - spinless.state.position.x;
+		Tests::Check(nearGyroBreak > 0 && nearGyroBreak < .3 * sideBreak,
+		    "A mostly gyro axis scales the profile Magnus force by sin(angle) instead of applying it in full");
+	}
 } // namespace
 
 void RunBattedBallFlightTests()
@@ -288,4 +367,5 @@ void RunBattedBallFlightTests()
 	CheckFlightReferences();
 	CheckIntegrationAndStateAuthority();
 	CheckFrozenPitchConfiguration();
+	CheckPitchProfileAerodynamics();
 }

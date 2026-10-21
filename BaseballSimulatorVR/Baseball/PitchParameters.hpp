@@ -14,13 +14,23 @@ namespace BaseballSimulatorVR::Baseball
 		bool underhandToss{ false };
 		Physics::BallProperties ballProperties{};
 		double releaseHeightMeters{ 1.8 };
-		Physics::Vector3 spinAxis{ 0.0, 1.0, 0.0 };
+		// (-1, 0, 0) is pure backspin for a pitch travelling towards +z.
+		Physics::Vector3 spinAxis{ -1.0, 0.0, 0.0 };
 		Physics::Vector3 windVelocity{};
 		double spinRpm{ 2200.0 };
-		double dragCoefficient{ 0.00045 };
-		double liftCoefficient{ 0.00075 };
+		// Profile-model coefficients at standard air density (1.225 kg/m^3):
+		// drag acceleration = dragCoefficient [1/m] * v^2, and Magnus acceleration =
+		// liftCoefficient [1/s] * v * (rpm / 3000) * sin(angle between spin axis and air velocity).
+		// A physical baseball drag coefficient is about rho*A*C_D/(2m) = 0.0064 1/m.
+		double dragCoefficient{ 0.0064 };
+		double liftCoefficient{ 0.12 };
 		Physics::PitchIntegratorType integratorType{ Physics::PitchIntegratorType::Rk4 };
+		// Use speed- and spin-dependent physical coefficients (Nathan 2017 C_D / C_L fits)
+		// instead of the fixed dragCoefficient / liftCoefficient.
 		bool useCoefficientTable{ true };
+		// Environment air density; the physical model uses it directly and the fixed profile
+		// coefficients scale with it relative to standard density.
+		double airDensityKilogramsPerCubicMeter{ 1.225 };
 		bool enableHeightDependentWind{ false };
 		double windShearFactor{ 0.08 };
 		bool enableSeamPerturbation{ false };

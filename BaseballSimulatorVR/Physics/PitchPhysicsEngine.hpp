@@ -19,7 +19,7 @@ namespace BaseballSimulatorVR::Physics
 		[[nodiscard]] BallState StepSemiImplicitEuler(const BallState& currentState, const Baseball::PitchParameters& pitchParameters, double deltaSeconds) const;
 		[[nodiscard]] BallState StepRk4(const BallState& currentState, const Baseball::PitchParameters& pitchParameters, double deltaSeconds) const;
 		[[nodiscard]] Vector3 ComputeAerodynamicAcceleration(const BallState& currentState, const Baseball::PitchParameters& pitchParameters) const;
-		[[nodiscard]] std::pair<double, double> ResolveAerodynamicCoefficients(double speed, double spinFactor, const Baseball::PitchParameters& pitchParameters) const;
+		[[nodiscard]] std::pair<double, double> ResolveAerodynamicCoefficients(double speed, double spinRpm, double spinFactor, const BallProperties& ballProperties, const Baseball::PitchParameters& pitchParameters) const;
 
 		Vector3 m_gravity;
 	};

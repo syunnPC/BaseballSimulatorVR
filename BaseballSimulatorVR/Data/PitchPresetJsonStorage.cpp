@@ -187,15 +187,15 @@ namespace BaseballSimulatorVR::Data
 			}
 			if (fieldName == "dragCoefficient")
 			{
-				return "Drag coefficient.";
+				return "Fixed drag factor k = rho*A*C_D/(2m) [1/m] at 1.225 kg/m^3 (drag acceleration = k*v^2); a real baseball is about 0.0066. Ignored when useCoefficientTable is true.";
 			}
 			if (fieldName == "liftCoefficient")
 			{
-				return "Lift coefficient.";
+				return "Fixed Magnus factor [1/s] (acceleration = factor*v*(rpm/3000)*sin(angle between spin axis and velocity)). Ignored when useCoefficientTable is true.";
 			}
 			if (fieldName == "useCoefficientTable")
 			{
-				return "Enable velocity/spin-dependent coefficient table.";
+				return "Use speed/spin-dependent physical drag and Magnus coefficients (Nathan 2017 fits) instead of the fixed factors.";
 			}
 			if (fieldName == "enableSeamPerturbation")
 			{
