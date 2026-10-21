@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Build settings shared by every C++ project in this repository:
+  BaseballSimulatorVR.Lib (production code), BaseballSimulatorVR (app) and
+  BaseballSimulatorVR.Tests.
+
+  MSBuild imports this file automatically from Microsoft.Cpp.Default.props,
+  before any project setting, so a project can still override a value here.
+  Two settings deliberately stay in the project files:
+  - UseDebugLibraries and WholeProgramOptimization belong to each project's
+    "Configuration" property group. WholeProgramOptimization set this early
+    would make Microsoft.Cpp.props import its defaults after the project
+    settings (WholeProgramOptimizationDelayImport) and force /LTCG:incremental.
+  - Link LinkTimeCodeGeneration (full /LTCG) must come after Microsoft.Cpp.props
+    for the same reason, so the two linking projects set it themselves.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <BaseballSimRoot>$(MSBuildThisFileDirectory)</BaseballSimRoot>
+    <BaseballSimExternalDir>$(BaseballSimRoot)external\</BaseballSimExternalDir>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <!--
+    One output directory for the app, the tests and the library, independent of
+    whether a project is built through the solution or on its own, and one
+    intermediate directory per project (two projects share a source folder).
+  -->
+  <PropertyGroup Condition="'$(Configuration)' != '' and '$(Platform)' != ''">
+    <OutDir>$(BaseballSimRoot)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(BaseballSimRoot)$(Platform)\$(Configuration)\obj\$(MSBuildProjectName)\</IntDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- /permissive- -->
+      <ConformanceMode>true</ConformanceMode>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <!-- /external:anglebrackets /external:W0: SDK, STL and vendored headers stay quiet. -->
+      <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <PreprocessorDefinitions>NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(BaseballSimExternalDir)openxr\include;$(BaseballSimExternalDir)sqlite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 /external:templates- %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(BaseballSimExternalDir)openxr\lib\x64;$(BaseballSimExternalDir)sqlite\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>openxr_loader.lib;sqlite3.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <!--
+    Release code generation. Production code is compiled once, in
+    BaseballSimulatorVR.Lib, so the app and the tests run identical machine code
+    (AVX2 + whole program optimization); the tests' own sources use the same flags.
+  -->
+  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <!-- /Zi: release PDBs for crash dumps, profilers and sanitizer reports. -->
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <!-- /DEBUG would otherwise turn these off. -->
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <!--
+    CI hook: msbuild /p:BaseballSimCodeAnalysis=true adds /analyze (external
+    headers excluded) and reports its warnings without stopping the build.
+  -->
+  <ItemDefinitionGroup Condition="'$(BaseballSimCodeAnalysis)' == 'true'">
+    <ClCompile>
+      <EnablePREfast>true</EnablePREfast>
+      <DisableAnalyzeExternal>true</DisableAnalyzeExternal>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
