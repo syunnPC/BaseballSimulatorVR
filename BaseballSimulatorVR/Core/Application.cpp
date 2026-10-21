@@ -10,6 +10,7 @@
 #include "../Common/BatPoseUtilities.hpp"
 #include "../Common/PitcherPresentation.hpp"
 #include "../Physics/BatBallCollision.hpp"
+#include "../Physics/BattedBallAerodynamics.hpp"
 #include "../Physics/BatGeometry.hpp"
 #include "../Physics/SweptBatCollision.hpp"
 
@@ -1810,6 +1811,7 @@ namespace BaseballSimulatorVR::Core
 		    m_environmentSettings.enableHeightDependentWind;
 		m_activePitchParameters.windShearFactor =
 		    m_environmentSettings.windShearFactor;
+		m_activePitchParameters.airDensityKilogramsPerCubicMeter = EnvironmentAirDensity();
 		m_pitchMetricsSpeedMetersPerSecond =
 		    Physics::Length(m_activePitchParameters.initialVelocity);
 		if ((m_activePresetType == Data::PitchPresetType::Custom) &&
@@ -3581,6 +3583,7 @@ namespace BaseballSimulatorVR::Core
 			    m_environmentSettings.enableHeightDependentWind;
 			profile.pitchParameters.windShearFactor =
 			    m_environmentSettings.windShearFactor;
+			profile.pitchParameters.airDensityKilogramsPerCubicMeter = EnvironmentAirDensity();
 		}
 		m_activePitchParameters.integratorType =
 		    m_environmentSettings.integratorType;
@@ -3590,6 +3593,7 @@ namespace BaseballSimulatorVR::Core
 		    m_environmentSettings.enableHeightDependentWind;
 		m_activePitchParameters.windShearFactor =
 		    m_environmentSettings.windShearFactor;
+		m_activePitchParameters.airDensityKilogramsPerCubicMeter = EnvironmentAirDensity();
 		ResetPitchSimulation();
 		if (m_batOverlayState.has_value())
 		{
@@ -4100,6 +4104,13 @@ namespace BaseballSimulatorVR::Core
 		RecordPitchOutcome();
 	}
 
+	double Application::EnvironmentAirDensity() const noexcept
+	{
+		const double density = Physics::ComputeAirDensity(m_environmentSettings.altitudeMeters,
+		    m_environmentSettings.temperatureCelsius, m_environmentSettings.relativeHumidityPercent);
+		return Physics::IsPlausibleAirDensity(density) ? density : Physics::StandardAirDensityKilogramsPerCubicMeter;
+	}
+
 	bool Application::IsWaitingForNextDuelPitch() const noexcept
 	{
 		return (m_operationMode == OperationMode::BattingDuel) &&
@@ -4425,6 +4436,7 @@ namespace BaseballSimulatorVR::Core
 		input.batLengthMeters = m_environmentSettings.batLengthMeters;
 		input.batRadiusMeters = m_environmentSettings.batRadiusMeters;
 		input.batMaterial = m_batMaterial;
+		input.batMassKilograms = m_environmentSettings.batMassKilograms;
 		const auto response = Physics::ResolveBatBallCollision(input);
 		if (!response.hasImpulse) return false;
 		const Physics::Vector3 contactPosition = ConvertCollisionWorldToSimulationPosition(
@@ -5120,6 +5132,13 @@ namespace BaseballSimulatorVR::Core
 			metrics->firstGroundDistanceMeters = std::sqrt(
 			    (contactDelta.x * contactDelta.x) +
 			    (contactDelta.z * contactDelta.z));
+			if (m_isSessionLogAvailable && (m_lastBattedBallEventId > 0))
+			{
+				(void)m_sessionLogRepository.UpdateBattedBallLanding(
+				    m_lastBattedBallEventId,
+				    metrics->firstGroundDistanceMeters,
+				    metrics->maxHeightMeters);
+			}
 			return true;
 		};
 		auto isBallBelowGroundOutsideFan = [&](const Physics::BallState& state) -> bool

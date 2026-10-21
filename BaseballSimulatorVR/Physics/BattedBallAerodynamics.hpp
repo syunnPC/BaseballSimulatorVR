@@ -3,6 +3,7 @@
 #include "Vector3.hpp"
 #include "BallProperties.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 
@@ -14,6 +15,26 @@ namespace BaseballSimulatorVR::Physics
 	// Spin decay time constant for a flying baseball (Nathan's trajectory calculator uses
 	// roughly 25-30 s); only the physical model applies it.
 	inline constexpr double PhysicalSpinDecayTimeConstantSeconds = 25.0;
+
+	// Moist-air density from altitude (standard-atmosphere pressure), air
+	// temperature and relative humidity: rho = p_d / (R_d T) + e / (R_v T),
+	// scaled so sea level, 15 C, dry air is exactly the standard 1.225 kg/m^3
+	// that the fitted presets assume.
+	[[nodiscard]] inline double ComputeAirDensity(
+	    const double altitudeMeters, const double temperatureCelsius, const double relativeHumidityPercent) noexcept
+	{
+		const auto moistAirDensity = [](const double altitude, const double celsius, const double humidity)
+		{
+			const double pressure = 101325.0 * std::pow(1.0 - 2.25577e-5 * altitude, 5.25588);
+			const double kelvin = celsius + 273.15;
+			const double saturationPressure = 610.94 * std::exp(17.625 * celsius / (celsius + 243.04));
+			const double vaporPressure = std::clamp(humidity, 0.0, 100.0) / 100.0 * saturationPressure;
+			return (pressure - vaporPressure) / (287.058 * kelvin) + vaporPressure / (461.495 * kelvin);
+		};
+		return StandardAirDensityKilogramsPerCubicMeter *
+		    (moistAirDensity(altitudeMeters, temperatureCelsius, relativeHumidityPercent) /
+		        moistAirDensity(0.0, 15.0, 0.0));
+	}
 
 	[[nodiscard]] inline bool IsPlausibleAirDensity(const double density) noexcept
 	{

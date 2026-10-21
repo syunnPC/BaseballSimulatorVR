@@ -34,6 +34,8 @@ namespace BaseballSimulatorVR::Physics
 		// Maximum barrel radius used to scale the whole bat's axial inertia.
 		double batRadiusMeters{ 0.035 };
 		BatMaterial batMaterial{ BatMaterial::Wood };
+		// Whole-bat mass; the reference 34 in wood bat is 0.885 kg (31 oz).
+		double batMassKilograms{ 0.885 };
 	};
 
 	struct BatBallCollisionResult final

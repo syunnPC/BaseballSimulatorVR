@@ -9,7 +9,6 @@ namespace BaseballSimulatorVR::Physics
 	{
 		// Nathan (2000), Table I: R161 inertia I_cm = M * radiusOfGyration^2.
 		constexpr double ReferenceBatLengthMeters = 0.84;
-		constexpr double BatMassKilograms = 0.885;
 		constexpr double ReferenceCenterOfMassMeters = 0.564;
 		constexpr double ReferenceRadiusOfGyrationMeters = 0.23;
 		// 2017 wood bat: Iz / (M R^2), converted from Table II (9.1 oz in^2,
@@ -69,12 +68,14 @@ namespace BaseballSimulatorVR::Physics
 		const double lengthScale = input.batLengthMeters / ReferenceBatLengthMeters;
 		const double ballMass = input.ballProperties.massKilograms;
 		const double ballRadius = input.ballProperties.radiusMeters;
+		const double batMass = std::isfinite(input.batMassKilograms) && input.batMassKilograms > 0.1
+		    ? input.batMassKilograms : 0.885;
 		const double centerOfMass = ReferenceCenterOfMassMeters * lengthScale;
 		const double radiusOfGyration = ReferenceRadiusOfGyrationMeters * lengthScale;
-		const double inertia = BatMassKilograms * radiusOfGyration * radiusOfGyration;
+		const double inertia = batMass * radiusOfGyration * radiusOfGyration;
 		const Vector3 batSurfaceLever = batAxis *
 		    (input.contactDistanceFromHandleMeters - centerOfMass) + input.batSurfaceOffsetWorld;
-		const double axialInertia = BatAxialInertiaFactor * BatMassKilograms *
+		const double axialInertia = BatAxialInertiaFactor * batMass *
 		    input.batRadiusMeters * input.batRadiusMeters;
 		const auto inverseBatInertia = [&](const Vector3& angularImpulse)
 		{
@@ -83,7 +84,7 @@ namespace BaseballSimulatorVR::Physics
 		};
 		const Vector3 normalTorque = Cross(batSurfaceLever, normal);
 		const double inverseEffectiveBatMass =
-		    (1.0 / BatMassKilograms) + Dot(normalTorque, inverseBatInertia(normalTorque));
+		    (1.0 / batMass) + Dot(normalTorque, inverseBatInertia(normalTorque));
 		if (!std::isfinite(inverseEffectiveBatMass) || inverseEffectiveBatMass <= 0.0)
 		{
 			return result;
@@ -110,7 +111,7 @@ namespace BaseballSimulatorVR::Physics
 		const Vector3 ballSurfaceLever = normal * -ballRadius;
 		const auto contactMobility = [&](const Vector3& impulse)
 		{
-			return impulse * (1.0 / ballMass + 1.0 / BatMassKilograms) +
+			return impulse * (1.0 / ballMass + 1.0 / batMass) +
 			    Cross(Cross(ballSurfaceLever, impulse) / ballInertia, ballSurfaceLever) +
 			    Cross(inverseBatInertia(Cross(batSurfaceLever, impulse)), batSurfaceLever);
 		};

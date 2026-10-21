@@ -172,6 +172,8 @@ namespace BaseballSimulatorVR::Core
 		// target on a worker thread, so the start of a pitch does not stall a frame.
 		void PlanNextDuelPitch();
 		[[nodiscard]] bool IsWaitingForNextDuelPitch() const noexcept;
+		// Moist-air density from the environment's altitude, temperature and humidity.
+		[[nodiscard]] double EnvironmentAirDensity() const noexcept;
 		[[nodiscard]] Xr::UiTelemetry BuildXrUiTelemetry() const;
 		void RefreshBatPoseFromXrInput();
 		void UpdateModeSpecificBallState(Physics::BallState* ballState);

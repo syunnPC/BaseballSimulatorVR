@@ -313,6 +313,21 @@ namespace
 		throw std::runtime_error("Pitch must reach the plate");
 	}
 
+	void CheckAirDensity()
+	{
+		Tests::Check(std::abs(Physics::ComputeAirDensity(0, 15, 0) - 1.225) < 5e-4,
+		    "Sea-level 15 C dry air has the standard 1.225 kg/m3 density");
+		const double denver = Physics::ComputeAirDensity(1609, 25, 30);
+		Tests::Check(denver > 0.95 && denver < 1.03,
+		    "A warm Denver summer evening has roughly 20% thinner air");
+		Tests::Check(Physics::ComputeAirDensity(0, 30, 90) < Physics::ComputeAirDensity(0, 30, 0),
+		    "Humid air is lighter than dry air at the same temperature and pressure");
+		Baseball::PitchParameters thin;
+		thin.airDensityKilogramsPerCubicMeter = denver;
+		Tests::Check(Fly(45, 28, 2000, thin).range > Fly(45, 28, 2000).range + 5.,
+		    "The same hit carries several meters farther in thin air");
+	}
+
 	void CheckPitchProfileAerodynamics()
 	{
 		Baseball::PitchParameters fastball;
@@ -368,4 +383,5 @@ void RunBattedBallFlightTests()
 	CheckIntegrationAndStateAuthority();
 	CheckFrozenPitchConfiguration();
 	CheckPitchProfileAerodynamics();
+	CheckAirDensity();
 }
