@@ -66,6 +66,8 @@
     <ClInclude Include="Common\FieldMarkings.hpp" />
     <ClInclude Include="Common\StadiumGeometry.hpp" />
     <ClInclude Include="Common\StadiumMesh.hpp" />
+    <ClInclude Include="Common\CatcherMittState.hpp" />
+    <ClInclude Include="Common\CatcherMittMesh.hpp" />
     <ClInclude Include="Common\HomePlateGeometry.hpp" />
     <ClInclude Include="Common\IndexedWorldMesh.hpp" />
     <ClInclude Include="Common\JsonKeyValueParser.hpp" />

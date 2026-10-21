@@ -130,7 +130,17 @@ namespace BaseballSimulatorVR::Xr
 		        "bat_haptic",
 		        "Bat Contact Vibration",
 		        XR_ACTION_TYPE_VIBRATION_OUTPUT,
-		        &m_hapticAction))
+		        &m_hapticAction) ||
+		    !createAction(
+		        "primary_button",
+		        "Next Sign (A / X)",
+		        XR_ACTION_TYPE_BOOLEAN_INPUT,
+		        &m_primaryButtonAction) ||
+		    !createAction(
+		        "secondary_button",
+		        "Previous Sign (B / Y)",
+		        XR_ACTION_TYPE_BOOLEAN_INPUT,
+		        &m_secondaryButtonAction))
 		{
 			DestroyInputActions();
 			return false;
@@ -233,6 +243,8 @@ namespace BaseballSimulatorVR::Xr
 		    &simpleControllerBindings,
 		    m_hapticAction,
 		    "/user/hand/right/output/haptic");
+		appendBinding(&simpleControllerBindings, m_secondaryButtonAction, "/user/hand/left/input/menu/click");
+		appendBinding(&simpleControllerBindings, m_secondaryButtonAction, "/user/hand/right/input/menu/click");
 		suggestBindings(
 		    "/interaction_profiles/khr/simple_controller",
 		    simpleControllerBindings);
@@ -320,6 +332,10 @@ namespace BaseballSimulatorVR::Xr
 		    "/user/hand/right/input/thumbstick",
 		    false,
 		    "/user/hand/left/input/thumbstick/click");
+		appendBinding(&oculusTouchBindings, m_primaryButtonAction, "/user/hand/left/input/x/click");
+		appendBinding(&oculusTouchBindings, m_primaryButtonAction, "/user/hand/right/input/a/click");
+		appendBinding(&oculusTouchBindings, m_secondaryButtonAction, "/user/hand/left/input/y/click");
+		appendBinding(&oculusTouchBindings, m_secondaryButtonAction, "/user/hand/right/input/b/click");
 		suggestBindings(
 		    "/interaction_profiles/oculus/touch_controller",
 		    oculusTouchBindings);
@@ -331,6 +347,11 @@ namespace BaseballSimulatorVR::Xr
 		    "/user/hand/right/input/trackpad",
 		    true,
 		    "/user/hand/left/input/menu/click");
+		// No face buttons: the grip buttons step forward, the right menu button back (the
+		// left one recenters).
+		appendBinding(&viveControllerBindings, m_primaryButtonAction, "/user/hand/left/input/squeeze/click");
+		appendBinding(&viveControllerBindings, m_primaryButtonAction, "/user/hand/right/input/squeeze/click");
+		appendBinding(&viveControllerBindings, m_secondaryButtonAction, "/user/hand/right/input/menu/click");
 		suggestBindings(
 		    "/interaction_profiles/htc/vive_controller",
 		    viveControllerBindings);
@@ -342,6 +363,10 @@ namespace BaseballSimulatorVR::Xr
 		    "/user/hand/right/input/thumbstick",
 		    true,
 		    "/user/hand/left/input/thumbstick/click");
+		appendBinding(&valveIndexBindings, m_primaryButtonAction, "/user/hand/left/input/a/click");
+		appendBinding(&valveIndexBindings, m_primaryButtonAction, "/user/hand/right/input/a/click");
+		appendBinding(&valveIndexBindings, m_secondaryButtonAction, "/user/hand/left/input/b/click");
+		appendBinding(&valveIndexBindings, m_secondaryButtonAction, "/user/hand/right/input/b/click");
 		suggestBindings(
 		    "/interaction_profiles/valve/index_controller",
 		    valveIndexBindings);
@@ -353,6 +378,10 @@ namespace BaseballSimulatorVR::Xr
 		    "/user/hand/right/input/thumbstick",
 		    false,
 		    "/user/hand/left/input/thumbstick/click");
+		appendBinding(&microsoftMotionBindings, m_primaryButtonAction, "/user/hand/left/input/trackpad/click");
+		appendBinding(&microsoftMotionBindings, m_primaryButtonAction, "/user/hand/right/input/trackpad/click");
+		appendBinding(&microsoftMotionBindings, m_secondaryButtonAction, "/user/hand/left/input/menu/click");
+		appendBinding(&microsoftMotionBindings, m_secondaryButtonAction, "/user/hand/right/input/menu/click");
 		suggestBindings(
 		    "/interaction_profiles/microsoft/motion_controller",
 		    microsoftMotionBindings);
@@ -543,6 +572,15 @@ namespace BaseballSimulatorVR::Xr
 			m_recenterAction = XR_NULL_HANDLE;
 		}
 		m_wasRecenterPressed = false;
+		for (XrAction* const button : {&m_primaryButtonAction, &m_secondaryButtonAction})
+		{
+			if (*button != XR_NULL_HANDLE)
+			{
+				LogXrCleanupFailure(L"xrDestroyAction", xrDestroyAction(*button));
+				*button = XR_NULL_HANDLE;
+			}
+		}
+		m_controllerInput = ControllerInputState{};
 		if (m_hapticAction != XR_NULL_HANDLE)
 		{
 			LogXrCleanupFailure(

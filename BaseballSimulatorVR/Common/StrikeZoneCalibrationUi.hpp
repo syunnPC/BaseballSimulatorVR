@@ -11,7 +11,7 @@ namespace BaseballSimulatorVR::Common
 {
 	inline constexpr int CalibrationMainPanelColumns = 4;
 	inline constexpr int CalibrationMainPanelRows = 3;
-	inline constexpr int CalibrationMainButtonCellIndex = 8;
+	inline constexpr int CalibrationMainButtonCellIndex = 9;
 	inline constexpr int CalibrationMetricsButtonIndex = 10;
 
 	template <typename TPanelLayout>

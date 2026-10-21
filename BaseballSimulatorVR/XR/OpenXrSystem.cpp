@@ -333,6 +333,7 @@ namespace BaseballSimulatorVR::Xr
 		    (m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE || m_referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR);
 		m_leftHandPose = {};
 		m_rightHandPose = {};
+		m_controllerInput = {};
 #endif
 		if (!m_isInitialized)
 		{
@@ -570,6 +571,11 @@ namespace BaseballSimulatorVR::Xr
 	HandPoseState OpenXrSystem::GetRightHandPose() const noexcept
 	{
 		return m_rightHandPose;
+	}
+
+	ControllerInputState OpenXrSystem::GetControllerInputState() const noexcept
+	{
+		return m_controllerInput;
 	}
 
 	FrameTiming OpenXrSystem::GetFrameTiming() const noexcept

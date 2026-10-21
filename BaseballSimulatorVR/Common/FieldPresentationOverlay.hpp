@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CatcherMittMesh.hpp"
 #include "DebugWorldProjection.hpp"
 #include "PitcherPresentation.hpp"
 #include "ProjectedSceneMeshes.hpp"
@@ -27,12 +28,16 @@ namespace BaseballSimulatorVR::Common
 
 	[[nodiscard]] inline FieldScoreboardLayout BuildFieldScoreboardLayout()
 	{
-		// Fixed to center field; never follows the viewer or a hand panel.
-		const double distance =
-		    (std::max)(GetGroundFanRadiusMeters(), GetPitchDistanceMeters() + 10.0);
+		// Fixed to center field; never follows the viewer or a hand panel. It stands behind the
+		// center-field bleachers as the park's video board, its foot above their top row.
+		namespace S = Stadium;
+		const double bleachers = S::CenterFenceDistanceMeters + S::StandsDepthMeters(S::Section::BattersEye) + 4.0;
+		const double distance = (std::max)({GetGroundFanRadiusMeters(), GetPitchDistanceMeters() + 10.0, bleachers});
 		const double scale = distance / 100.0;
+		const double topRow = S::FirstRowHeightMeters(S::Section::BattersEye) +
+		    S::RowCount(S::Section::BattersEye) * S::RowRiseMeters + 4.0;
 		return {-(distance + DebugWorldLayout::BatterToPlateDistanceMeters) + .5, 44.0 * scale,
-		    4.0 * scale, 17.0 * scale, scale};
+		    (std::max)(4.0 * scale, topRow), 17.0 * scale, scale};
 	}
 
 	[[nodiscard]] inline std::vector<std::wstring> BuildFieldStatisticsLines(
@@ -57,7 +62,13 @@ namespace BaseballSimulatorVR::Common
 			rows.push_back(L"球種  --");
 			rows.push_back(L"球速  -- km/h    回転  -- rpm");
 		}
-		if (state.hasBattedMetrics)
+		if (state.catcherMode)
+		{
+			rows.push_back(L"捕球  " + std::to_wstring(state.catcherCaught) + L" / " +
+			    std::to_wstring(state.catcherPitches) + L" 球");
+			rows.push_back(L"結果  " + (state.catcherResult.empty() ? std::wstring{L"--"} : state.catcherResult));
+		}
+		else if (state.hasBattedMetrics)
 		{
 			rows.push_back(L"初速  " + value(state.battedLaunchSpeedMetersPerSecond * 3.6, 1) +
 			               L" km/h    角度  " + value(state.battedLaunchAngleDegrees, 1) + L"°");
@@ -301,6 +312,30 @@ namespace BaseballSimulatorVR::Common
 		    2.4 * sizeScale, .65 * sizeScale, white, z + .05);
 	}
 
+	// The sign card floating above the mitt in catcher mode, facing the catcher.
+	template <typename TTriangle, typename TText>
+	void EmitCatcherSignCardGeometry(const FieldPresentationState& state, TTriangle&& triangle, TText&& text)
+	{
+		if (!state.catcherMitt || state.catcherSignLine.empty())
+		{
+			return;
+		}
+		using Physics::Vector3;
+		const Vector3 center = BuildCatcherMittFrame(*state.catcherMitt).pocket + Vector3{0.0, .27, 0.0};
+		constexpr double Width = .36, Height = .115;
+		constexpr std::array<float, 4> backing{.02F, .04F, .08F, .82F}, accent{.24F, .91F, .77F, 1.F},
+		    white{.88F, .96F, 1.F, 1.F};
+		const auto at = [center](const double x, const double y, const double z = 0.0)
+		{ return center + Vector3{x, y, z}; };
+		triangle(at(-Width * .5, -Height * .5), at(Width * .5, -Height * .5), at(Width * .5, Height * .5),
+		    backing.data());
+		triangle(at(-Width * .5, -Height * .5), at(Width * .5, Height * .5), at(-Width * .5, Height * .5),
+		    backing.data());
+		const auto onCard = [at](const double x, const double y) { return at(x, y, .002); };
+		text(state.catcherSignLine, -Width * .5 + .012, Height * .5 - .01, Width - .024, .046, accent, onCard);
+		text(state.catcherStatusLine, -Width * .5 + .012, Height * .5 - .064, Width - .024, .036, white, onCard);
+	}
+
 	template <typename TTriangle>
 	void EmitFieldScoreboardMesh(const FieldStatisticsState& state, TTriangle&& triangle,
 	    double projectedWidthPixels = 512, double projectedHeightPixels = 340)
@@ -331,6 +366,19 @@ namespace BaseballSimulatorVR::Common
 		                         const Physics::Vector3& c, const float* color)
 		{ EmitProjectedWorldTriangle(a, b, c, view, width, height, color, triangle); };
 		EmitProjectedPitcherMesh(state.pitcher, view, width, height, triangle);
+		EmitProjectedCatcherMitt(state.catcherMitt, view, width, height, triangle);
+		EmitCatcherSignCardGeometry(state, project,
+		    [&](std::wstring_view label, double left, double top, double maxWidth, double maxHeight,
+		        const std::array<float, 4>& color, const auto& worldPoint)
+		    {
+			    const auto raster = UiText::RasterizeToFit(label, 1200.0 * maxWidth, 1200.0 * maxHeight);
+			    if (raster.width <= 0 || raster.height <= 0)
+			    {
+				    return;
+			    }
+			    const double scale = (std::min)(maxHeight / raster.height, maxWidth / raster.width);
+			    UiText::EmitTextMesh(raster, left, top, scale, color, worldPoint, project);
+		    });
 		const auto board = BuildFieldScoreboardLayout();
 		ScreenPoint topLeft{}, topRight{}, bottomLeft{};
 		const bool projected =

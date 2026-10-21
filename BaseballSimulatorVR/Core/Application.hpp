@@ -58,7 +58,8 @@ namespace BaseballSimulatorVR::Core
 		{
 			PitchTrajectory,
 			BattingDuel,
-			TeeBatting
+			TeeBatting,
+			Catcher
 		};
 
 		// Single definition shared with the JSON storage (see Data/RuntimeSettingsJsonStorage.hpp).
@@ -173,6 +174,18 @@ namespace BaseballSimulatorVR::Core
 		// target on a worker thread, so the start of a pitch does not stall a frame.
 		void PlanNextDuelPitch();
 		[[nodiscard]] bool IsWaitingForNextDuelPitch() const noexcept;
+		// The pitcher works from the mound: batting against him or catching him.
+		[[nodiscard]] bool UsesPitcher() const noexcept;
+		// Catcher mode: give the sign with the face buttons, set the target with the mitt and
+		// squeeze the mitt hand's trigger to catch; letting go calls for the next pitch.
+		void EnterCatcherMode();
+		void UpdateCatcherInput();
+		void StartCatcherPitch();
+		void CatchPitchIfReached(const Physics::BallState& previousState, Physics::BallState* ballState);
+		void FinishCatcherPitch(std::wstring_view result, bool caught);
+		void ReturnToCatcherSign();
+		[[nodiscard]] std::optional<Common::CatcherMittState> BuildCatcherMittState() const;
+		[[nodiscard]] std::wstring CatcherSignName() const;
 		// Moist-air density from the environment's altitude, temperature and humidity.
 		[[nodiscard]] double EnvironmentAirDensity() const noexcept;
 		[[nodiscard]] Xr::UiTelemetry BuildXrUiTelemetry() const;
@@ -333,6 +346,29 @@ namespace BaseballSimulatorVR::Core
 		};
 		DuelRoundState m_duelRound{};
 		TeeFlightState m_teeFlight{};
+		enum class CatcherPhase { WaitingForSign, Pitching, Caught, Missed };
+		// Progress of the current catcher-mode pitch; the tally runs for the whole mode.
+		struct CatcherRoundState final
+		{
+			CatcherPhase phase{ CatcherPhase::WaitingForSign };
+			int signIndex{ 0 };
+			// The mitt when the sign was given and where the pitcher actually aimed (world).
+			Physics::Vector3 targetWorld{};
+			Physics::Vector3 aimWorld{};
+			// Real time since the mode began, the last squeeze of the mitt and when the
+			// ball reached the pocket.
+			double clockSeconds{ 0.0 };
+			double squeezeSeconds{ -1.0e9 };
+			double arrivalSeconds{ -1.0e9 };
+			bool ballInPocket{ false };
+			double closestApproachMeters{ 1.0e9 };
+			double missedSeconds{ 0.0 };
+			std::wstring result{};
+			int caught{ 0 };
+			int pitches{ 0 };
+		};
+		CatcherRoundState m_catcherRound{};
+		Xr::ControllerInputState m_previousControllerInput{};
 		struct DuelPitchPlan;
 		std::shared_ptr<DuelPitchPlan> m_nextDuelPitchPlan{};
 		BatPoseState m_batPoseState{};

@@ -3,6 +3,7 @@
 #include "../Physics/BatMaterial.hpp"
 #include "../Physics/Vector3.hpp"
 #include "BallFlightPhase.hpp"
+#include "CatcherMittState.hpp"
 
 #include <optional>
 #include <cstdint>
@@ -68,6 +69,11 @@ namespace BaseballSimulatorVR::Common
         // Bat in use, so the contact diagram marks that bat's sweet zone.
         Physics::BatMaterial batMaterial{ Physics::BatMaterial::Wood };
         double contactBatLengthMeters{ .84 };
+        // Catcher mode: the running tally and how the last pitch was handled.
+        bool catcherMode{ false };
+        int catcherCaught{ 0 };
+        int catcherPitches{ 0 };
+        std::wstring catcherResult{};
     };
 
     struct FieldPresentationState final
@@ -79,5 +85,9 @@ namespace BaseballSimulatorVR::Common
         BallFlightPhase ballFlightPhase{ BallFlightPhase::Stationary };
         std::optional<Physics::Vector3> battedContactWorld{};
         TrajectoryLifecycleState trajectoryLifecycle{};
+        std::optional<CatcherMittState> catcherMitt{};
+        // The sign being given and what to do next, on a card above the mitt.
+        std::wstring catcherSignLine{};
+        std::wstring catcherStatusLine{};
     };
 }

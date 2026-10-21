@@ -58,6 +58,8 @@ namespace
 		Common::FloorEyeHeightSample GetFloorEyeHeightSample() const noexcept override { return floorSample; }
 		Xr::HandPoseState GetLeftHandPose() const noexcept override { return leftHand; }
 		Xr::HandPoseState GetRightHandPose() const noexcept override { return rightHand; }
+		Xr::ControllerInputState controllers{};
+		Xr::ControllerInputState GetControllerInputState() const noexcept override { return controllers; }
 	};
 
 	class TestRenderBackend final : public Render::IRenderBackend
@@ -2020,6 +2022,169 @@ namespace BaseballSimulatorVR::Core
 			    "A plan made for a different zone selection is discarded and the pitch is planned again");
 		}
 
+		// One presentation frame of catcher mode, in the order the main loop runs it.
+		static void CatcherFrame(Application& app, const double seconds = 1.0 / 90.0)
+		{
+			app.m_lastFrameDeltaSeconds = seconds;
+			app.m_lastSimulationDeltaSeconds = seconds;
+			for (double remaining = seconds; remaining > 1e-12;)
+			{
+				const double step = (std::min)(remaining, .001);
+				if (!app.IsWaitingForNextDuelPitch())
+					app.AdvancePitchSimulation(app.m_pitchDeliveryController.Advance(std::chrono::duration<double>(step)));
+				remaining -= step;
+			}
+			app.UpdateCatcherInput();
+			auto ball = app.m_pitchSimulationService.GetBallState();
+			app.UpdateModeSpecificBallState(&ball);
+		}
+
+		// Puts the mitt's pocket at a world position with the palm toward the pitcher.
+		static void SetMitt(TestXrSystem& xr, const Physics::Vector3& pocket)
+		{
+			const Physics::Vector3 grip = pocket - Physics::Vector3{0.0, .07, -.06};
+			xr.leftHand = {true, 1.0, 1, grip, {0.0, 1.0, 0.0}, {1.0, 0.0, 0.0}};
+		}
+
+		static void TestCatcherMode()
+		{
+			TestXrSystem* xr = nullptr;
+			auto app = MakeApplication(&xr);
+			app->m_environmentSettings.moundHeightOffsetMeters = 0.0;
+			app->SetOperationMode(Application::OperationMode::Catcher, L"test_catcher");
+			const double apex = -Common::DebugWorldLayout::BatterToPlateDistanceMeters + Common::HomePlateDepthMeters;
+			const Physics::Vector3 setup{0.0, 1.0, apex + .4};
+			SetMitt(*xr, setup);
+			CatcherFrame(*app);
+			auto presentation = app->BuildFieldPresentationState();
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::WaitingForSign &&
+			        app->IsWaitingForNextDuelPitch() && presentation.pitcher.visible && !presentation.ballVisible &&
+			        presentation.catcherMitt.has_value() && presentation.statistics.catcherMode,
+			    "Catcher mode puts the pitcher on the mound waiting for a sign and a mitt on the catcher's hand");
+			const auto frame = Common::BuildCatcherMittFrame(*presentation.catcherMitt);
+			Tests::Check(SamePosition(frame.pocket, setup) && Near(frame.palm.z, -1.0),
+			    "The mitt is worn on the hand opposite the throwing hand with its pocket toward the pitcher");
+
+			// Signs: A/X steps forward and B/Y back, on either hand.
+			const int profiles = static_cast<int>(app->m_pitchProfiles.size());
+			Tests::Check(profiles >= 2, "Several pitches are available to call");
+			const int first = app->m_catcherRound.signIndex;
+			xr->controllers.right.primaryPressed = true;
+			CatcherFrame(*app);
+			CatcherFrame(*app);
+			xr->controllers.right.primaryPressed = false;
+			CatcherFrame(*app);
+			Tests::Check(app->m_catcherRound.signIndex == (first + 1) % profiles,
+			    "Pressing A steps the sign forward once per press");
+			xr->controllers.left.secondaryPressed = true;
+			CatcherFrame(*app);
+			xr->controllers.left.secondaryPressed = false;
+			CatcherFrame(*app);
+			Tests::Check(app->m_catcherRound.signIndex == first, "Pressing Y steps the sign back");
+			presentation = app->BuildFieldPresentationState();
+			Tests::Check(presentation.catcherSignLine.find(app->m_pitchProfiles[static_cast<std::size_t>(first)].name) !=
+			        std::wstring::npos && presentation.statistics.pitchName == app->m_pitchProfiles[static_cast<std::size_t>(first)].name,
+			    "The sign card and the board show the pitch being called");
+
+			// While the laser is out the trigger belongs to the panels.
+			xr->controllers.uiPointerActive = true;
+			xr->controllers.right.triggerPressed = true;
+			CatcherFrame(*app);
+			xr->controllers.right.triggerPressed = false;
+			xr->controllers.uiPointerActive = false;
+			CatcherFrame(*app);
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::WaitingForSign,
+			    "A trigger pulled at the UI does not give the sign");
+
+			// Give the sign with the throwing hand's trigger: the pitcher aims at the mitt.
+			SeedRandomEngine(11);
+			xr->controllers.right.triggerPressed = true;
+			CatcherFrame(*app);
+			xr->controllers.right.triggerPressed = false;
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::Pitching &&
+			        app->m_catcherRound.pitches == 1 && SamePosition(app->m_catcherRound.targetWorld, setup) &&
+			        !app->IsWaitingForNextDuelPitch(),
+			    "The trigger gives the sign and the pitcher starts his delivery toward the mitt");
+			// The catcher shifts the mitt to where the pitch is coming and squeezes as it arrives.
+			const Physics::Vector3 aim = app->m_catcherRound.aimWorld;
+			Tests::Check(std::hypot(aim.x - setup.x, aim.y - setup.y) < 1.0 && Near(aim.z, setup.z),
+			    "The pitcher's aim lands near the target he was given");
+			SetMitt(*xr, aim);
+			const auto toWorld = [&](const Physics::Vector3& position)
+			{
+				return Physics::Vector3{position.x, position.y,
+				    position.z - (app->m_environmentSettings.pitchDistanceMeters + Common::DebugWorldLayout::BatterToPlateDistanceMeters)};
+			};
+			bool squeezed = false;
+			for (int frameIndex = 0; frameIndex < 400 && app->m_catcherRound.phase == Application::CatcherPhase::Pitching;
+			     ++frameIndex)
+			{
+				const auto ball = toWorld(app->m_pitchSimulationService.GetBallState().position);
+				if (!squeezed && app->m_pitchDeliveryController.HasReleased() && Physics::Length(ball - aim) < 2.0)
+				{
+					xr->controllers.left.triggerPressed = true;
+					squeezed = true;
+				}
+				CatcherFrame(*app);
+			}
+			const auto caughtBall = toWorld(app->m_pitchSimulationService.GetBallState().position);
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::Caught && app->m_catcherRound.caught == 1 &&
+			        (app->m_catcherRound.result == L"ナイスキャッチ" || app->m_catcherRound.result == L"捕球") &&
+			        Physics::Length(caughtBall - aim) < 1e-6,
+			    "Squeezing as the pitch reaches the pocket catches it, and the ball stays in the mitt");
+			Tests::Check(!xr->hapticPulses.empty() && !xr->hapticPulses.back().rightHand,
+			    "The catch pops in the mitt hand");
+			presentation = app->BuildFieldPresentationState();
+			Tests::Check(presentation.ballVisible && presentation.statistics.catcherCaught == 1 &&
+			        presentation.statistics.catcherPitches == 1 && presentation.catcherMitt->closedAmount > .5,
+			    "The board counts the catch and the mitt closes around the ball");
+			// Letting go calls for the next pitch once the pitcher is set again.
+			xr->controllers.left.triggerPressed = false;
+			CatcherFrame(*app);
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::WaitingForSign &&
+			        app->m_duelRound.cooldownRemainingSeconds > 0.0,
+			    "Releasing the trigger returns to waiting for the next sign");
+			xr->controllers.left.triggerPressed = true;
+			CatcherFrame(*app);
+			xr->controllers.left.triggerPressed = false;
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::WaitingForSign,
+			    "No sign is taken while the pitcher walks back to the rubber");
+			for (int frameIndex = 0; frameIndex < 200; ++frameIndex) CatcherFrame(*app);
+			Tests::Check(app->m_duelRound.cooldownRemainingSeconds == 0.0, "The pitcher comes set again");
+
+			// A pitch left alone in the pocket drops out.
+			SetMitt(*xr, setup);
+			xr->controllers.left.triggerPressed = true;
+			CatcherFrame(*app);
+			xr->controllers.left.triggerPressed = false;
+			SetMitt(*xr, app->m_catcherRound.aimWorld);
+			for (int frameIndex = 0; frameIndex < 400 && app->m_catcherRound.phase == Application::CatcherPhase::Pitching;
+			     ++frameIndex)
+				CatcherFrame(*app);
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::Missed && app->m_catcherRound.result == L"落球" &&
+			        app->m_catcherRound.caught == 1 && app->m_catcherRound.pitches == 2,
+			    "Without a squeeze the ball pops out of the mitt");
+			for (int frameIndex = 0; frameIndex < 400 && app->m_catcherRound.phase == Application::CatcherPhase::Missed;
+			     ++frameIndex)
+				CatcherFrame(*app);
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::WaitingForSign,
+			    "After a missed pitch play goes back to the sign on its own");
+
+			// A mitt nowhere near the pitch lets it go to the backstop.
+			for (int frameIndex = 0; frameIndex < 200; ++frameIndex) CatcherFrame(*app);
+			SetMitt(*xr, setup);
+			xr->controllers.left.triggerPressed = true;
+			CatcherFrame(*app);
+			xr->controllers.left.triggerPressed = false;
+			SetMitt(*xr, app->m_catcherRound.aimWorld + Physics::Vector3{1.5, 0.0, 0.0});
+			for (int frameIndex = 0; frameIndex < 400 && app->m_catcherRound.phase == Application::CatcherPhase::Pitching;
+			     ++frameIndex)
+				CatcherFrame(*app);
+			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::Missed &&
+			        app->m_catcherRound.result == L"ワイルドピッチ",
+			    "A pitch far from the mitt gets by as a wild pitch");
+		}
+
 		static void Run(const std::filesystem::path& sourceRoot)
 		{
 			const RuntimeSettingsGuard settingsGuard;
@@ -2034,6 +2199,7 @@ namespace BaseballSimulatorVR::Core
 			TestGroundOffset();
 			TestGroundCarryInterpolationAndFirstBounce();
 			TestStadiumWallAndHomeRun();
+			TestCatcherMode();
 			TestDuelBoardLifecycle();
 			TestFixedPitchVisibilityAndTrajectoryBoundary();
 			TestActualDuelPlateDecisionAndResultRetention();
