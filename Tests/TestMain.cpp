@@ -20,6 +20,7 @@
 #include <vector>
 
 void RunJsonParserTests();
+void RunRuntimeSettingsStorageTests();
 void RunSessionLogTests();
 void RunFrameStatisticsTests();
 void RunPitchDeliveryTests();
@@ -344,6 +345,7 @@ int wmain(int argc, wchar_t** argv)
 		{ "Swept ball and home plate prism geometry", RunHomePlateGeometryTests },
 		{ "Pitch verdict, frontal trace and total bending", RunPitchFlightAnalysisTests },
 		{ "JSON settings parser", RunJsonParserTests },
+		{ "Runtime settings save validation", RunRuntimeSettingsStorageTests },
 		{ "Session log and CSV export", RunSessionLogTests },
 		{ "Frame statistics", RunFrameStatisticsTests },
 		{ "Pitch delivery and release timing", RunPitchDeliveryTests },

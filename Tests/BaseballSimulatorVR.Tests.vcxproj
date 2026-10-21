@@ -48,6 +48,7 @@
     <ClInclude Include="GpuQueueGate.hpp" />
     <ClCompile Include="TestMain.cpp" />
     <ClCompile Include="JsonParserTests.cpp" />
+    <ClCompile Include="RuntimeSettingsStorageTests.cpp" />
     <ClCompile Include="SessionLogTests.cpp" />
     <ClCompile Include="FrameStatisticsTests.cpp" />
     <ClCompile Include="BundledSettingsTests.cpp" />

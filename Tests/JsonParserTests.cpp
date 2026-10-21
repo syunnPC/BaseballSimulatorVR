@@ -507,6 +507,17 @@ void RunJsonParserTests()
 	    loadedPitch && loadedPitch->pitchProfiles[0].name == pitch.pitchProfiles[0].name,
 	    "Unicode and escaped profile name round trip");
 	const auto preset = Tests::ReadFile(presetPath);
+	const std::wstring invalidUnicode(1, static_cast<wchar_t>(0xD800));
+	for (const bool invalidEnvironmentPath : { false, true })
+	{
+		auto invalid = pitch;
+		if (invalidEnvironmentPath) invalid.environmentSettingsFile = invalidUnicode;
+		else invalid.pitchProfiles.push_back({ invalidUnicode, pitch.pitchParameters });
+		Tests::Check(!presets.SavePitchSettings(presetPath.wstring(), invalid, error) && !error.empty(),
+		    "Invalid UTF-16 in environment paths and pitch profiles is rejected on save");
+		Tests::Check(Tests::ReadFile(presetPath) == preset,
+		    "String conversion failures preserve the complete existing pitch settings file");
+	}
 	{
 		auto omittedHand = preset;
 		const auto handBegin = omittedHand.find("\"pitcherThrowsLeftHanded\":");

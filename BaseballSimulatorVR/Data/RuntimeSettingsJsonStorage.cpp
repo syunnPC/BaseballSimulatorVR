@@ -281,6 +281,13 @@ namespace BaseballSimulatorVR::Data
 			errorMessage = L"Play settings strike zone is out of range.";
 			return false;
 		}
+		// Reject rather than clamp: an infinite value would otherwise be saved as a limit.
+		if (!std::isfinite(settings.duelPitchIntervalSeconds) ||
+		    !std::isfinite(settings.playbackSpeedPercent))
+		{
+			errorMessage = L"Play settings pitch interval and playback speed must be finite.";
+			return false;
+		}
 		const std::optional<std::string> selectedFile =
 		    Common::TextConversion::TryWideToUtf8(settings.selectedPitchSettingsFile);
 		if (!selectedFile.has_value())
