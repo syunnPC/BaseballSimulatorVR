@@ -53,6 +53,9 @@
     <ClInclude Include="Common\GraphicsBinding.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Common\FieldMarkings.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Common\HomePlateGeometry.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>

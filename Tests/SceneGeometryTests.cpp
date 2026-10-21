@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 
 namespace
 {
@@ -79,7 +80,10 @@ namespace
 		const double depth =
 		    (std::max)(.10, std::abs(Common::DebugWorldLayout::BatterToPlateDistanceMeters));
 		const double halfChord = chord * .5;
-		const double halfAngle = std::atan2(halfChord, depth);
+		// The fan spreads past the foul lines so the infield and chalk have ground beneath.
+		const double halfAngle = (std::max)(std::atan2(halfChord, depth),
+		    (45. + Common::FieldMarkingStyle::FoulTerritoryMarginDegrees) * std::numbers::pi / 180.);
+		Tests::Check(halfAngle > std::numbers::pi / 4., "The floor reaches beyond both foul lines");
 		const double inner = std::sqrt(depth * depth + halfChord * halfChord);
 		const double outer = (std::max)(inner + 1., radius);
 		const double step = (std::max)(Common::DebugWorldStyle::FloorMeshTileSizeMeters * 2., .50);
@@ -131,6 +135,69 @@ namespace
 				}
 			}
 		}
+	}
+
+	void CheckFieldMarkings(const double radius)
+	{
+		namespace D = Common::FieldDimensions;
+		const double plateFront = -Common::DebugWorldLayout::BatterToPlateDistanceMeters;
+		const double floor = Common::DebugWorldStyle::FloorMeshHeightMeters;
+		const auto mesh = Common::BuildFieldMarkingsWorldMesh(plateFront, floor, radius);
+		const double apexZ = plateFront + Common::HomePlateDepthMeters;
+		Tests::Check(!mesh.triangles.empty(), "The field markings emit geometry");
+		const auto hasVertex = [&](const double x, const double z, const double minimumHeight)
+		{
+			for (const auto& v : mesh.vertices)
+				if (std::abs(v.x - x) < 1e-9 && std::abs(v.z - z) < 1e-9 && v.y >= minimumHeight) return true;
+			return false;
+		};
+		for (const auto& triangle : mesh.triangles)
+			for (const auto index : triangle.indices)
+			{
+				Tests::Check(index < mesh.vertices.size(), "Field marking triangles reference existing vertices");
+				const auto& v = mesh.vertices[index];
+				Tests::Check(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && v.y > floor &&
+				    std::hypot(v.x, v.z - apexZ) <=
+				        (std::max)(radius, D::PitchersPlateDistanceMeters + D::InfieldArcRadiusMeters) + D::LineWidthMeters,
+				    "Field markings lie above the floor and within the field");
+			}
+		// Bases at the official distances from the plate apex, standing on the field.
+		const double diagonal = D::BaseDistanceMeters / std::numbers::sqrt2;
+		const double bagTop = floor + D::BaseHeightMeters;
+		Tests::Check(hasVertex(diagonal, apexZ - diagonal, bagTop) && hasVertex(-diagonal, apexZ - diagonal, bagTop),
+		    "First and third bases sit against their 90 ft corners");
+		const double s = D::BaseSizeMeters / std::numbers::sqrt2;
+		Tests::Check(hasVertex(0., apexZ - D::SecondBaseDistanceMeters + s, bagTop) &&
+		    hasVertex(0., apexZ - D::SecondBaseDistanceMeters - s, bagTop),
+		    "Second base is centered 127 ft 3 3/8 in from the plate apex");
+		// The grass line is 95 ft from the front of the pitcher's plate.
+		int arcVertices = 0;
+		for (const auto& v : mesh.vertices)
+			if (std::abs(std::hypot(v.x, apexZ - v.z - D::PitchersPlateDistanceMeters) - D::InfieldArcRadiusMeters) < 1e-9)
+				++arcVertices;
+		Tests::Check(arcVertices > 60, "The infield skin ends on the 95 ft arc around the pitcher's plate");
+		// Batter's boxes: 4 ft by 6 ft, 6 in from the plate, centered on it lengthwise.
+		const double inner = Common::HomePlateWidthMeters * .5 + D::BattersBoxPlateGapMeters;
+		const double outer = inner + D::BattersBoxWidthMeters;
+		const double front = Common::HomePlateDepthMeters * .5 + D::BattersBoxLengthMeters * .5;
+		const double back = front - D::BattersBoxLengthMeters;
+		const double w = D::LineWidthMeters * .5;
+		for (const double side : {-1., 1.})
+			// Line corners: the side lines run past the box ends by half a line width.
+			Tests::Check(hasVertex(side * inner + w, apexZ - (front + w), floor) &&
+			    hasVertex(side * outer - w, apexZ - (back - w), floor) &&
+			    std::abs(outer - inner - 4. * .3048) < 1e-12 && std::abs(front - back - 6. * .3048) < 1e-12,
+			    "Both batter's boxes have the official size and position beside the plate");
+		// Layers stay in order above the floor and beneath the plate near home.
+		const auto heightAt = [&](const double x, const double z)
+		{
+			double best = -1.;
+			for (const auto& v : mesh.vertices)
+				if (std::abs(v.x - x) < 1e-9 && std::abs(v.z - z) < 1e-9) best = (std::max)(best, v.y);
+			return best;
+		};
+		Tests::Check(heightAt(0., apexZ) < Common::DebugWorldStyle::HomePlateHeightMeters,
+		    "Dirt around home stays beneath the plate");
 	}
 
 	void CheckCacheInvalidation()
@@ -334,6 +401,10 @@ void RunSceneGeometryTests()
 		{
 			CheckOriginalFloor(width, radius);
 		}
+	}
+	for (double radius : {10., 100., 300.})
+	{
+		CheckFieldMarkings(radius);
 	}
 	CheckCacheInvalidation();
 	CheckIndexedProjection();

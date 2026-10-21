@@ -63,6 +63,7 @@
     <ClInclude Include="Common\FxaaShaderSource.hpp" />
     <ClInclude Include="Common\GdiAlphaTriangleRasterizer.hpp" />
     <ClInclude Include="Common\GraphicsBinding.hpp" />
+    <ClInclude Include="Common\FieldMarkings.hpp" />
     <ClInclude Include="Common\HomePlateGeometry.hpp" />
     <ClInclude Include="Common\IndexedWorldMesh.hpp" />
     <ClInclude Include="Common\JsonKeyValueParser.hpp" />
