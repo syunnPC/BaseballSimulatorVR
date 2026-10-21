@@ -34,7 +34,7 @@ namespace
 void RunStrikeZoneCalibrationTests()
 {
 	using namespace BaseballSimulatorVR::Common;
-	const auto near = [](const double a, const double b) { return std::abs(a - b) < 1e-9; };
+	const auto near = [](const double a, const double b) { return Tests::Near(a, b, 1e-9, 0.0); };
 	const double standingEyeHeight = 1.8 * EyeHeightToFullHeightFraction;
 	Tests::Check(near(EstimatePlayerHeightFromEyeHeight(standingEyeHeight), 1.8),
 	             "Standing eye height converts to full height");

@@ -1,8 +1,19 @@
 #include "TestSupport.hpp"
+#include "../BaseballSimulatorVR/Framework.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cwchar>
+#include <filesystem>
 #include <functional>
 #include <iostream>
-#include <utility>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
 void RunJsonParserTests();
@@ -34,15 +45,231 @@ void RunPitchPresetUiTests();
 void RunHomePlateGeometryTests();
 void RunPitchFlightAnalysisTests();
 
+namespace
+{
+	// Exit codes: 0 = no suite failed (skips allowed), 1 = a suite failed,
+	// 2 = usage or setup error (bad option, no repository root, no suite selected).
+	constexpr int ExitSuccess = 0;
+	constexpr int ExitFailure = 1;
+	constexpr int ExitUsage = 2;
+
+	constexpr std::wstring_view SolutionFileName = L"BaseballSimulatorVR.slnx";
+	constexpr const wchar_t* TimeoutScaleVariable = L"BASEBALLSIM_TEST_TIMEOUT_SCALE";
+
+	struct Suite final
+	{
+		std::string_view name;
+		std::function<void()> run;
+		// Needs a D3D12 device (WARP is enough); --skip-gpu reports it as SKIP.
+		bool usesGpu{ false };
+	};
+
+	struct Options final
+	{
+		bool help{ false };
+		bool list{ false };
+		bool skipGpu{ false };
+		std::vector<std::wstring> filters;
+		std::optional<std::filesystem::path> repositoryRoot;
+	};
+
+	void PrintUsage(std::ostream& out)
+	{
+		out << "Usage: BaseballSimulatorVR.Tests.exe [options] [<repository-root>]\n"
+		       "\n"
+		       "Runs the test suites in order. Without <repository-root>, the repository is\n"
+		       "found by walking up from the executable directory, then from the current\n"
+		       "directory, to the folder that contains BaseballSimulatorVR.slnx.\n"
+		       "\n"
+		       "Options:\n"
+		       "  --list            List the suites (GPU suites are tagged [gpu]) and exit.\n"
+		       "  --filter <text>   Run only suites whose name contains <text>, ignoring case.\n"
+		       "                    Repeat the option to run every suite matching any filter.\n"
+		       "  --skip-gpu        Report the suites that need D3D12/DXGI as SKIP instead of\n"
+		       "                    running them.\n"
+		       "  --help, -h        Show this help and exit.\n"
+		       "\n"
+		       "Environment:\n"
+		       "  BASEBALLSIM_TEST_TIMEOUT_SCALE  Multiplies the GPU watchdog and deadline\n"
+		       "                                  timeouts (default 1, at most 1000).\n"
+		       "\n"
+		       "Exit codes: 0 = no suite failed (skipped suites allowed), 1 = a suite failed,\n"
+		       "            2 = usage or setup error.\n";
+	}
+
+	[[nodiscard]] std::string ToUtf8(const std::wstring_view text)
+	{
+		if (text.empty()) return {};
+		const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0,
+		                                       nullptr, nullptr);
+		std::string result(static_cast<std::size_t>((std::max)(length, 0)), '\0');
+		if (length > 0)
+			WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), length, nullptr,
+			                    nullptr);
+		return result;
+	}
+
+	[[nodiscard]] constexpr wchar_t LowerAscii(const wchar_t character) noexcept
+	{
+		return character >= L'A' && character <= L'Z' ? static_cast<wchar_t>(character - L'A' + L'a') : character;
+	}
+
+	// Suite names are ASCII, so an ASCII case fold is enough.
+	[[nodiscard]] bool ContainsIgnoringCase(const std::string_view text, const std::wstring_view part)
+	{
+		if (part.size() > text.size()) return false;
+		for (std::size_t start = 0; start + part.size() <= text.size(); ++start)
+		{
+			bool matches = true;
+			for (std::size_t index = 0; matches && index < part.size(); ++index)
+				matches = LowerAscii(static_cast<wchar_t>(static_cast<unsigned char>(text[start + index]))) ==
+				          LowerAscii(part[index]);
+			if (matches) return true;
+		}
+		return false;
+	}
+
+	[[nodiscard]] bool ParseArguments(const int argc, wchar_t** const argv, Options& options, std::string& error)
+	{
+		for (int index = 1; index < argc; ++index)
+		{
+			const std::wstring_view argument = argv[index];
+			if (argument == L"--help" || argument == L"-h" || argument == L"/?")
+				options.help = true;
+			else if (argument == L"--list")
+				options.list = true;
+			else if (argument == L"--skip-gpu")
+				options.skipGpu = true;
+			else if (argument == L"--filter")
+			{
+				if (index + 1 >= argc)
+				{
+					error = "--filter needs a suite name substring";
+					return false;
+				}
+				options.filters.emplace_back(argv[++index]);
+			}
+			else if (argument.starts_with(L"--filter="))
+				options.filters.emplace_back(argument.substr(std::wstring_view(L"--filter=").size()));
+			else if (argument.starts_with(L"-"))
+			{
+				error = "unknown option " + ToUtf8(argument);
+				return false;
+			}
+			else if (options.repositoryRoot)
+			{
+				error = "more than one repository root given";
+				return false;
+			}
+			else
+				options.repositoryRoot = std::filesystem::path(argument);
+		}
+		return true;
+	}
+
+	[[nodiscard]] std::filesystem::path ExecutableDirectory()
+	{
+		std::wstring buffer(MAX_PATH, L'\0');
+		for (;;)
+		{
+			const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+			if (length == 0) return {};
+			if (length < buffer.size())
+			{
+				buffer.resize(length);
+				return std::filesystem::path(buffer).parent_path();
+			}
+			buffer.resize(buffer.size() * 2);
+		}
+	}
+
+	[[nodiscard]] std::optional<std::filesystem::path> FindRepositoryRootFrom(const std::filesystem::path& start)
+	{
+		if (start.empty()) return std::nullopt;
+		std::error_code error;
+		std::filesystem::path directory = std::filesystem::absolute(start, error);
+		if (error || directory.empty()) return std::nullopt;
+		for (;;)
+		{
+			if (std::filesystem::is_regular_file(directory / SolutionFileName, error)) return directory;
+			const std::filesystem::path parent = directory.parent_path();
+			if (parent.empty() || parent == directory) return std::nullopt;
+			directory = parent;
+		}
+	}
+
+	[[nodiscard]] std::optional<std::filesystem::path> FindRepositoryRoot()
+	{
+		if (auto root = FindRepositoryRootFrom(ExecutableDirectory())) return root;
+		std::error_code error;
+		const std::filesystem::path current = std::filesystem::current_path(error);
+		return error ? std::nullopt : FindRepositoryRootFrom(current);
+	}
+
+	[[nodiscard]] std::optional<std::wstring> ReadEnvironmentVariable(const wchar_t* const name)
+	{
+		const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+		if (size == 0) return std::nullopt;
+		std::wstring value(size, L'\0');
+		const DWORD length = GetEnvironmentVariableW(name, value.data(), size);
+		if (length == 0 || length >= size) return std::nullopt;
+		value.resize(length);
+		return value;
+	}
+
+	[[nodiscard]] bool ReadTimeoutScale(double& scale, std::string& error)
+	{
+		const std::optional<std::wstring> text = ReadEnvironmentVariable(TimeoutScaleVariable);
+		if (!text || text->empty()) return true;
+		wchar_t* end = nullptr;
+		const double value = std::wcstod(text->c_str(), &end);
+		if (end != text->c_str() + text->size() || !std::isfinite(value) || value <= 0.0 || value > 1000.0)
+		{
+			error = "BASEBALLSIM_TEST_TIMEOUT_SCALE must be a number in (0, 1000], got \"" + ToUtf8(*text) + "\"";
+			return false;
+		}
+		scale = value;
+		return true;
+	}
+
+	[[nodiscard]] long long ElapsedMilliseconds(const std::chrono::steady_clock::time_point start)
+	{
+		return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+	}
+
+	// Flushed per suite so CI logs stay in order and show progress live, even
+	// when stdout is a fully buffered pipe and failures go to stderr.
+	void FlushStandardOutput()
+	{
+		std::cout.flush();
+		std::fflush(stdout);
+	}
+
+	void ReportFailure(const std::string_view suite, const std::string_view message)
+	{
+		FlushStandardOutput();
+		std::cerr << "FAIL: " << suite << ": " << message << std::endl;
+	}
+}
+
 int wmain(int argc, wchar_t** argv)
 {
-	if (argc != 2)
+	Options options;
+	std::string error;
+	if (!ParseArguments(argc, argv, options, error))
 	{
-		std::cerr << "Usage: BaseballSimulatorVR.Tests.exe <repository-root>\n";
-		return 2;
+		std::cerr << "error: " << error << "\n\n";
+		PrintUsage(std::cerr);
+		return ExitUsage;
 	}
-	const std::filesystem::path sourceRoot(argv[1]);
-	const std::vector<std::pair<std::string_view, std::function<void()>>> suites{
+	if (options.help)
+	{
+		PrintUsage(std::cout);
+		return ExitSuccess;
+	}
+
+	std::filesystem::path sourceRoot;
+	const std::vector<Suite> suites{
 		{ "Readable pitch preset labels and full-width layout", RunPitchPresetUiTests },
 		{ "Swept ball and home plate prism geometry", RunHomePlateGeometryTests },
 		{ "Pitch verdict, frontal trace and total bending", RunPitchFlightAnalysisTests },
@@ -56,9 +283,9 @@ int wmain(int argc, wchar_t** argv)
 		{ "Concise field scoreboard and concealed pitch values", RunFieldStatisticsCompactTests },
 		{ "Floor-relative strike-zone calibration", RunStrikeZoneCalibrationTests },
 		{ "Antialiased UI text and bounded cache", RunUiTextRenderingTests },
-		{ "Desktop rendering resize and restore", RunDesktopRenderResizeTests },
-		{ "GPU oriented UI panels, atlas reuse and transparency", RunUiPanelRenderingTests },
-		{ "Asynchronous per-view GPU submission and safe reuse", RunD3d12RenderFrameTests },
+		{ "Desktop rendering resize and restore", RunDesktopRenderResizeTests, true },
+		{ "GPU oriented UI panels, atlas reuse and transparency", RunUiPanelRenderingTests, true },
+		{ "Asynchronous per-view GPU submission and safe reuse", RunD3d12RenderFrameTests, true },
 		{ "Cached scene geometry and prepared projection equivalence", RunSceneGeometryTests },
 		{ "Independent pitch and batted trajectory history and rendering", RunTrajectoryTrailTests },
 		{ "Stable world trajectory mesh and near-plane clipping", RunTrajectoryMeshTests },
@@ -72,20 +299,94 @@ int wmain(int argc, wchar_t** argv)
 		{ "Bundled pitch and runtime settings", [&] { RunBundledSettingsTests(sourceRoot); } },
 		{ "Beginner softball presets and physical pitch shapes", [&] { RunBeginnerPresetTests(sourceRoot); } }
 	};
-	int failures = 0;
-	for (const auto& [name, run] : suites)
+
+	if (options.list)
 	{
+		for (const Suite& suite : suites)
+			std::cout << suite.name << (suite.usesGpu ? " [gpu]" : "") << '\n';
+		return ExitSuccess;
+	}
+
+	std::vector<const Suite*> selected;
+	for (const Suite& suite : suites)
+	{
+		bool matches = options.filters.empty();
+		for (const std::wstring& filter : options.filters)
+			matches = matches || ContainsIgnoringCase(suite.name, filter);
+		if (matches) selected.push_back(&suite);
+	}
+	if (selected.empty())
+	{
+		std::cerr << "error: no suite matches the --filter arguments (see --list)\n";
+		return ExitUsage;
+	}
+
+	if (options.repositoryRoot)
+	{
+		std::error_code directoryError;
+		if (!std::filesystem::is_directory(*options.repositoryRoot, directoryError))
+		{
+			std::cerr << "error: repository root " << ToUtf8(options.repositoryRoot->native()) << " is not a directory\n";
+			return ExitUsage;
+		}
+		sourceRoot = *options.repositoryRoot;
+	}
+	else if (const auto discovered = FindRepositoryRoot())
+		sourceRoot = *discovered;
+	else
+	{
+		std::cerr << "error: no <repository-root> given and no BaseballSimulatorVR.slnx found above the executable "
+		             "or the current directory\n\n";
+		PrintUsage(std::cerr);
+		return ExitUsage;
+	}
+
+	if (!ReadTimeoutScale(Tests::timeoutScale, error))
+	{
+		std::cerr << "error: " << error << '\n';
+		return ExitUsage;
+	}
+
+	std::cout << "Repository root: " << ToUtf8(sourceRoot.native()) << '\n';
+	if (Tests::timeoutScale != 1.0) std::cout << "GPU timeout scale: " << Tests::timeoutScale << '\n';
+
+	int passed = 0;
+	int failed = 0;
+	int skipped = 0;
+	for (const Suite* suite : selected)
+	{
+		if (options.skipGpu && suite->usesGpu)
+		{
+			++skipped;
+			std::cout << "SKIP: " << suite->name << ": --skip-gpu\n";
+			FlushStandardOutput();
+			continue;
+		}
+		const auto start = std::chrono::steady_clock::now();
 		try
 		{
-			run();
-			std::cout << "PASS: " << name << '\n';
+			suite->run();
+			++passed;
+			std::cout << "PASS: " << suite->name << " (" << ElapsedMilliseconds(start) << " ms)\n";
 		}
-		catch (const std::exception& error)
+		catch (const Tests::SkipSuite& skip)
 		{
-			++failures;
-			std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
+			++skipped;
+			std::cout << "SKIP: " << suite->name << ": " << skip.reason << '\n';
 		}
+		catch (const std::exception& failure)
+		{
+			++failed;
+			ReportFailure(suite->name, failure.what());
+		}
+		catch (...)
+		{
+			++failed;
+			ReportFailure(suite->name, "unknown exception");
+		}
+		FlushStandardOutput();
 	}
-	std::cout << Tests::checkCount << " checks, " << failures << " failed suites\n";
-	return failures == 0 ? 0 : 1;
+	std::cout << Tests::checkCount << " checks, " << failed << " failed suites (" << passed << " passed, " << skipped
+	          << " skipped, " << selected.size() << " selected of " << suites.size() << ")\n";
+	return failed == 0 ? ExitSuccess : ExitFailure;
 }

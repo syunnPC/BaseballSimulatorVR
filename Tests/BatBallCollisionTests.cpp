@@ -11,7 +11,7 @@ namespace
 {
 	[[nodiscard]] bool Near(double left, double right)
 	{
-		return std::abs(left - right) < 1e-9;
+		return Tests::Near(left, right, 1e-9, 0.0);
 	}
 
 	struct BatRecoil final
