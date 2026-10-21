@@ -39,9 +39,9 @@ namespace
 		Xr::FrameTiming GetFrameTiming() const noexcept override { return {}; }
 		bool IsInputFocused() const noexcept override { return true; }
 		bool IsExitRequested() const noexcept override { return false; }
-		void ApplyHapticPulse(const bool rightHand, const double amplitude, const double durationSeconds) override
+		void ApplyHapticPulse(const bool onRightHand, const double amplitude, const double durationSeconds) override
 		{
-			hapticPulses.push_back({ rightHand, amplitude, durationSeconds });
+			hapticPulses.push_back({ onRightHand, amplitude, durationSeconds });
 		}
 		struct HapticPulse
 		{
