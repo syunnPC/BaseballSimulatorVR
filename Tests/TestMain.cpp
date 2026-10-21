@@ -1,9 +1,11 @@
 #include "TestSupport.hpp"
+#include "../BaseballSimulatorVR/Core/Application.hpp"
 #include "../BaseballSimulatorVR/Framework.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
@@ -11,6 +13,7 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -55,6 +58,9 @@ namespace
 
 	constexpr std::wstring_view SolutionFileName = L"BaseballSimulatorVR.slnx";
 	constexpr const wchar_t* TimeoutScaleVariable = L"BASEBALLSIM_TEST_TIMEOUT_SCALE";
+	constexpr const wchar_t* RandomSeedVariable = L"BASEBALLSIM_RANDOM_SEED";
+	// Used when neither --seed nor BASEBALLSIM_RANDOM_SEED is given, so test runs repeat exactly.
+	constexpr std::uint32_t DefaultRandomSeed = std::mt19937::default_seed;
 
 	struct Suite final
 	{
@@ -70,6 +76,7 @@ namespace
 		bool list{ false };
 		bool skipGpu{ false };
 		std::vector<std::wstring> filters;
+		std::optional<std::wstring> seed;
 		std::optional<std::filesystem::path> repositoryRoot;
 	};
 
@@ -87,11 +94,15 @@ namespace
 		       "                    Repeat the option to run every suite matching any filter.\n"
 		       "  --skip-gpu        Report the suites that need D3D12/DXGI as SKIP instead of\n"
 		       "                    running them.\n"
+		       "  --seed <n|random> Seed for random zone and pitch selection, re-applied before\n"
+		       "                    every suite (default: BASEBALLSIM_RANDOM_SEED, else 5489).\n"
+		       "                    \"random\" picks a fresh seed and prints it.\n"
 		       "  --help, -h        Show this help and exit.\n"
 		       "\n"
 		       "Environment:\n"
 		       "  BASEBALLSIM_TEST_TIMEOUT_SCALE  Multiplies the GPU watchdog and deadline\n"
 		       "                                  timeouts (default 1, at most 1000).\n"
+		       "  BASEBALLSIM_RANDOM_SEED         Default for --seed (also read by the app).\n"
 		       "\n"
 		       "Exit codes: 0 = no suite failed (skipped suites allowed), 1 = a suite failed,\n"
 		       "            2 = usage or setup error.\n";
@@ -151,6 +162,17 @@ namespace
 			}
 			else if (argument.starts_with(L"--filter="))
 				options.filters.emplace_back(argument.substr(std::wstring_view(L"--filter=").size()));
+			else if (argument == L"--seed")
+			{
+				if (index + 1 >= argc)
+				{
+					error = "--seed needs a number or \"random\"";
+					return false;
+				}
+				options.seed = argv[++index];
+			}
+			else if (argument.starts_with(L"--seed="))
+				options.seed = std::wstring(argument.substr(std::wstring_view(L"--seed=").size()));
 			else if (argument.starts_with(L"-"))
 			{
 				error = "unknown option " + ToUtf8(argument);
@@ -229,6 +251,53 @@ namespace
 			return false;
 		}
 		scale = value;
+		return true;
+	}
+
+	[[nodiscard]] std::optional<std::uint32_t> ParseSeed(const std::wstring_view text)
+	{
+		if (text.empty() || text.size() > 10) return std::nullopt;
+		std::uint64_t value = 0;
+		for (const wchar_t digit : text)
+		{
+			if (digit < L'0' || digit > L'9') return std::nullopt;
+			value = value * 10 + static_cast<std::uint64_t>(digit - L'0');
+		}
+		if (value > UINT32_MAX) return std::nullopt;
+		return static_cast<std::uint32_t>(value);
+	}
+
+	// --seed wins over BASEBALLSIM_RANDOM_SEED, which wins over DefaultRandomSeed.
+	[[nodiscard]] bool ResolveRandomSeed(const Options& options, std::uint32_t& seed, std::string& error)
+	{
+		if (options.seed)
+		{
+			if (*options.seed == L"random")
+			{
+				seed = std::random_device{}();
+				return true;
+			}
+			const auto parsed = ParseSeed(*options.seed);
+			if (!parsed)
+			{
+				error = "--seed must be a 32-bit unsigned integer or \"random\", got \"" + ToUtf8(*options.seed) + "\"";
+				return false;
+			}
+			seed = *parsed;
+			return true;
+		}
+		if (const auto text = ReadEnvironmentVariable(RandomSeedVariable); text && !text->empty())
+		{
+			const auto parsed = ParseSeed(*text);
+			if (!parsed)
+			{
+				error = "BASEBALLSIM_RANDOM_SEED must be a 32-bit unsigned integer, got \"" + ToUtf8(*text) + "\"";
+				return false;
+			}
+			seed = *parsed;
+			return true;
+		}
+		seed = DefaultRandomSeed;
 		return true;
 	}
 
@@ -347,7 +416,15 @@ int wmain(int argc, wchar_t** argv)
 		return ExitUsage;
 	}
 
+	std::uint32_t randomSeed = DefaultRandomSeed;
+	if (!ResolveRandomSeed(options, randomSeed, error))
+	{
+		std::cerr << "error: " << error << '\n';
+		return ExitUsage;
+	}
+
 	std::cout << "Repository root: " << ToUtf8(sourceRoot.native()) << '\n';
+	std::cout << "Random seed: " << randomSeed << " (reproduce with --seed " << randomSeed << ")\n";
 	if (Tests::timeoutScale != 1.0) std::cout << "GPU timeout scale: " << Tests::timeoutScale << '\n';
 
 	int passed = 0;
@@ -362,6 +439,8 @@ int wmain(int argc, wchar_t** argv)
 			FlushStandardOutput();
 			continue;
 		}
+		// Every suite starts from the same random sequence, whatever --filter selected before it.
+		BaseballSimulatorVR::Core::SeedRandomEngine(randomSeed);
 		const auto start = std::chrono::steady_clock::now();
 		try
 		{
