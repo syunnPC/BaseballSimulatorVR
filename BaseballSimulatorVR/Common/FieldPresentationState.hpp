@@ -28,6 +28,9 @@ namespace BaseballSimulatorVR::Common
         double armSpeedScale{ 1.0 };
         double heldBallRadiusMeters{ .037 };
         bool underhandToss{ false };
+        // 0 while delivering; rises to 1 as the pitcher walks back to the rubber and comes
+        // set between duel pitches.
+        double recoveryProgress{ 0.0 };
     };
 
     enum class PitchZoneCall { Pending, Ball, Strike, Contact };

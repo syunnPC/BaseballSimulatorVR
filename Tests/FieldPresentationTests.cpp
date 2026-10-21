@@ -30,9 +30,12 @@ namespace
             Tests::Check(Common::GetPitcherDeliveryStyle(state) == delivery.style,
                 "Release height selects submarine, sidearm or overhand, with toss overriding the thresholds");
             Physics::Vector3 previousHand{};
-            for (int frame = 0; frame <= 240; ++frame)
+            // Sub-millisecond samples: the arm reaches realistic hand speeds of 30-40 m/s
+            // around release, so a coarser step could not tell a jump from fast motion.
+            constexpr int Frames = 2400;
+            for (int frame = 0; frame <= Frames; ++frame)
             {
-                state.secondsFromRelease = -1.2 + frame * (1.2 + .6 / tempo) / 240.;
+                state.secondsFromRelease = -1.2 + frame * (1.2 + .6 / tempo) / Frames;
                 const auto pose = Common::BuildPitcherPose(state);
                 Tests::Check(pose.scale >= 1. && pose.scale <= 1.2 &&
                     (delivery.style == Style::Overhand || pose.scale == 1.),
@@ -59,6 +62,35 @@ namespace
                     Tests::Check(Physics::Length(pose.rightHand - previousHand) < .18,
                         "Slow and fast deliveries move continuously through every animation phase");
                 previousHand = pose.rightHand;
+            }
+            // Between pitches the pitcher walks back and comes set exactly where the next
+            // windup begins, so starting it never teleports the body.
+            state.secondsFromRelease = -1.2;
+            const auto windup = Common::BuildPitcherPose(state);
+            Physics::Vector3 previousRecoveryHand{};
+            for (int step = 0; step <= 200; ++step)
+            {
+                auto recovering = state;
+                recovering.secondsFromRelease = 3.;
+                recovering.recoveryProgress = step / 200.;
+                const auto pose = Common::BuildPitcherPose(recovering);
+                Tests::Check(finite(pose.pelvis) && finite(pose.rightHand) && finite(pose.leftKnee) &&
+                    pose.leftFoot.y >= state.moundHeightMeters && pose.rightFoot.y >= state.moundHeightMeters &&
+                    std::abs(Physics::Length(pose.rightElbow - pose.rightShoulder) - Common::PitcherArmSegmentMeters * pose.scale) < 1e-10 &&
+                    std::abs(Physics::Length(pose.rightHand - pose.rightElbow) - Common::PitcherArmSegmentMeters * pose.scale) < 1e-10,
+                    "The walk back to the rubber keeps the feet on the mound and the arm segments intact");
+                if (step > 0)
+                    Tests::Check(Physics::Length(pose.rightHand - previousRecoveryHand) < .05 &&
+                        Physics::Length(pose.pelvis - windup.pelvis) < 3.,
+                        "The walk back to the rubber moves continuously");
+                previousRecoveryHand = pose.rightHand;
+                if (step == 200)
+                    for (const auto& [a, b] : std::array{std::pair{pose.pelvis, windup.pelvis},
+                             std::pair{pose.chest, windup.chest}, std::pair{pose.rightHand, windup.rightHand},
+                             std::pair{pose.leftHand, windup.leftHand}, std::pair{pose.rightFoot, windup.rightFoot},
+                             std::pair{pose.leftFoot, windup.leftFoot}, std::pair{pose.rightKnee, windup.rightKnee}})
+                        Tests::Check(Physics::Length(a - b) < 1e-10,
+                            "The walk back ends in the exact set position of the next windup");
             }
             for (double referenceTime : {-1.2, -.42, -.06, 0., .22, .6})
             {

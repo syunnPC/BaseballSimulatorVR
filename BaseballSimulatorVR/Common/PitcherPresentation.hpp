@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <optional>
 
 namespace BaseballSimulatorVR::Common
 {
@@ -19,11 +20,21 @@ namespace BaseballSimulatorVR::Common
 		    fastestPresetSpeedMetersPerSecond / ReferencePitcherSpeedMetersPerSecond, .25, 2.0);
 	}
 
+	// Between duel pitches the pitcher walks back to the rubber over this long and then holds
+	// the set position briefly before the next windup.
+	inline constexpr double PitcherRecoverySeconds = 1.5;
+	inline constexpr double PitcherSetHoldSeconds = .5;
+	[[nodiscard]] inline double PitcherRecoveryProgress(const double secondsUntilWindup)
+	{
+		return std::clamp((PitcherRecoverySeconds + PitcherSetHoldSeconds - secondsUntilWindup) / PitcherRecoverySeconds,
+		    0.0, 1.0);
+	}
+
 	enum class PitcherDeliveryStyle { Overhand, Sidearm, Submarine, UnderhandToss };
 	inline constexpr double SubmarineReleaseHeightLimitMeters = .65;
 	inline constexpr double SidearmReleaseHeightLimitMeters = 1.50;
 	inline constexpr double PitcherArmSegmentMeters = .38;
-	inline constexpr double PitcherLegSegmentMeters = .54;
+	inline constexpr double PitcherLegSegmentMeters = .47;
 
 	[[nodiscard]] inline PitcherDeliveryStyle GetPitcherDeliveryStyle(const PitcherPresentationState& state)
 	{
@@ -52,249 +63,64 @@ namespace BaseballSimulatorVR::Common
 		double scale{1.0};
 	};
 
-	[[nodiscard]] inline PitcherPose BuildPitcherPose(const PitcherPresentationState& state)
+	namespace PitcherMotion
 	{
 		using Physics::Vector3;
-		struct Keyframe final
+		inline constexpr double Degrees = std::numbers::pi / 180.0;
+
+		// One authored delivery key for a right-handed pitcher in the mound frame: +Z toward
+		// home plate, +X to the glove side, +Y up, meters before body scale. Angles are in
+		// degrees; yaw 0 faces the plate and 90 is fully closed (glove side to the plate).
+		// Hands are relative to their shoulder in the trunk frame (x: glove side, y: trunk
+		// up, z: chest forward), with an elbow direction hint in the same frame.
+		struct Key final
 		{
 			double time;
-			Vector3 pelvis, chest, hand, glove, leftFoot, rightFoot;
-			double hipYaw, shoulderYaw;
-			Vector3 throwBend, gloveBend, leftKneeBend, rightKneeBend;
+			Vector3 pelvis;
+			double hipYaw, trunkYaw, trunkFlexion, trunkTilt;
+			Vector3 throwHand, throwElbow, gloveHand, gloveElbow;
+			Vector3 leftFoot, rightFoot;
+			double leftFootYaw, rightFootYaw;
+			// Weights of the release-height adaptation and of the stride-length change.
+			double slot, stride;
 		};
-		// Right-handed delivery facing +Z. The final arm acceleration ends at
-		// the simulation release point; every pose is grounded on the mound.
-		static constexpr std::array<Keyframe, 7> overhandFrames{
-		    {{-1.2, {0, .91, -.12}, {0, 1.39, -.12}, {-.06, 1.24, .11}, {.04, 1.25, .13},
-		         {.06, .07, .06}, {-.15, .07, -.14}, .68, .74,
-		         {-.65, -.70, -.25}, {.65, -.70, -.20}, {-.30, .25, .92}, {-.60, .20, .75}},
-		        {-.85, {.02, .95, -.20}, {.03, 1.43, -.23}, {-.06, 1.40, .02}, {.05, 1.41, .06},
-		            {.06, .66, .08}, {-.15, .07, -.14}, 1.05, 1.18,
-		            {-.68, -.60, -.28}, {.65, -.55, -.15}, {-.58, .48, .66}, {-.65, .22, .72}},
-		        {-.42, {0, .84, -.05}, {-.02, 1.36, -.15}, {-.56, 1.19, -.56}, {.26, 1.38, .44},
-		            {.17, .12, .68}, {-.15, .07, -.14}, .46, .92,
-		            {-.76, .24, -.48}, {.65, -.32, .42}, {.06, .38, .92}, {-.55, .18, .80}},
-		        {-.12, {0, .82, .12}, {0, 1.35, .13}, {-.56, 1.80, -.06}, {.20, 1.14, .42},
-		            {.18, .07, .87}, {-.15, .07, -.12}, .04, .22,
-		            {-.72, .16, .52}, {.72, -.45, -.35}, {.08, .36, .93}, {-.35, -.05, .93}},
-		        {0, {0, .80, .19}, {0, 1.30, .32}, {-.42, 1.82, .72}, {.18, 1.03, .36},
-		            {.18, .07, .87}, {-.15, .09, -.02}, -.12, -.20,
-		            {-.80, .12, -.35}, {.75, -.48, -.45}, {.06, .34, .94}, {-.28, -.12, .95}},
-		        {.22, {.02, .77, .37}, {.02, 1.16, .64}, {.22, .88, .96}, {.18, .92, .60},
-		            {.18, .07, .87}, {-.18, .53, .45}, -.22, -.46,
-		            {-.55, .36, .65}, {.74, -.42, -.48}, {.05, .32, .95}, {-.18, .38, .91}},
-		        {.6, {.01, .87, .43}, {.01, 1.37, .49}, {-.18, .98, .66}, {.22, 1.02, .70},
-		            {.18, .07, .87}, {-.16, .07, .40}, -.04, -.06,
-		            {-.62, -.45, .35}, {.66, -.45, .25}, {.06, .32, .95}, {-.12, .28, .95}}}};
-		static constexpr std::array<Keyframe, 7> underhandFrames{
-		    {{-1.2, {0, .91, -.08}, {0, 1.40, -.06}, {-.20, 1.00, .18}, {.18, 1.02, .18},
-		         {.14, .07, .03}, {-.15, .07, -.12}, .24, .28,
-		         {-.55, -.65, -.45}, {.62, -.60, -.20}, {.05, .30, .95}, {-.25, .22, .94}},
-		        {-.85, {0, .91, -.08}, {0, 1.40, -.06}, {-.28, .80, -.10}, {.22, 1.05, .20},
-		            {.15, .14, .05}, {-.15, .07, -.12}, .36, .42,
-		            {-.45, -.55, -.68}, {.64, -.52, -.10}, {-.15, .38, .91}, {-.30, .22, .93}},
-		        {-.42, {0, .90, -.04}, {0, 1.38, -.01}, {-.32, .58, -.30}, {.22, 1.04, .22},
-		            {.16, .08, .16}, {-.15, .07, -.12}, .22, .30,
-		            {-.38, -.48, -.78}, {.65, -.45, .10}, {.06, .35, .93}, {-.25, .20, .95}},
-		        {-.12, {0, .90, .02}, {0, 1.37, .06}, {-.31, .62, .15}, {.21, 1.03, .23},
-		            {.18, .07, .30}, {-.15, .07, -.10}, .06, .08,
-		            {-.36, -.55, -.75}, {.66, -.48, -.15}, {.06, .35, .93}, {-.20, .15, .97}},
-		        {0, {0, .91, .06}, {0, 1.38, .15}, {-.30, .82, .45}, {.20, 1.04, .24},
-		            {.18, .07, .30}, {-.15, .07, -.08}, -.04, -.08,
-		            {-.35, -.58, -.74}, {.68, -.50, -.25}, {.06, .34, .94}, {-.18, .12, .97}},
-		        {.22, {0, .92, .10}, {0, 1.40, .16}, {-.26, 1.10, .62}, {.20, 1.05, .25},
-		            {.18, .07, .30}, {-.15, .10, -.02}, -.10, -.16,
-		            {-.38, -.52, -.65}, {.68, -.50, -.28}, {.06, .34, .94}, {-.15, .20, .97}},
-		        {.6, {0, .92, .10}, {0, 1.41, .14}, {-.20, .96, .35}, {.19, 1.04, .24},
-		            {.18, .07, .30}, {-.15, .07, .03}, -.02, -.04,
-		            {-.48, -.58, -.45}, {.65, -.52, -.20}, {.06, .32, .95}, {-.12, .22, .97}}}};
-		static constexpr std::array<Keyframe, 7> sidearmFrames{
-		    {{-1.2, {0, .91, -.12}, {0, 1.40, -.12}, {-.08, 1.26, .12}, {.06, 1.27, .14},
-		         {.08, .07, .04}, {-.16, .07, -.16}, .70, .76,
-		         {-.65, -.68, -.25}, {.65, -.68, -.20}, {-.30, .25, .92}, {-.60, .20, .75}},
-		        {-.85, {.04, .94, -.22}, {.02, 1.43, -.27}, {-.18, 1.36, -.02}, {.08, 1.35, .08},
-		            {.12, .56, .12}, {-.16, .07, -.16}, 1.08, 1.22,
-		            {-.68, -.52, -.32}, {.65, -.52, -.12}, {-.56, .46, .68}, {-.65, .22, .72}},
-		        {-.42, {.05, .85, -.06}, {-.10, 1.32, -.15}, {-.68, 1.24, -.42}, {.32, 1.24, .45},
-		            {.24, .12, .74}, {-.16, .07, -.16}, .48, .94,
-		            {-.72, .22, -.56}, {.65, -.30, .42}, {.08, .38, .92}, {-.55, .18, .80}},
-		        {-.12, {.04, .82, .12}, {-.17, 1.25, .29}, {-.82, 1.22, .15}, {.23, 1.12, .55},
-		            {.25, .07, .89}, {-.16, .08, -.10}, .05, .20,
-		            {-.70, .22, -.52}, {.72, -.42, -.32}, {.08, .36, .93}, {-.35, -.04, .93}},
-		        {0, {.03, .84, .20}, {-.12, 1.26, .49}, {-.78, 1.20, .82}, {.20, 1.15, .62},
-		            {.25, .07, .89}, {-.16, .10, -.02}, -.10, -.12,
-		            {-.70, .25, -.60}, {.75, -.45, -.42}, {.08, .34, .94}, {-.28, -.10, .95}},
-		        {.22, {.08, .78, .36}, {.08, 1.14, .69}, {.38, .91, .98}, {.22, .99, .73},
-		            {.25, .07, .89}, {-.27, .39, .35}, -.24, -.48,
-		            {-.52, .34, .66}, {.74, -.40, -.46}, {.06, .32, .95}, {-.20, .36, .91}},
-		        {.6, {.06, .87, .42}, {.02, 1.36, .48}, {-.12, 1.03, .65}, {.23, 1.07, .73},
-		            {.25, .07, .89}, {-.20, .07, .40}, -.04, -.06,
-		            {-.60, -.44, .34}, {.66, -.44, .24}, {.06, .32, .95}, {-.12, .28, .95}}}};
-		static constexpr std::array<Keyframe, 7> submarineFrames{
-		    {{-1.2, {0, .91, -.12}, {0, 1.40, -.10}, {-.16, 1.14, .16}, {.14, 1.16, .18},
-		         {.10, .07, .04}, {-.16, .07, -.17}, .70, .78,
-		         {-.65, -.65, -.28}, {.65, -.65, -.20}, {-.30, .25, .92}, {-.60, .20, .75}},
-		        {-.85, {.05, .86, -.21}, {-.04, 1.34, -.23}, {-.34, 1.06, -.14}, {.20, 1.18, .18},
-		            {.18, .44, .16}, {-.16, .07, -.17}, 1.06, 1.20,
-		            {-.68, -.35, -.42}, {.66, -.45, -.10}, {-.52, .44, .72}, {-.64, .22, .73}},
-		        {-.42, {.08, .71, -.04}, {-.17, 1.02, .28}, {-.65, .56, -.13}, {.26, .90, .63},
-		            {.29, .10, .80}, {-.16, .07, -.15}, .44, .82,
-		            {-.70, .28, -.44}, {.68, -.28, .38}, {.10, .38, .92}, {-.52, .16, .84}},
-		        {-.12, {.08, .65, .15}, {-.19, .64, .61}, {-.58, .19, .26}, {.21, .64, .80},
-		            {.29, .07, 1.00}, {-.16, .09, -.04}, .04, .16,
-		            {-.70, .30, -.40}, {.72, -.35, -.30}, {.10, .36, .93}, {-.32, -.06, .94}},
-		        {0, {.08, .66, .24}, {-.12, .55, .70}, {-.42, .18, .94}, {.18, .62, .90},
-		            {.29, .07, 1.00}, {-.16, .11, .05}, -.08, -.10,
-		            {-.70, .30, -.40}, {.74, -.38, -.38}, {.10, .34, .94}, {-.26, -.10, .96}},
-		        {.22, {.06, .68, .40}, {.12, .76, .91}, {.36, .67, 1.18}, {.25, .80, .96},
-		            {.29, .07, 1.00}, {-.29, .40, .42}, -.22, -.42,
-		            {-.50, .35, .64}, {.74, -.38, -.42}, {.08, .32, .94}, {-.22, .35, .91}},
-		        {.6, {.03, .88, .47}, {.02, 1.36, .56}, {-.15, .93, .79}, {.23, 1.02, .78},
-		            {.29, .07, 1.00}, {-.20, .07, .45}, -.04, -.06,
-		            {-.60, -.44, .34}, {.66, -.44, .24}, {.08, .32, .94}, {-.12, .28, .95}}}};
-		const auto style = GetPitcherDeliveryStyle(state);
-		const auto& frames = style == PitcherDeliveryStyle::UnderhandToss ? underhandFrames :
-		    style == PitcherDeliveryStyle::Submarine ? submarineFrames :
-		    style == PitcherDeliveryStyle::Sidearm ? sidearmFrames : overhandFrames;
-		// Keep windup start and release fixed on the delivery clock. Reallocate
-		// windup time so the final forward swing and follow-through use the
-		// preset's fastest-pitch tempo, independent of the current pitch type.
-		const double rawSpeedScale = std::isfinite(state.armSpeedScale) ? state.armSpeedScale : 1.0;
-		const double speedScale = std::clamp(rawSpeedScale, .25, 2.0);
-		const double swingStart = -.12 / speedScale;
-		const double rawSeconds = std::isfinite(state.secondsFromRelease) ? state.secondsFromRelease : 0.0;
-		const double clockTime = std::clamp(
-		    rawSeconds, frames.front().time, frames.back().time / speedScale);
-		const double time =
-		    speedScale == 1.0
-		        ? clockTime
-		        : (clockTime >= swingStart
-		                  ? clockTime * speedScale
-		                  : frames.front().time + (clockTime - frames.front().time) *
-		                                              (-.12 - frames.front().time) /
-		                                              (swingStart - frames.front().time));
-		std::size_t index = 0;
-		while ((index + 2 < frames.size()) && (time > frames[index + 1].time))
+		// Release-height adaptation, interpolated between anchors at slot 0, 1 and 2.
+		struct SlotAdjustment final
 		{
-			++index;
+			double trunkTilt, trunkFlexion, pelvisHeight, strideLength, armSwing;
+		};
+		inline constexpr std::size_t KeyCount = 12;
+		inline constexpr std::size_t ReleaseKey = 7;
+		struct Delivery final
+		{
+			std::array<Key, KeyCount> keys;
+			std::array<SlotAdjustment, 3> slot;
+		};
+
+		struct Frame final
+		{
+			Vector3 lateral, up, forward;
+		};
+		// Trunk orientation from the shoulder-line yaw, forward flexion and contralateral
+		// tilt (positive tilt raises the throwing shoulder, as in an overhand slot).
+		[[nodiscard]] inline Frame TrunkFrame(const double yaw, const double flexion, const double tilt)
+		{
+			const Vector3 lateral{std::cos(yaw), 0.0, std::sin(yaw)};
+			const Vector3 forward{-std::sin(yaw), 0.0, std::cos(yaw)};
+			const Vector3 up{0.0, 1.0, 0.0};
+			const Vector3 flexedUp = up * std::cos(flexion) + forward * std::sin(flexion);
+			const Vector3 flexedForward = forward * std::cos(flexion) - up * std::sin(flexion);
+			return {lateral * std::cos(tilt) - flexedUp * std::sin(tilt),
+			    flexedUp * std::cos(tilt) + lateral * std::sin(tilt), flexedForward};
 		}
-		const auto& a = frames[index];
-		const auto& b = frames[index + 1];
-		const double span = b.time - a.time;
-		const double u = std::clamp((time - a.time) / span, 0.0, 1.0);
-		const double h00 = (1.0 + 2.0 * u) * (1.0 - u) * (1.0 - u);
-		const double h10 = u * (1.0 - u) * (1.0 - u);
-		const double h01 = u * u * (3.0 - 2.0 * u);
-		const double h11 = u * u * (u - 1.0);
-		// Monotone cubic Hermite interpolation preserves exact keyframe values
-		// and ground bounds while maintaining continuous velocity through release.
-		const auto monotoneTangentScalar = [&](std::size_t k, auto getter) -> double
+		[[nodiscard]] inline Vector3 ToWorld(const Frame& frame, const Vector3& local)
 		{
-			if (k == 0 || k + 1 >= frames.size())
-			{
-				return 0.0;
-			}
-			const double hPrev = frames[k].time - frames[k - 1].time;
-			const double hNext = frames[k + 1].time - frames[k].time;
-			const double dPrev = (getter(frames[k]) - getter(frames[k - 1])) / hPrev;
-			const double dNext = (getter(frames[k + 1]) - getter(frames[k])) / hNext;
-			if (dPrev * dNext <= 0.0)
-			{
-				return 0.0;
-			}
-			const double w1 = 2.0 * hNext + hPrev;
-			const double w2 = hNext + 2.0 * hPrev;
-			return 0.65 * (w1 + w2) / (w1 / dPrev + w2 / dNext);
-		};
-		const auto blendScalar = [&](auto getter) -> double
-		{
-			const double v0 = getter(a);
-			const double v1 = getter(b);
-			const double m0 = monotoneTangentScalar(index, getter);
-			const double m1 = monotoneTangentScalar(index + 1, getter);
-			return h00 * v0 + h10 * span * m0 + h01 * v1 + h11 * span * m1;
-		};
-		const auto blendVec = [&](auto member) -> Vector3
-		{
-			return {
-			    blendScalar([&](const Keyframe& f) { return (f.*member).x; }),
-			    blendScalar([&](const Keyframe& f) { return (f.*member).y; }),
-			    blendScalar([&](const Keyframe& f) { return (f.*member).z; })};
-		};
-		PitcherPose pose{};
-		const double releaseHeight = state.releasePositionWorld.y - state.moundHeightMeters;
-		pose.scale = style == PitcherDeliveryStyle::Overhand ? std::clamp(releaseHeight / 1.82, 1., 1.2) : 1.;
-		const auto& releaseFrame = frames[4];
-		const Vector3 base{
-		    state.releasePositionWorld.x - releaseFrame.hand.x * pose.scale,
-		    state.moundHeightMeters,
-		    state.releasePositionWorld.z - releaseFrame.hand.z * pose.scale};
-		pose.moundOrigin = base;
-		const auto world = [&](const Vector3& p) { return base + p * pose.scale; };
-		pose.pelvis = world(blendVec(&Keyframe::pelvis));
-		pose.chest = world(blendVec(&Keyframe::chest));
-		const double enteringStride = std::clamp((time + .85) / .43, 0., 1.);
-		const double deliveryWeight = enteringStride * enteringStride * (3. - 2. * enteringStride);
-		const double highExtension = style == PitcherDeliveryStyle::Overhand ?
-		    std::clamp((releaseHeight - 1.82 * pose.scale) / .316, 0., 1.) : 0.;
-		const double crouch = style == PitcherDeliveryStyle::Sidearm ?
-		    std::clamp(1.20 - releaseHeight, 0., .55) * .5 * deliveryWeight : 0.;
-		const double bodyLift = highExtension * .18 * pose.scale - crouch;
-		pose.pelvis.y += bodyLift;
-		pose.chest += Vector3{0., bodyLift, highExtension * .10 * pose.scale};
-		const auto torsoDirection = Physics::NormalizeOrZero(pose.chest - pose.pelvis);
-		pose.chest = pose.pelvis + torsoDirection * (.53 * pose.scale);
-		const double hipYaw = blendScalar([](const Keyframe& f) { return f.hipYaw; });
-		const double shoulderYaw = blendScalar([](const Keyframe& f) { return f.shoulderYaw; });
-		const Vector3 hipHorizLateral{std::cos(hipYaw), 0.0, std::sin(hipYaw)};
-		const Vector3 shoulderHorizLateral{std::cos(shoulderYaw), 0.0, std::sin(shoulderYaw)};
-		const auto pelvisUp = Physics::NormalizeOrZero(torsoDirection + Vector3{0.0, 0.70, 0.0});
-		pose.pelvisLateral = Physics::NormalizeOrZero(
-		    hipHorizLateral - pelvisUp * Physics::Dot(hipHorizLateral, pelvisUp));
-		if (Physics::Length(pose.pelvisLateral) < 1e-6)
-		{
-			pose.pelvisLateral = {1.0, 0.0, 0.0};
+			return frame.lateral * local.x + frame.up * local.y + frame.forward * local.z;
 		}
-		pose.chestLateral = Physics::NormalizeOrZero(
-		    shoulderHorizLateral - torsoDirection * Physics::Dot(shoulderHorizLateral, torsoDirection));
-		if (Physics::Length(pose.chestLateral) < 1e-6)
-		{
-			pose.chestLateral = {1.0, 0.0, 0.0};
-		}
-		pose.head = pose.chest + (torsoDirection * .14 + Vector3{0., .18, -.02}) * pose.scale;
-		// Keep eyes focused toward home plate (+Z) through release, relaxing slightly in follow-through.
-		const double headYaw = shoulderYaw * (time <= 0.0 ? 0.14 : 0.30);
-		pose.headForward = Physics::NormalizeOrZero(
-		    Vector3{-std::sin(headYaw), torsoDirection.y * 0.16 - 0.14, std::cos(headYaw)});
-		pose.rightShoulder = pose.chest + (torsoDirection * .06 - pose.chestLateral * .23) * pose.scale;
-		pose.leftShoulder = pose.chest + (torsoDirection * .06 + pose.chestLateral * .23) * pose.scale;
-		pose.rightHand = world(blendVec(&Keyframe::hand));
-		pose.rightHand.y += (releaseHeight - releaseFrame.hand.y * pose.scale) * deliveryWeight;
-		pose.leftHand = world(blendVec(&Keyframe::glove));
-		pose.rightHip = pose.pelvis - pose.pelvisLateral * (.115 * pose.scale);
-		pose.leftHip = pose.pelvis + pose.pelvisLateral * (.115 * pose.scale);
-		pose.rightFoot = world(blendVec(&Keyframe::rightFoot));
-		pose.leftFoot = world(blendVec(&Keyframe::leftFoot));
-		pose.leftFoot.z -= highExtension * .22 * pose.scale;
-		const double pivotProgress = std::clamp((time + 0.32) / 0.38, 0.0, 1.0);
-		const double pivotSmooth = pivotProgress * pivotProgress * (3.0 - 2.0 * pivotProgress);
-		const double rightFootYaw = (style == PitcherDeliveryStyle::UnderhandToss ? 0.32 : 1.15) * (1.0 - pivotSmooth);
-		pose.rightFootForward = Physics::NormalizeOrZero(Vector3{-std::sin(rightFootYaw), 0.0, std::cos(rightFootYaw)});
-		const double strideProgress = std::clamp((time + 0.85) / 0.43, 0.0, 1.0);
-		const double leftFootYaw = 0.55 * (1.0 - strideProgress);
-		pose.leftFootForward = Physics::NormalizeOrZero(Vector3{-std::sin(leftFootYaw), 0.0, std::cos(leftFootYaw)});
-		const auto reachableHand = [&](const Vector3& shoulder, const Vector3& target)
-		{
-			const auto delta = target - shoulder;
-			const double distance = Physics::Length(delta);
-			const double reach = 2. * PitcherArmSegmentMeters * pose.scale - 1e-6;
-			return distance > reach ? shoulder + delta * (reach / distance) : target;
-		};
-		pose.rightHand = reachableHand(pose.rightShoulder, pose.rightHand);
-		pose.leftHand = reachableHand(pose.leftShoulder, pose.leftHand);
-		pose.heldBall = pose.rightHand;
-		const auto joint =
-		    [](const Vector3& start, const Vector3& end, const Vector3& bend, const double length)
+		// Places the middle joint of a two-segment limb of equal segment lengths on the side
+		// given by the bend hint, keeping both segments at their exact length.
+		[[nodiscard]] inline Vector3 BendJoint(
+		    const Vector3& start, const Vector3& end, const Vector3& bend, const double length)
 		{
 			const Vector3 delta = end - start;
 			const double distance = Physics::Length(delta);
@@ -306,19 +132,485 @@ namespace BaseballSimulatorVR::Common
 				perpendicular = seed - axis * Physics::Dot(seed, axis);
 			}
 			const Vector3 normal = Physics::NormalizeOrZero(perpendicular);
-			const double height =
-			    std::sqrt((std::max)(0.0, length * length - distance * distance * .25));
+			const double height = std::sqrt((std::max)(0.0, length * length - distance * distance * .25));
 			return (start + end) * .5 + normal * height;
+		}
+		// Rotates a trunk-frame vector about the trunk's lateral axis, swinging -up toward
+		// +forward for positive angles (an underhand arm swing).
+		[[nodiscard]] inline Vector3 SwingForward(const Vector3& v, const double angle)
+		{
+			return {v.x, v.y * std::cos(angle) + v.z * std::sin(angle), -v.y * std::sin(angle) + v.z * std::cos(angle)};
+		}
+
+		struct ArmDirections final
+		{
+			Vector3 upper, fore;
 		};
-		const auto throwingBend = blendVec(&Keyframe::throwBend);
-		const auto gloveBend = blendVec(&Keyframe::gloveBend);
-		const auto leftKneeBend = blendVec(&Keyframe::leftKneeBend);
-		const auto rightKneeBend = blendVec(&Keyframe::rightKneeBend);
-		pose.rightElbow = joint(pose.rightShoulder, pose.rightHand, throwingBend,
-		    PitcherArmSegmentMeters * pose.scale);
-		pose.leftElbow = joint(pose.leftShoulder, pose.leftHand, gloveBend, PitcherArmSegmentMeters * pose.scale);
-		pose.rightKnee = joint(pose.rightHip, pose.rightFoot, rightKneeBend, PitcherLegSegmentMeters * pose.scale);
-		pose.leftKnee = joint(pose.leftHip, pose.leftFoot, leftKneeBend, PitcherLegSegmentMeters * pose.scale);
+		[[nodiscard]] inline ArmDirections SolveArm(Vector3 hand, const Vector3& elbowHint)
+		{
+			const double reach = 2.0 * PitcherArmSegmentMeters * .999;
+			const double distance = Physics::Length(hand);
+			if (distance > reach) hand = hand * (reach / distance);
+			const Vector3 elbow = BendJoint({}, hand, elbowHint, PitcherArmSegmentMeters);
+			return {elbow / PitcherArmSegmentMeters, (hand - elbow) / PitcherArmSegmentMeters};
+		}
+
+		[[nodiscard]] inline SlotAdjustment SlotAt(const Delivery& delivery, const double slot)
+		{
+			const double s = std::clamp(slot, 0.0, 2.0);
+			const auto& a = delivery.slot[s <= 1.0 ? 0 : 1];
+			const auto& b = delivery.slot[s <= 1.0 ? 1 : 2];
+			const double u = s <= 1.0 ? s : s - 1.0;
+			const auto mix = [u](double x, double y) { return x + (y - x) * u; };
+			return {mix(a.trunkTilt, b.trunkTilt), mix(a.trunkFlexion, b.trunkFlexion),
+			    mix(a.pelvisHeight, b.pelvisHeight), mix(a.strideLength, b.strideLength),
+			    mix(a.armSwing, b.armSwing)};
+		}
+
+		// Keys after the release-height adaptation, with arm directions solved per key.
+		struct AdjustedKeys final
+		{
+			std::array<Key, KeyCount> keys;
+			std::array<ArmDirections, KeyCount> throwArm, gloveArm;
+		};
+		[[nodiscard]] inline AdjustedKeys Adjust(const Delivery& delivery, const double slot)
+		{
+			const SlotAdjustment adjustment = SlotAt(delivery, slot);
+			AdjustedKeys result{delivery.keys, {}, {}};
+			for (std::size_t k = 0; k < KeyCount; ++k)
+			{
+				Key& key = result.keys[k];
+				key.trunkTilt += adjustment.trunkTilt * key.slot;
+				key.trunkFlexion += adjustment.trunkFlexion * key.slot;
+				key.pelvis.y += adjustment.pelvisHeight * key.slot;
+				const double stride = adjustment.strideLength * key.stride;
+				key.leftFoot.z += stride;
+				key.pelvis.z += stride * .6;
+				// The trailing foot follows the stride change once it has swung forward.
+				key.rightFoot.z += stride * std::clamp((key.rightFoot.z + .1) / 1.0, 0.0, 1.0);
+				const double swing = adjustment.armSwing * key.slot * Degrees;
+				result.throwArm[k] = SolveArm(SwingForward(key.throwHand, swing), SwingForward(key.throwElbow, swing));
+				result.gloveArm[k] = SolveArm(key.gloveHand, key.gloveElbow);
+			}
+			return result;
+		}
+
+		struct Sample final
+		{
+			Vector3 pelvis, leftFoot, rightFoot;
+			double hipYaw, trunkYaw, trunkFlexion, trunkTilt, leftFootYaw, rightFootYaw;
+			ArmDirections throwArm, gloveArm;
+		};
+		// Cubic Hermite through the keys. Smooth (non-uniform Catmull-Rom) tangents keep the
+		// body flowing through each key; monotone tangents keep planted feet and the pelvis
+		// from overshooting their keys.
+		[[nodiscard]] inline Sample SampleAt(const AdjustedKeys& adjusted, const double time)
+		{
+			const auto& keys = adjusted.keys;
+			std::size_t index = 0;
+			while ((index + 2 < KeyCount) && (time > keys[index + 1].time))
+			{
+				++index;
+			}
+			const double span = keys[index + 1].time - keys[index].time;
+			const double u = std::clamp((time - keys[index].time) / span, 0.0, 1.0);
+			const double h00 = (1.0 + 2.0 * u) * (1.0 - u) * (1.0 - u);
+			const double h10 = u * (1.0 - u) * (1.0 - u);
+			const double h01 = u * u * (3.0 - 2.0 * u);
+			const double h11 = u * u * (u - 1.0);
+			const auto tangent = [&](const std::size_t k, auto value, const bool monotone) -> double
+			{
+				if (k == 0 || k + 1 >= KeyCount)
+				{
+					return 0.0;
+				}
+				const double hPrev = keys[k].time - keys[k - 1].time;
+				const double hNext = keys[k + 1].time - keys[k].time;
+				const double dPrev = (value(k) - value(k - 1)) / hPrev;
+				const double dNext = (value(k + 1) - value(k)) / hNext;
+				if (!monotone)
+				{
+					return (dPrev * hNext + dNext * hPrev) / (hPrev + hNext);
+				}
+				if (dPrev * dNext <= 0.0)
+				{
+					return 0.0;
+				}
+				const double w1 = 2.0 * hNext + hPrev;
+				const double w2 = hNext + 2.0 * hPrev;
+				return (w1 + w2) / (w1 / dPrev + w2 / dNext);
+			};
+			const auto blend = [&](auto value, const bool monotone)
+			{
+				return h00 * value(index) + h10 * span * tangent(index, value, monotone) +
+				       h01 * value(index + 1) + h11 * span * tangent(index + 1, value, monotone);
+			};
+			const auto scalar = [&](double Key::*member, const bool monotone)
+			{
+				return blend([&](std::size_t k) { return keys[k].*member; }, monotone);
+			};
+			const auto vector = [&](Vector3 Key::*member, const bool monotone) -> Vector3
+			{
+				return {blend([&](std::size_t k) { return (keys[k].*member).x; }, monotone),
+				    blend([&](std::size_t k) { return (keys[k].*member).y; }, monotone),
+				    blend([&](std::size_t k) { return (keys[k].*member).z; }, monotone)};
+			};
+			const auto direction = [&](const std::array<ArmDirections, KeyCount>& arm, Vector3 ArmDirections::*member)
+			{
+				return Physics::NormalizeOrZero(Vector3{
+				    blend([&](std::size_t k) { return (arm[k].*member).x; }, false),
+				    blend([&](std::size_t k) { return (arm[k].*member).y; }, false),
+				    blend([&](std::size_t k) { return (arm[k].*member).z; }, false)});
+			};
+			return {vector(&Key::pelvis, true), vector(&Key::leftFoot, true), vector(&Key::rightFoot, true),
+			    scalar(&Key::hipYaw, false), scalar(&Key::trunkYaw, false), scalar(&Key::trunkFlexion, false),
+			    scalar(&Key::trunkTilt, false), scalar(&Key::leftFootYaw, false), scalar(&Key::rightFootYaw, false),
+			    {direction(adjusted.throwArm, &ArmDirections::upper), direction(adjusted.throwArm, &ArmDirections::fore)},
+			    {direction(adjusted.gloveArm, &ArmDirections::upper), direction(adjusted.gloveArm, &ArmDirections::fore)}};
+		}
+
+		// Walk from the finish back to the set position: the stride foot steps back first,
+		// then the pivot foot returns to the rubber while the body turns side-on again.
+		[[nodiscard]] inline Sample Recover(const Sample& finish, const Sample& set, const double progress)
+		{
+			const auto ease = [](const double u)
+			{
+				const double c = std::clamp(u, 0.0, 1.0);
+				return c * c * (3.0 - 2.0 * c);
+			};
+			const double body = ease(progress);
+			const double left = ease(progress / .55);
+			const double right = ease((progress - .45) / .55);
+			const auto mix = [](const double a, const double b, const double u) { return a + (b - a) * u; };
+			const auto mixVector = [](const Vector3& a, const Vector3& b, const double u) { return a + (b - a) * u; };
+			const auto mixArm = [&](const ArmDirections& a, const ArmDirections& b)
+			{
+				return ArmDirections{Physics::NormalizeOrZero(mixVector(a.upper, b.upper, body)),
+				    Physics::NormalizeOrZero(mixVector(a.fore, b.fore, body))};
+			};
+			Sample result{};
+			result.pelvis = mixVector(finish.pelvis, set.pelvis, body);
+			result.leftFoot = mixVector(finish.leftFoot, set.leftFoot, left) +
+			                  Vector3{0.0, .10 * std::sin(std::numbers::pi * left), 0.0};
+			result.rightFoot = mixVector(finish.rightFoot, set.rightFoot, right) +
+			                   Vector3{0.0, .10 * std::sin(std::numbers::pi * right), 0.0};
+			result.hipYaw = mix(finish.hipYaw, set.hipYaw, body);
+			result.trunkYaw = mix(finish.trunkYaw, set.trunkYaw, body);
+			result.trunkFlexion = mix(finish.trunkFlexion, set.trunkFlexion, body);
+			result.trunkTilt = mix(finish.trunkTilt, set.trunkTilt, body);
+			result.leftFootYaw = mix(finish.leftFootYaw, set.leftFootYaw, left);
+			result.rightFootYaw = mix(finish.rightFootYaw, set.rightFootYaw, right);
+			result.throwArm = mixArm(finish.throwArm, set.throwArm);
+			result.gloveArm = mixArm(finish.gloveArm, set.gloveArm);
+			return result;
+		}
+
+		[[nodiscard]] inline PitcherPose ComposePose(const Sample& sample, const Vector3& base, const double scale)
+		{
+			PitcherPose pose{};
+			pose.scale = scale;
+			pose.moundOrigin = base;
+			const auto world = [&](const Vector3& p) { return base + p * scale; };
+			const Frame trunk = TrunkFrame(sample.trunkYaw * Degrees, sample.trunkFlexion * Degrees,
+			    sample.trunkTilt * Degrees);
+			pose.pelvis = world(sample.pelvis);
+			pose.leftFoot = world(sample.leftFoot);
+			pose.rightFoot = world(sample.rightFoot);
+			pose.leftFoot.y = (std::max)(pose.leftFoot.y, base.y);
+			pose.rightFoot.y = (std::max)(pose.rightFoot.y, base.y);
+			// The pelvis follows only part of the trunk lean, as the lumbar spine bends.
+			const Vector3 hipLateral{std::cos(sample.hipYaw * Degrees), 0.0, std::sin(sample.hipYaw * Degrees)};
+			const Vector3 pelvisUp = Physics::NormalizeOrZero(trunk.up * .35 + Vector3{0.0, .65, 0.0});
+			pose.pelvisLateral = Physics::NormalizeOrZero(hipLateral - pelvisUp * Physics::Dot(hipLateral, pelvisUp));
+			// Lower the pelvis wherever a leg could not otherwise reach its foot.
+			const double hipOffset = .115 * scale;
+			const double legReach = 2.0 * PitcherLegSegmentMeters * scale * .995;
+			double drop = 0.0;
+			for (const double side : {-1.0, 1.0})
+			{
+				const Vector3 hip = pose.pelvis + pose.pelvisLateral * (side * hipOffset);
+				const Vector3& foot = side < 0.0 ? pose.rightFoot : pose.leftFoot;
+				const double horizontal = (hip.x - foot.x) * (hip.x - foot.x) + (hip.z - foot.z) * (hip.z - foot.z);
+				const double highest = foot.y + std::sqrt((std::max)(0.0, legReach * legReach - horizontal));
+				drop = (std::max)(drop, hip.y - highest);
+			}
+			pose.pelvis.y -= drop;
+			pose.rightHip = pose.pelvis - pose.pelvisLateral * hipOffset;
+			pose.leftHip = pose.pelvis + pose.pelvisLateral * hipOffset;
+			pose.chest = pose.pelvis + trunk.up * (.53 * scale);
+			pose.chestLateral = trunk.lateral;
+			pose.head = pose.chest + (trunk.up * .14 + Vector3{0., .18, -.02}) * scale;
+			// Eyes stay on the target; the neck absorbs most of the trunk rotation.
+			const double headYaw = std::clamp(sample.trunkYaw * .2, -15.0, 25.0) * Degrees;
+			pose.headForward = Physics::NormalizeOrZero(Vector3{
+			    -std::sin(headYaw), -.12 - .25 * std::sin(sample.trunkFlexion * Degrees), std::cos(headYaw)});
+			pose.rightShoulder = pose.chest + (trunk.up * .06 - trunk.lateral * .23) * scale;
+			pose.leftShoulder = pose.chest + (trunk.up * .06 + trunk.lateral * .23) * scale;
+			const double arm = PitcherArmSegmentMeters * scale;
+			pose.rightElbow = pose.rightShoulder + ToWorld(trunk, sample.throwArm.upper) * arm;
+			pose.rightHand = pose.rightElbow + ToWorld(trunk, sample.throwArm.fore) * arm;
+			pose.leftElbow = pose.leftShoulder + ToWorld(trunk, sample.gloveArm.upper) * arm;
+			pose.leftHand = pose.leftElbow + ToWorld(trunk, sample.gloveArm.fore) * arm;
+			pose.heldBall = pose.rightHand;
+			const auto footForward = [](const double yaw)
+			{ return Vector3{-std::sin(yaw * Degrees), 0.0, std::cos(yaw * Degrees)}; };
+			pose.rightFootForward = footForward(sample.rightFootYaw);
+			pose.leftFootForward = footForward(sample.leftFootYaw);
+			// Knees bend over the toes; a foot trailing behind the hip (drive leg, follow-through
+			// kick) turns the knee down toward the mound instead. Knees never dip into it.
+			const double leg = PitcherLegSegmentMeters * scale;
+			const auto kneeHint = [&](const Vector3& hip, const Vector3& foot, const Vector3& forward)
+			{
+				const double behind = std::clamp(-Physics::Dot(foot - hip, forward) / (.3 * scale), 0.0, 1.0);
+				return (forward + Vector3{0., .25, 0.}) * (1.0 - behind) + (forward * .3 + Vector3{0., -1., 0.}) * behind;
+			};
+			pose.rightKnee = BendJoint(pose.rightHip, pose.rightFoot,
+			    kneeHint(pose.rightHip, pose.rightFoot, pose.rightFootForward), leg);
+			pose.leftKnee = BendJoint(pose.leftHip, pose.leftFoot,
+			    kneeHint(pose.leftHip, pose.leftFoot, pose.leftFootForward), leg);
+			pose.rightKnee.y = (std::max)(pose.rightKnee.y, base.y + .04 * scale);
+			pose.leftKnee.y = (std::max)(pose.leftKnee.y, base.y + .04 * scale);
+			return pose;
+		}
+
+		// Stretch delivery with a high leg lift. Phases: set, lift, balance point, drift,
+		// stride, foot contact, maximum external rotation, release, maximum internal
+		// rotation, follow-through, recovery and fielding position.
+		[[nodiscard]] inline const Delivery& OverhandDelivery()
+		{
+			static constexpr Delivery delivery{{{
+			    {-1.20, {-.04, .96, .07}, 88, 90, 6, 0, {.20, -.30, .25}, {-.4, -1, 0}, {-.20, -.28, .27}, {.4, -1, 0},
+			        {.00, .07, .33}, {-.10, .07, -.12}, 80, 92, 0, 0},
+			    {-.95, {-.06, .96, .02}, 92, 96, 4, 0, {.20, -.27, .25}, {-.4, -1, 0}, {-.20, -.25, .27}, {.4, -1, 0},
+			        {-.06, .18, .22}, {-.10, .07, -.12}, 85, 92, 0, 0},
+			    {-.72, {-.08, .95, -.04}, 100, 108, 0, -4, {.20, -.22, .24}, {-.4, -1, 0}, {-.19, -.20, .26}, {.4, -1, 0},
+			        {-.40, .43, .00}, {-.10, .07, -.12}, 95, 92, 0, 0},
+			    {-.50, {-.06, .90, .12}, 98, 106, 2, -8, {.04, -.45, .16}, {-.5, -.8, .2}, {-.06, -.32, .30}, {.4, -1, .2},
+			        {-.14, .32, .40}, {-.10, .07, -.12}, 70, 90, 0, .2},
+			    {-.30, {-.04, .82, .38}, 75, 100, 4, -8, {-.45, -.25, -.45}, {-.3, .2, -1}, {.40, -.02, .25}, {.1, -1, .2},
+			        {.08, .14, .95}, {-.10, .07, -.11}, 30, 80, .1, .8},
+			    {-.14, {-.01, .70, .52}, 38, 85, 6, -2, {-.357, .29, .11}, {-1, -.1, -.35}, {.45, .10, .30}, {.2, -.4, 1},
+			        {.12, .07, 1.22}, {-.11, .08, -.06}, 15, 55, .4, 1},
+			    {-.035, {.02, .74, .66}, -5, 15, 22, 20, {-.377, .131, -.334}, {-1, 0, 0}, {.30, -.10, .32}, {.3, -1, .4},
+			        {.12, .07, 1.22}, {-.10, .09, .04}, 15, 25, .9, 1},
+			    {0, {.03, .80, .72}, -15, -12, 35, 24, {-.718, .204, .102}, {0, -1, .2}, {.05, -.20, .35}, {.5, -1, .3},
+			        {.12, .07, 1.22}, {-.09, .10, .10}, 15, 15, 1, 1},
+			    {.03, {.04, .80, .76}, -22, -28, 45, 22, {-.558, .034, .504}, {-1, -.5, -1}, {.00, -.25, .33}, {.5, -1, .3},
+			        {.12, .07, 1.22}, {-.08, .12, .16}, 15, 10, .9, 1},
+			    {.14, {.06, .76, .86}, -35, -45, 58, 10, {.25, -.55, .35}, {-.3, -.2, 1}, {.05, -.35, .25}, {.5, -1, 0},
+			        {.12, .07, 1.22}, {-.14, .48, .34}, 15, 5, .5, 1},
+			    {.32, {.04, .80, .95}, -25, -25, 35, 5, {.10, -.60, .20}, {-.2, 0, 1}, {.00, -.30, .30}, {.5, -1, 0},
+			        {.12, .07, 1.22}, {-.24, .26, .86}, 15, 0, .2, 1},
+			    {.60, {-.02, .86, 1.00}, -5, -3, 15, 0, {.15, -.35, .30}, {-.5, -1, 0}, {-.15, -.25, .35}, {.5, -1, 0},
+			        {.16, .07, 1.24}, {-.28, .07, 1.02}, 5, -5, 0, 1}}},
+			    {{{-30, 0, 0, 0, 0}, {16, 0, 0, 0, 0}, {26, -30, .20, -.45, 0}}}};
+			return delivery;
+		}
+
+		// Same lower body with a level shoulder line: the arm comes around horizontally.
+		[[nodiscard]] inline const Delivery& SidearmDelivery()
+		{
+			static constexpr Delivery delivery{{{
+			    {-1.20, {-.04, .96, .07}, 88, 90, 6, 0, {.20, -.30, .25}, {-.4, -1, 0}, {-.20, -.28, .27}, {.4, -1, 0},
+			        {.00, .07, .33}, {-.10, .07, -.12}, 80, 92, 0, 0},
+			    {-.95, {-.06, .96, .02}, 92, 96, 4, 0, {.20, -.27, .25}, {-.4, -1, 0}, {-.20, -.25, .27}, {.4, -1, 0},
+			        {-.06, .18, .22}, {-.10, .07, -.12}, 85, 92, 0, 0},
+			    {-.72, {-.08, .95, -.04}, 100, 108, 2, -4, {.20, -.22, .24}, {-.4, -1, 0}, {-.19, -.20, .26}, {.4, -1, 0},
+			        {-.40, .43, .00}, {-.10, .07, -.12}, 95, 92, 0, 0},
+			    {-.50, {-.06, .89, .12}, 98, 106, 4, -8, {.04, -.45, .16}, {-.5, -.8, .2}, {-.06, -.32, .30}, {.4, -1, .2},
+			        {-.14, .32, .42}, {-.10, .07, -.12}, 70, 90, 0, .2},
+			    {-.30, {-.04, .80, .40}, 75, 100, 8, -10, {-.48, -.30, -.40}, {-.3, .2, -1}, {.40, -.05, .25}, {.1, -1, .2},
+			        {.08, .14, .98}, {-.10, .07, -.11}, 30, 80, .2, .8},
+			    {-.14, {-.01, .68, .54}, 38, 85, 10, -6, {-.36, .12, -.08}, {-1, -.2, -.3}, {.45, .02, .30}, {.2, -.5, 1},
+			        {.13, .07, 1.25}, {-.11, .08, -.05}, 15, 55, .5, 1},
+			    {-.045, {.02, .71, .68}, -5, 15, 18, 2, {-.38, .04, -.33}, {-1, 0, 0}, {.30, -.12, .32}, {.3, -1, .4},
+			        {.13, .07, 1.25}, {-.10, .09, .05}, 15, 25, .9, 1},
+			    {0, {.03, .74, .74}, -15, -12, 28, -2, {-.70, .05, .20}, {0, -.2, -1}, {.05, -.22, .35}, {.5, -1, .3},
+			        {.13, .07, 1.25}, {-.09, .10, .11}, 15, 15, 1, 1},
+			    {.03, {.04, .74, .78}, -22, -30, 36, -2, {-.50, -.05, .50}, {-.5, 0, -1}, {.00, -.26, .33}, {.5, -1, .3},
+			        {.13, .07, 1.25}, {-.08, .12, .17}, 15, 10, .9, 1},
+			    {.14, {.06, .72, .88}, -35, -48, 48, 0, {.20, -.40, .40}, {-.3, -.2, 1}, {.05, -.35, .25}, {.5, -1, 0},
+			        {.13, .07, 1.25}, {-.14, .46, .36}, 15, 5, .5, 1},
+			    {.32, {.04, .79, .97}, -25, -25, 30, 0, {.10, -.60, .20}, {-.2, 0, 1}, {.00, -.30, .30}, {.5, -1, 0},
+			        {.13, .07, 1.25}, {-.24, .26, .88}, 15, 0, .2, 1},
+			    {.60, {-.02, .86, 1.02}, -5, -3, 15, 0, {.15, -.35, .30}, {-.5, -1, 0}, {-.15, -.25, .35}, {.5, -1, 0},
+			        {.17, .07, 1.27}, {-.28, .07, 1.04}, 5, -5, 0, 1}}},
+			    {{{-28, 10, -.12, .05, 0}, {0, 0, 0, 0, 0}, {14, -6, .03, 0, 0}}}};
+			return delivery;
+		}
+
+		// Long stride with a deep drive-leg bend: the trunk tilts hard to the arm side and
+		// the arm sweeps under, releasing just above the mound in front of the stride knee.
+		[[nodiscard]] inline const Delivery& SubmarineDelivery()
+		{
+			static constexpr Delivery delivery{{{
+			    {-1.20, {-.04, .96, .07}, 88, 90, 6, 0, {.20, -.30, .25}, {-.4, -1, 0}, {-.20, -.28, .27}, {.4, -1, 0},
+			        {.00, .07, .33}, {-.10, .07, -.12}, 80, 92, 0, 0},
+			    {-.95, {-.06, .95, .02}, 92, 96, 6, 0, {.20, -.27, .25}, {-.4, -1, 0}, {-.20, -.25, .27}, {.4, -1, 0},
+			        {-.06, .17, .22}, {-.10, .07, -.12}, 85, 92, 0, 0},
+			    {-.72, {-.08, .93, -.04}, 100, 108, 4, -4, {.20, -.24, .24}, {-.4, -1, 0}, {-.19, -.22, .26}, {.4, -1, 0},
+			        {-.38, .38, .02}, {-.10, .07, -.12}, 95, 92, 0, 0},
+			    {-.50, {-.06, .86, .14}, 96, 106, 10, -10, {.02, -.48, .15}, {-.5, -.6, .3}, {-.05, -.32, .30}, {.4, -1, .2},
+			        {-.12, .28, .46}, {-.10, .07, -.12}, 70, 90, .1, .2},
+			    {-.30, {-.04, .72, .44}, 72, 100, 18, -14, {-.35, -.40, -.40}, {-.4, 0, -1}, {.38, -.10, .25}, {.1, -1, .2},
+			        {.10, .13, 1.05}, {-.10, .07, -.10}, 30, 80, .3, .8},
+			    {-.14, {.00, .58, .60}, 35, 85, 30, -22, {-.42, -.05, -.20}, {-1, -.2, -.3}, {.48, .02, .25}, {.2, -.5, 1},
+			        {.15, .07, 1.32}, {-.11, .08, -.04}, 15, 55, .6, 1},
+			    {-.045, {.02, .48, .74}, -5, 5, 52, -38, {-.40, -.10, -.33}, {-1, 0, 0}, {.32, -.10, .32}, {.3, -1, .4},
+			        {.15, .07, 1.32}, {-.10, .08, .06}, 15, 25, .9, 1},
+			    {0, {.03, .44, .80}, -18, -25, 66, -40, {-.66, -.12, .30}, {-1, .2, .2}, {.10, -.20, .35}, {.5, -1, .3},
+			        {.15, .07, 1.32}, {-.09, .08, .12}, 15, 15, 1, 1},
+			    {.03, {.04, .44, .84}, -24, -38, 68, -34, {-.45, -.10, .55}, {-.8, .3, .4}, {.05, -.25, .33}, {.5, -1, .3},
+			        {.15, .07, 1.32}, {-.08, .09, .18}, 15, 10, .9, 1},
+			    {.14, {.06, .52, .92}, -32, -48, 55, -15, {.05, .05, .55}, {-.5, -.5, .5}, {.02, -.35, .25}, {.5, -1, 0},
+			        {.15, .07, 1.32}, {-.14, .38, .46}, 15, 5, .5, 1},
+			    {.32, {.04, .70, 1.00}, -20, -25, 30, -5, {.05, -.45, .30}, {-.3, -.3, .8}, {.00, -.30, .30}, {.5, -1, 0},
+			        {.15, .07, 1.32}, {-.24, .24, .94}, 15, 0, .2, 1},
+			    {.60, {-.02, .86, 1.08}, -5, -3, 12, 0, {.15, -.35, .30}, {-.5, -1, 0}, {-.15, -.25, .35}, {.5, -1, 0},
+			        {.18, .07, 1.33}, {-.28, .07, 1.10}, 5, -5, 0, 1}}},
+			    {{{-14, 8, -.08, 0, 0}, {0, 0, 0, 0, 0}, {16, -14, .12, 0, 0}}}};
+			return delivery;
+		}
+
+		// Batting-practice toss facing the target: a short step with a pendulum arm swing,
+		// a pause at the top of the backswing and a follow-through toward the target.
+		[[nodiscard]] inline const Delivery& UnderhandTossDelivery()
+		{
+			static constexpr Delivery delivery{{{
+			    {-1.20, {-.02, .97, .03}, 12, 12, 8, 0, {.18, -.48, .22}, {-.3, -1, 0}, {-.18, -.46, .22}, {.3, -1, 0},
+			        {.15, .07, .12}, {-.18, .07, -.05}, 5, 10, 0, 0},
+			    {-.95, {-.02, .97, .02}, 12, 12, 8, 0, {.17, -.48, .22}, {-.3, -1, 0}, {-.18, -.46, .22}, {.3, -1, 0},
+			        {.15, .07, .12}, {-.18, .07, -.05}, 5, 10, 0, 0},
+			    {-.70, {-.03, .96, .00}, 14, 15, 9, 0, {.05, -.62, .16}, {-.3, -1, .2}, {-.12, -.40, .30}, {.3, -1, .2},
+			        {.15, .07, .12}, {-.18, .07, -.05}, 5, 10, 0, 0},
+			    {-.45, {-.04, .96, -.02}, 18, 20, 10, -2, {-.02, -.73, .02}, {-.1, 0, -1}, {-.04, -.30, .38}, {.3, -1, .2},
+			        {.15, .07, .12}, {-.18, .07, -.05}, 5, 10, 0, 0},
+			    {-.25, {-.04, .96, .02}, 22, 25, 11, -4, {-.04, -.66, -.32}, {-.1, 0, -1}, {.02, -.22, .42}, {.3, -1, .2},
+			        {.14, .16, .32}, {-.18, .07, -.05}, 3, 10, 0, 0},
+			    {-.12, {-.03, .95, .12}, 20, 22, 12, -4, {-.06, -.50, -.52}, {-.1, 0, -1}, {.05, -.18, .44}, {.3, -1, .2},
+			        {.13, .10, .50}, {-.18, .07, -.05}, 2, 10, 0, 0},
+			    {-.06, {-.02, .94, .18}, 14, 15, 13, -3, {-.06, -.46, -.56}, {-.1, 0, -1}, {.05, -.20, .42}, {.3, -1, .2},
+			        {.12, .07, .58}, {-.18, .07, -.05}, 0, 10, 0, 0},
+			    {0, {.00, .93, .26}, 5, 5, 15, 0, {-.05, -.66, .32}, {-.1, 0, -1}, {.00, -.30, .36}, {.3, -1, .2},
+			        {.12, .07, .58}, {-.18, .07, -.05}, 0, 10, 1, 0},
+			    {.10, {.00, .93, .31}, 0, -2, 12, 2, {-.05, -.35, .64}, {-.1, -.3, -1}, {-.05, -.35, .32}, {.3, -1, .2},
+			        {.12, .07, .58}, {-.18, .07, -.05}, 0, 10, .5, 0},
+			    {.22, {.00, .94, .33}, -3, -5, 10, 1, {-.04, -.15, .70}, {-.1, -1, -.3}, {-.08, -.37, .30}, {.3, -1, .2},
+			        {.12, .07, .58}, {-.18, .07, -.05}, 0, 10, .1, 0},
+			    {.40, {-.01, .95, .33}, -2, -3, 9, 0, {.04, -.38, .50}, {-.2, -1, 0}, {-.12, -.39, .28}, {.3, -1, 0},
+			        {.12, .07, .58}, {-.17, .11, .12}, 0, 5, 0, 0},
+			    {.60, {-.02, .96, .30}, 0, 0, 8, 0, {.12, -.48, .26}, {-.3, -1, 0}, {-.18, -.40, .26}, {.3, -1, 0},
+			        {.12, .07, .58}, {-.17, .07, .22}, 0, 0, 0, 0}}},
+			    {{{0, 0, 0, 0, -10}, {0, 0, 0, 0, 10}, {0, 0, 0, 0, 50}}}};
+			return delivery;
+		}
+
+		[[nodiscard]] inline const Delivery& DeliveryFor(const PitcherDeliveryStyle style)
+		{
+			switch (style)
+			{
+			case PitcherDeliveryStyle::UnderhandToss: return UnderhandTossDelivery();
+			case PitcherDeliveryStyle::Submarine: return SubmarineDelivery();
+			case PitcherDeliveryStyle::Sidearm: return SidearmDelivery();
+			case PitcherDeliveryStyle::Overhand: break;
+			}
+			return OverhandDelivery();
+		}
+	} // namespace PitcherMotion
+
+	[[nodiscard]] inline PitcherPose BuildPitcherPose(const PitcherPresentationState& state)
+	{
+		using Physics::Vector3;
+		using namespace PitcherMotion;
+		const auto style = GetPitcherDeliveryStyle(state);
+		const Delivery& delivery = DeliveryFor(style);
+		const auto& keys = delivery.keys;
+		// Keep windup start and release fixed on the delivery clock. Reallocate
+		// windup time so the final forward swing and follow-through use the
+		// preset's fastest-pitch tempo, independent of the current pitch type.
+		const double rawSpeedScale = std::isfinite(state.armSpeedScale) ? state.armSpeedScale : 1.0;
+		const double speedScale = std::clamp(rawSpeedScale, .25, 2.0);
+		const double swingStart = -.12 / speedScale;
+		const double rawSeconds = std::isfinite(state.secondsFromRelease) ? state.secondsFromRelease : 0.0;
+		const double clockTime = std::clamp(
+		    rawSeconds, keys.front().time, keys.back().time / speedScale);
+		const double time =
+		    speedScale == 1.0
+		        ? clockTime
+		        : (clockTime >= swingStart
+		                  ? clockTime * speedScale
+		                  : keys.front().time + (clockTime - keys.front().time) *
+		                                            (-.12 - keys.front().time) /
+		                                            (swingStart - keys.front().time));
+
+		// Fit the arm slot to the configured release height: the trunk tilt, knee bend and
+		// stride (or the toss arm angle) are solved so the hand reaches it at release.
+		const double releaseHeight = state.releasePositionWorld.y - state.moundHeightMeters;
+		const double scale = style == PitcherDeliveryStyle::Overhand ? std::clamp(releaseHeight / 1.82, 1., 1.2) : 1.;
+		const Vector3 groundBase{0.0, state.moundHeightMeters, 0.0};
+		const auto releaseHand = [&](const double slot)
+		{ return ComposePose(SampleAt(Adjust(delivery, slot), 0.0), groundBase, scale).rightHand; };
+		const double target = state.releasePositionWorld.y;
+		// The fit depends only on the form and release height, so per-frame evaluation reuses it.
+		struct SlotFit final
+		{
+			PitcherDeliveryStyle style;
+			double target, mound, slot;
+		};
+		static thread_local std::optional<SlotFit> lastFit;
+		double slot = 0.0;
+		if (lastFit && lastFit->style == style && lastFit->target == target &&
+		    lastFit->mound == state.moundHeightMeters)
+		{
+			slot = lastFit->slot;
+		}
+		else
+		{
+			double low = 0.0, high = 2.0;
+			slot = target <= releaseHand(low).y ? low : (target >= releaseHand(high).y ? high : -1.0);
+			if (slot < 0.0)
+			{
+				for (int iteration = 0; iteration < 60; ++iteration)
+				{
+					const double middle = .5 * (low + high);
+					(releaseHand(middle).y < target ? low : high) = middle;
+				}
+				slot = .5 * (low + high);
+			}
+			lastFit = SlotFit{style, target, state.moundHeightMeters, slot};
+		}
+		const AdjustedKeys adjusted = Adjust(delivery, slot);
+		const Vector3 release = ComposePose(SampleAt(adjusted, 0.0), groundBase, scale).rightHand;
+		const Vector3 base{state.releasePositionWorld.x - release.x, state.moundHeightMeters,
+		    state.releasePositionWorld.z - release.z};
+		Sample sample = SampleAt(adjusted, time);
+		const double recovery =
+		    std::isfinite(state.recoveryProgress) ? std::clamp(state.recoveryProgress, 0.0, 1.0) : 0.0;
+		if (recovery > 0.0)
+		{
+			sample = Recover(sample, SampleAt(adjusted, keys.front().time), recovery);
+		}
+		PitcherPose pose = ComposePose(sample, base, scale);
+		// Heights beyond the fitted range carry their remaining error on the hand around
+		// release; within range this only removes rounding.
+		const double residual = target - release.y;
+		const double nearRelease = std::clamp(1.0 - std::abs(time) / .35, 0.0, 1.0);
+		const double weight = nearRelease * nearRelease * (3.0 - 2.0 * nearRelease);
+		if (residual != 0.0 && weight > 0.0)
+		{
+			const double arm = PitcherArmSegmentMeters * pose.scale;
+			Vector3 hand = pose.rightHand + Vector3{0.0, residual * weight, 0.0};
+			if (std::abs(residual * weight) > 1e-12)
+			{
+				const Vector3 delta = hand - pose.rightShoulder;
+				const double reach = 2. * arm - 1e-6;
+				if (Physics::Length(delta) > reach) hand = pose.rightShoulder + delta * (reach / Physics::Length(delta));
+				pose.rightElbow = BendJoint(pose.rightShoulder, hand,
+				    pose.rightElbow - (pose.rightShoulder + hand) * .5, arm);
+			}
+			pose.rightHand = hand;
+			pose.heldBall = hand;
+		}
 		if (state.throwsLeftHanded)
 		{
 			for (auto* point : {&pose.pelvis, &pose.chest, &pose.head, &pose.rightShoulder,
@@ -824,7 +1116,8 @@ namespace BaseballSimulatorVR::Common
 		orientedEllipsoid(brimCenter, headRight, brimUp, brimFwd,
 		    {.102 * s, .013 * s, .090 * s}, navy, 0.08);
 
-		if (state.secondsFromRelease < 0.0)
+		// The ball is in hand before release and again once the pitcher is set for the next pitch.
+		if (state.secondsFromRelease < 0.0 || state.recoveryProgress >= 1.0)
 		{
 			const double radius = state.heldBallRadiusMeters;
 			ellipsoid(pose.heldBall, {radius, radius, radius}, ball, 0.06);
@@ -847,7 +1140,7 @@ namespace BaseballSimulatorVR::Common
 				       a.releasePositionWorld.z == b.releasePositionWorld.z &&
 				       a.moundHeightMeters == b.moundHeightMeters &&
 				       a.heldBallRadiusMeters == b.heldBallRadiusMeters &&
-				       a.underhandToss == b.underhandToss;
+				       a.underhandToss == b.underhandToss && a.recoveryProgress == b.recoveryProgress;
 			};
 			if (!m_valid || !same(state, m_state))
 			{

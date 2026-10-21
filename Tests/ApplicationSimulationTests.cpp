@@ -1284,6 +1284,14 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->BuildFieldPresentationState().pitcher.throwsLeftHanded &&
 			    Near(app->BuildFieldPresentationState().pitcher.armSpeedScale, 1.0),
 			    "The interval preserves pitcher hand and preset tempo");
+			app->m_duelRound.cooldownRemainingSeconds = app->m_duelPitchIntervalSeconds - .3;
+			presentation = app->BuildFieldPresentationState();
+			Tests::Check(Near(presentation.pitcher.secondsFromRelease, .3) &&
+			    Near(presentation.pitcher.recoveryProgress, 0.0),
+			    "The follow-through keeps running at the start of the interval");
+			app->m_duelRound.cooldownRemainingSeconds = Common::PitcherSetHoldSeconds * .5;
+			Tests::Check(Near(app->BuildFieldPresentationState().pitcher.recoveryProgress, 1.0),
+			    "The pitcher is back on the rubber and set before the next windup");
 			app->ResetPitchSimulation();
 			app->SaveUserPresetToJson();
 			const auto saved = app->m_pitchPresetJsonStorage.LoadPitchSettings(leftPath.wstring(), error);

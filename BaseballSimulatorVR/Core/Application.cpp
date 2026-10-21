@@ -4227,9 +4227,19 @@ namespace BaseballSimulatorVR::Core
 		state.pitcher.armSpeedScale = m_pitcherArmSpeedScale;
 		state.pitcher.heldBallRadiusMeters = deliveredPitch.ballProperties.radiusMeters;
 		state.pitcher.underhandToss = deliveredPitch.underhandToss;
-		state.pitcher.secondsFromRelease = m_duelRound.isWaitingForNextPitch
-		    ? -Simulation::PitchDeliveryController::WindupSeconds
-		    : m_pitchDeliveryController.GetSecondsFromRelease();
+		state.pitcher.secondsFromRelease = m_pitchDeliveryController.GetSecondsFromRelease();
+		if (m_duelRound.isWaitingForNextPitch)
+		{
+			// The delivery clock stops during the interval: let the follow-through finish, then
+			// walk the pitcher back to the rubber so the next windup starts from the set position.
+			state.pitcher.secondsFromRelease = m_pitchDeliveryController.HasReleased()
+			    ? state.pitcher.secondsFromRelease +
+			          (std::max)(0.0, m_duelPitchIntervalSeconds - m_duelRound.cooldownRemainingSeconds)
+			    : -Simulation::PitchDeliveryController::WindupSeconds;
+			state.pitcher.recoveryProgress = m_pitchDeliveryController.HasReleased()
+			    ? Common::PitcherRecoveryProgress(m_duelRound.cooldownRemainingSeconds)
+			    : 1.0;
+		}
 		state.pitcher.moundHeightMeters = m_environmentSettings.moundHeightOffsetMeters;
 		state.pitcher.releasePositionWorld = ConvertSimulationToCollisionWorldPosition(
 		    { 0.0, deliveredPitch.releaseHeightMeters, 0.0 },
