@@ -56,6 +56,18 @@
     <ClInclude Include="Common\FieldMarkings.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Common\StadiumGeometry.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\StadiumMesh.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\CatcherMittState.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\CatcherMittMesh.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Common\HomePlateGeometry.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -185,6 +197,9 @@
     <ClInclude Include="Physics\BallState.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Physics\GroundContact.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Physics\BatBallCollision.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -216,6 +231,9 @@
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
     <ClInclude Include="Simulation\BattedBallOutcome.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Simulation\StadiumCollision.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
     <ClInclude Include="Simulation\PitchDeliveryController.hpp">
@@ -281,6 +299,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="Simulation\BattedBallOutcome.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="Simulation\StadiumCollision.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="Simulation\PitchFlightAnalysis.cpp">

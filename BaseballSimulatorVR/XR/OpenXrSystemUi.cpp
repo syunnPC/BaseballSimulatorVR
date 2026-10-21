@@ -799,6 +799,30 @@ namespace BaseballSimulatorVR::Xr
 		{
 			m_rightHandPose = rightHandPoseState;
 		}
+		auto queryButtonPressed = [&](const XrAction action, const XrPath handPath) -> bool
+		{
+			if (action == XR_NULL_HANDLE)
+			{
+				return false;
+			}
+			XrActionStateGetInfo stateInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+			stateInfo.action = action;
+			stateInfo.subactionPath = handPath;
+			XrActionStateBoolean state{ XR_TYPE_ACTION_STATE_BOOLEAN };
+			return XR_SUCCEEDED(xrGetActionStateBoolean(m_sessionHandle, &stateInfo, &state)) &&
+			       (state.isActive == XR_TRUE) && (state.currentState == XR_TRUE);
+		};
+		auto queryControllerButtons = [&](const XrPath handPath) -> ControllerButtonState
+		{
+			ControllerButtonState buttons{};
+			buttons.isActive = querySelectPressed(handPath, &buttons.triggerPressed);
+			buttons.primaryPressed = queryButtonPressed(m_primaryButtonAction, handPath);
+			buttons.secondaryPressed = queryButtonPressed(m_secondaryButtonAction, handPath);
+			return buttons;
+		};
+		m_controllerInput.left = queryControllerButtons(m_leftHandPath);
+		m_controllerInput.right = queryControllerButtons(m_rightHandPath);
+		m_controllerInput.uiPointerActive = false;
 		if (leftHandPoseState.isValid)
 		{
 			m_leftHandPose = leftHandPoseState;
@@ -824,9 +848,12 @@ namespace BaseballSimulatorVR::Xr
 			    toHeadDirection);
 			return (facing >= 0.82);
 		};
+		// In the batting modes and behind the plate the bat or mitt hand holds the laser and
+		// the other hand calls up the panel.
 		const bool isBatMode =
 		    (m_uiTelemetry.operationMode == UiOperationMode::BattingDuel) ||
-		    (m_uiTelemetry.operationMode == UiOperationMode::TeeBatting);
+		    (m_uiTelemetry.operationMode == UiOperationMode::TeeBatting) ||
+		    (m_uiTelemetry.operationMode == UiOperationMode::Catcher);
 		const HandRayState* mainPanelHandState = isBatMode && m_uiTelemetry.batUseRightHand
 		    ? &leftHandRayState : &rightHandRayState;
 		m_showMainControlPanel = isHandRequestingMainPanel(*mainPanelHandState);
@@ -1012,6 +1039,7 @@ namespace BaseballSimulatorVR::Xr
 		}
 		const auto pointerInput = Common::AdvanceUiPointerInput(isBatMode, m_showMainControlPanel,
 		    handRayState.isValid, handRayState.isPressed, m_wasResultPanelSelectPressed);
+		m_controllerInput.uiPointerActive = pointerInput.visible;
 		if (!pointerInput.visible)
 		{
 			m_subPanelDragTarget = SubPanelDragTarget::None;
@@ -1660,6 +1688,9 @@ namespace BaseballSimulatorVR::Xr
 					queueCommand(UiCommandType::SetModeTeeBatting);
 					return;
 				case 3:
+					queueCommand(UiCommandType::SetModeCatcher);
+					return;
+				case 4:
 					if (!m_showPitchControlPanel)
 					{
 						m_showPitchControlPanel = true;
@@ -1674,7 +1705,7 @@ namespace BaseballSimulatorVR::Xr
 					m_pitchPanelHeightOffsetMeters = DefaultPitchPanelHeightOffsetMeters;
 					m_resultPanelLaserStatus = L"pitch-rescue";
 					return;
-				case 4:
+				case 5:
 					if (!m_showMetricsPanel)
 					{
 						m_showMetricsPanel = true;
@@ -1689,7 +1720,7 @@ namespace BaseballSimulatorVR::Xr
 					m_metricsPanelHeightOffsetMeters = DefaultMetricsPanelHeightOffsetMeters;
 					m_resultPanelLaserStatus = L"pitch-metrics-rescue";
 					return;
-				case 5:
+				case 6:
 					if (!m_showBattingMetricsPanel)
 					{
 						m_showBattingMetricsPanel = true;
@@ -1707,10 +1738,10 @@ namespace BaseballSimulatorVR::Xr
 					    DefaultBattingMetricsPanelHeightOffsetMeters;
 					m_resultPanelLaserStatus = L"batting-metrics-rescue";
 					return;
-				case 6:
+				case 7:
 					queueCommand(UiCommandType::CyclePitchTrajectoryDisplayMode);
 					return;
-				case 7:
+				case 8:
 					queueCommand(UiCommandType::ToggleBattedTrajectoryVisibility);
 					return;
 				case Common::CalibrationMainButtonCellIndex:

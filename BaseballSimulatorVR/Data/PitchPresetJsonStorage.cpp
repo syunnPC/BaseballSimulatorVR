@@ -73,7 +73,11 @@ namespace BaseballSimulatorVR::Data
 			}
 			if (fieldName == "seamPerturbationPhase")
 			{
-				return "Seam perturbation phase [rad].";
+				return "Seam perturbation phase [rad]; for a knuckleball, the seams' starting orientation.";
+			}
+			if (fieldName == "knuckleball")
+			{
+				return "Knuckleball: the slowly turning seams push the ball one way and then the other. Pitchers vary the seams' orientation, spin axis and rate from throw to throw.";
 			}
 			return "";
 		}
@@ -100,7 +104,8 @@ namespace BaseballSimulatorVR::Data
 			    !reader.Bool("enableSeamPerturbation", parameters.enableSeamPerturbation, true) ||
 			    !reader.Double("seamPerturbationAmplitude", parameters.seamPerturbationAmplitude, true) ||
 			    !reader.Double("seamPerturbationFrequencyHz", parameters.seamPerturbationFrequencyHz, true) ||
-			    !reader.Double("seamPerturbationPhase", parameters.seamPerturbationPhase, true))
+			    !reader.Double("seamPerturbationPhase", parameters.seamPerturbationPhase, true) ||
+			    !reader.Bool("knuckleball", parameters.knuckleball, false))
 			{
 				return false;
 			}
@@ -142,6 +147,10 @@ namespace BaseballSimulatorVR::Data
 			addNumber("seamPerturbationAmplitude", pitchParameters.seamPerturbationAmplitude);
 			addNumber("seamPerturbationFrequencyHz", pitchParameters.seamPerturbationFrequencyHz);
 			addNumber("seamPerturbationPhase", pitchParameters.seamPerturbationPhase);
+			if (pitchParameters.knuckleball)
+			{
+				addBool("knuckleball", true);
+			}
 		}
 	} // namespace
 

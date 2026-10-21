@@ -37,5 +37,9 @@ namespace BaseballSimulatorVR::Baseball
 		double seamPerturbationAmplitude{ 0.08 };
 		double seamPerturbationFrequencyHz{ 22.0 };
 		double seamPerturbationPhase{ 0.0 };
+		// A knuckleball: thrown with almost no spin, its slowly turning seams push it sideways
+		// and swing the push back and forth (see PitchPhysicsEngine). seamPerturbationPhase is
+		// then the seams' starting orientation [rad].
+		bool knuckleball{ false };
 	};
 } // namespace BaseballSimulatorVR::Baseball

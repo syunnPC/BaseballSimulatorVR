@@ -1804,6 +1804,12 @@ for (const Physics::Vector3& trailPoint : trail.Points())
 				    appendTriangle(p0, p1, p2, color);
 			    });
 
+			if (m_fieldPresentation.ballVisible)
+			{
+				Common::EmitProjectedBallShadow(mirrorViewState, width, height, m_latestBallState,
+				    [&](const ScreenPoint& p0, const ScreenPoint& p1, const ScreenPoint& p2, const float* color) -> void
+				    { appendTriangle(p0, p1, p2, color); });
+			}
 			Common::EmitProjectedPhaseBallAndTrajectoryMeshOverlay(
 			    mirrorViewState,
 			    width,

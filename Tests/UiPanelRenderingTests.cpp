@@ -247,7 +247,11 @@ void RunUiPanelRenderingTests()
         }
     Check(boardInk>20, "Production field board displays Japanese and numeric text through the GPU atlas");
 
-    view.position={0,12,-60};
+    // Framed as before the ballpark moved the board out past the center-field seats:
+    // level with its middle, 41 board units in front of it.
+    const auto boardLayout=Common::BuildFieldScoreboardLayout();
+    view.position={0,boardLayout.bottom+8*boardLayout.unitsPerLayoutUnit,
+        boardLayout.centerZ+41*boardLayout.unitsPerLayoutUnit};
     view.orientation={};
     view.orientationW=1;
     vertices.clear();

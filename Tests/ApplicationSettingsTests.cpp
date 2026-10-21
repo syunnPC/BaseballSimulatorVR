@@ -49,6 +49,7 @@ namespace
 		Common::FloorEyeHeightSample GetFloorEyeHeightSample() const noexcept override { return {}; }
 		Xr::HandPoseState GetLeftHandPose() const noexcept override { return {}; }
 		Xr::HandPoseState GetRightHandPose() const noexcept override { return rightHand; }
+		Xr::ControllerInputState GetControllerInputState() const noexcept override { return {}; }
 	};
 
 	class SettingsTestRenderBackend final : public Render::IRenderBackend

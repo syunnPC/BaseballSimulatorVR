@@ -2,6 +2,7 @@
 
 #include "HomePlateGeometry.hpp"
 #include "IndexedWorldMesh.hpp"
+#include "StadiumGeometry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -49,11 +50,45 @@ namespace BaseballSimulatorVR::Common
 		inline constexpr double FoulTerritoryMarginDegrees = 1.5;
 	}
 
+	enum class FieldSurface { Grass, Dirt };
+
+	// The surface at a field point (u toward first base, v toward the pitcher, from the plate
+	// apex), matching what BuildFieldMarkingsWorldMesh and the stadium draw: the dirt of the
+	// home-plate circle, the base paths and cutouts, the infield skin and the warning track,
+	// grass everywhere else.
+	[[nodiscard]] inline FieldSurface FieldSurfaceAt(const double u, const double v) noexcept
+	{
+		namespace D = FieldDimensions;
+		const double diagonal = D::BaseDistanceMeters / std::numbers::sqrt2;
+		if (std::hypot(u, v) <= D::HomeCircleRadiusMeters ||
+		    std::hypot(u - diagonal, v - diagonal) <= D::BaseCutoutRadiusMeters ||
+		    std::hypot(u + diagonal, v - diagonal) <= D::BaseCutoutRadiusMeters)
+			return FieldSurface::Dirt;
+		for (const double side : {-1.0, 1.0})
+		{
+			const double along = (side * u + v) / std::numbers::sqrt2;
+			const double across = std::abs(side * u - v) / std::numbers::sqrt2;
+			if (along >= 0.0 && along <= D::BaseDistanceMeters && across <= D::BasePathHalfWidthMeters)
+				return FieldSurface::Dirt;
+		}
+		const double bearing = std::atan2(u, v) * 180.0 / std::numbers::pi;
+		if (std::abs(bearing) <= 45.0 + FieldMarkingStyle::FoulTerritoryMarginDegrees &&
+		    std::hypot(u, v - D::PitchersPlateDistanceMeters) <= D::InfieldArcRadiusMeters)
+		{
+			const double grassHalf = diagonal - D::BasePathHalfWidthMeters * std::numbers::sqrt2;
+			return std::abs(u) + std::abs(v - diagonal) <= grassHalf ? FieldSurface::Grass : FieldSurface::Dirt;
+		}
+		if (Stadium::IsInsidePlayingField(u, v) &&
+		    Stadium::BehindWall(u, v).behindWallMeters >= -Stadium::WarningTrackWidthMeters)
+			return FieldSurface::Dirt;
+		return FieldSurface::Grass;
+	}
+
 	// Field markings drawn over the floor: infield dirt and grass, chalk lines, bases
 	// and batter's boxes. Field coordinates are measured from the apex of home plate:
 	// u toward the first-base side (+X), v toward the pitcher (-Z). Layers are lifted
-	// above the floor in order (dirt, infield grass, dirt cutouts, chalk) by a gap that
-	// grows with distance so depth precision keeps them apart.
+	// above the floor in order (the stadium's grass, dirt, infield grass, dirt cutouts,
+	// chalk) by a gap that grows with distance so depth precision keeps them apart.
 	[[nodiscard]] inline IndexedWorldMesh BuildFieldMarkingsWorldMesh(
 	    const double plateFrontDepth, const double floorHeight, const double fieldRadiusMeters)
 	{
@@ -63,7 +98,7 @@ namespace BaseballSimulatorVR::Common
 		const double apexZ = plateFrontDepth + HomePlateDepthMeters;
 		// The skin reaches the far side of the grass arc, so the field is never smaller.
 		const double radius = (std::max)(fieldRadiusMeters, D::PitchersPlateDistanceMeters + D::InfieldArcRadiusMeters);
-		enum Layer { Dirt = 1, Grass = 2, Cutout = 3, Chalk = 4 };
+		enum Layer { Dirt = 2, Grass = 3, Cutout = 4, Chalk = 5 };
 		const auto world = [&](const double u, const double v, const Layer layer)
 		{
 			const double distance = std::hypot(u, apexZ - v);
@@ -207,8 +242,8 @@ namespace BaseballSimulatorVR::Common
 		}
 
 		// Foul lines from the front of the batter's boxes, where they leave the boxes, to the
-		// edge of the field.
-		const double lineReach = radius / std::numbers::sqrt2;
+		// foul poles.
+		const double lineReach = Stadium::LineFenceDistanceMeters / std::numbers::sqrt2;
 		band({boxFront, boxFront}, {lineReach, lineReach}, D::LineWidthMeters * .5, Chalk, FieldMarkingStyle::ChalkColor);
 		band({-boxFront, boxFront}, {-lineReach, lineReach}, D::LineWidthMeters * .5, Chalk, FieldMarkingStyle::ChalkColor);
 

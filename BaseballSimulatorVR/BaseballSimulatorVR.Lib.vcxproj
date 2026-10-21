@@ -64,6 +64,10 @@
     <ClInclude Include="Common\GdiAlphaTriangleRasterizer.hpp" />
     <ClInclude Include="Common\GraphicsBinding.hpp" />
     <ClInclude Include="Common\FieldMarkings.hpp" />
+    <ClInclude Include="Common\StadiumGeometry.hpp" />
+    <ClInclude Include="Common\StadiumMesh.hpp" />
+    <ClInclude Include="Common\CatcherMittState.hpp" />
+    <ClInclude Include="Common\CatcherMittMesh.hpp" />
     <ClInclude Include="Common\HomePlateGeometry.hpp" />
     <ClInclude Include="Common\IndexedWorldMesh.hpp" />
     <ClInclude Include="Common\JsonKeyValueParser.hpp" />
@@ -107,6 +111,7 @@
     <ClInclude Include="Physics\BallAerodynamicsModel.hpp" />
     <ClInclude Include="Physics\BallProperties.hpp" />
     <ClInclude Include="Physics\BallState.hpp" />
+    <ClInclude Include="Physics\GroundContact.hpp" />
     <ClInclude Include="Physics\BatBallCollision.hpp" />
     <ClInclude Include="Physics\BatGeometry.hpp" />
     <ClInclude Include="Physics\BatMaterial.hpp" />
@@ -118,6 +123,7 @@
     <ClInclude Include="Render\Dx12RenderBackend.hpp" />
     <ClInclude Include="Render\IRenderBackend.hpp" />
     <ClInclude Include="Simulation\BattedBallOutcome.hpp" />
+    <ClInclude Include="Simulation\StadiumCollision.hpp" />
     <ClInclude Include="Simulation\PitchDeliveryController.hpp" />
     <ClInclude Include="Simulation\PitchFlightAnalysis.hpp" />
     <ClInclude Include="Simulation\PitchSimulationService.hpp" />
@@ -141,6 +147,7 @@
     <ClCompile Include="Physics\PitchPhysicsEngine.cpp" />
     <ClCompile Include="Render\Dx12RenderBackend.cpp" />
     <ClCompile Include="Simulation\BattedBallOutcome.cpp" />
+    <ClCompile Include="Simulation\StadiumCollision.cpp" />
     <ClCompile Include="Simulation\PitchFlightAnalysis.cpp" />
     <ClCompile Include="Simulation\PitchSimulationService.cpp" />
     <ClCompile Include="UI\DesktopHudViewModel.cpp" />

@@ -38,6 +38,8 @@ void RunTrajectoryTrailTests();
 void RunTrajectoryMeshTests();
 void RunBattedBallFlightTests();
 void RunBattedBallOutcomeTests();
+void RunStadiumTests();
+void RunGroundContactTests();
 void RunTossPhysicsTests(const std::filesystem::path& sourceRoot);
 void RunBallRenderingTests();
 void RunStrikeZoneCalibrationUiTests();
@@ -365,6 +367,8 @@ int wmain(int argc, wchar_t** argv)
 		{ "Stable world trajectory mesh and near-plane clipping", RunTrajectoryMeshTests },
 		{ "Physical batted-ball aerodynamics and immutable pitch settings", RunBattedBallFlightTests },
 		{ "Batted-ball hit and out calls against a standard defense", RunBattedBallOutcomeTests },
+		{ "Stadium walls, seats and home runs", RunStadiumTests },
+		{ "Spin-aware bounces and rolling on grass and dirt", RunGroundContactTests },
 		{ "Ball dimensions and underhand toss rendering", RunBallRenderingTests },
 		{ "Independent strike-zone calibration UI and progress", RunStrikeZoneCalibrationUiTests },
 		{ "Metrics controls and independent manual zone buttons", RunMetricsPanelControlsTests },

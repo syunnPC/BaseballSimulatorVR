@@ -22,6 +22,7 @@ enum class UiCommandType {
   SetModeTrajectory,
   SetModeBattingDuel,
   SetModeTeeBatting,
+  SetModeCatcher,
   SetPresetFastball,
   SetPresetSlider,
   SetPresetCurveball,
@@ -69,6 +70,7 @@ enum class UiOperationMode {
   PitchTrajectory,
   BattingDuel,
   TeeBatting,
+  Catcher,
 };
 
 struct UiCommand final {
@@ -132,6 +134,23 @@ struct HandPoseState final {
   bool isTracked{false};
 };
 
+// Buttons of one controller, sampled with the frame's hand poses.
+struct ControllerButtonState final {
+  bool isActive{false};
+  bool triggerPressed{false};
+  // The lower and upper face buttons: A and B on the right hand, X and Y on the
+  // left (other controllers map their nearest equivalents).
+  bool primaryPressed{false};
+  bool secondaryPressed{false};
+};
+
+struct ControllerInputState final {
+  ControllerButtonState left{};
+  ControllerButtonState right{};
+  // True while the UI laser is out; its trigger then belongs to the panels.
+  bool uiPointerActive{false};
+};
+
 struct FrameTiming final {
   bool isValid{false};
   double predictedDisplayTimeSeconds{0.0};
@@ -178,5 +197,6 @@ public:
   [[nodiscard]] virtual Common::FloorEyeHeightSample GetFloorEyeHeightSample() const noexcept = 0;
   [[nodiscard]] virtual HandPoseState GetLeftHandPose() const noexcept = 0;
   [[nodiscard]] virtual HandPoseState GetRightHandPose() const noexcept = 0;
+  [[nodiscard]] virtual ControllerInputState GetControllerInputState() const noexcept = 0;
 };
 } // namespace BaseballSimulatorVR::Xr

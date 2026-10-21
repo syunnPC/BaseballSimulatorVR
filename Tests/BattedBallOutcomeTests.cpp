@@ -83,10 +83,11 @@ namespace
 		    "Batted-ball types follow the Statcast launch-angle bands");
 
 		Tests::Check(Tests::Near(Simulation::FenceDistanceMeters(0.0), 400.0 * Feet, 1e-9) &&
-		        Tests::Near(Simulation::FenceDistanceMeters(45.0), 325.0 * Feet, 1e-9) &&
-		        Tests::Near(Simulation::FenceDistanceMeters(-45.0), 325.0 * Feet, 1e-9) &&
-		        Tests::Near(Simulation::FenceDistanceMeters(60.0), 325.0 * Feet, 1e-9),
-		    "The wall is 400 ft to center and 325 ft down the lines");
+		        Tests::Near(Simulation::FenceDistanceMeters(45.0), 330.0 * Feet, 1e-9) &&
+		        Tests::Near(Simulation::FenceDistanceMeters(-45.0), 330.0 * Feet, 1e-9) &&
+		        Tests::Near(Simulation::FenceDistanceMeters(60.0), 330.0 * Feet, 1e-9) &&
+		        std::abs(Simulation::FenceDistanceMeters(22.5) / Feet - 380.0) < 1.0,
+		    "The wall is 400 ft to center, about 380 ft in the gaps and 330 ft down the lines");
 		for (double spray = 0.0; spray < 45.0; spray += 1.0)
 		{
 			Tests::Check(Simulation::FenceDistanceMeters(spray + 1.0) < Simulation::FenceDistanceMeters(spray) &&

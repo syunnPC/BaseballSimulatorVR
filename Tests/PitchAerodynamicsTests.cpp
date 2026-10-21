@@ -148,9 +148,78 @@ namespace
 	}
 }
 
+namespace
+{
+	// Where a pitch crosses the plate front, flown with the production integrator.
+	Physics::Vector3 PlateCrossing(const Baseball::PitchParameters& parameters)
+	{
+		Physics::PitchPhysicsEngine engine;
+		Physics::BallState ball;
+		ball.position = {0.0, parameters.releaseHeightMeters, 0.0};
+		ball.velocity = parameters.initialVelocity;
+		ball.spinAxis = parameters.spinAxis;
+		ball.spinRpm = parameters.spinRpm;
+		Physics::BallState previous = ball;
+		while (ball.position.z < 18.44 && ball.flightTimeSeconds < 3.0)
+		{
+			previous = ball;
+			ball = engine.Step(ball, parameters, std::chrono::duration<double>(.001));
+		}
+		const double f = (18.44 - previous.position.z) / (ball.position.z - previous.position.z);
+		return previous.position + (ball.position - previous.position) * f;
+	}
+
+	void CheckKnuckleball()
+	{
+		Baseball::PitchParameters parameters;
+		parameters.initialVelocity = {0.0, 1.2, 33.5};
+		parameters.useCoefficientTable = true;
+		parameters.spinAxis = {-1.0, 0.0, 0.0};
+		parameters.spinRpm = 30.0;
+		const auto straight = PlateCrossing(parameters);
+		parameters.knuckleball = true;
+		Physics::BallState ball;
+		ball.velocity = {0.0, 0.0, 33.5};
+		ball.spinAxis = parameters.spinAxis;
+		ball.spinRpm = parameters.spinRpm;
+		parameters.seamPerturbationPhase = std::numbers::pi / 8.0;
+		auto push = InitialAcceleration(ball, parameters);
+		parameters.knuckleball = false;
+		push = push - InitialAcceleration(ball, parameters);
+		parameters.knuckleball = true;
+		Tests::Check(std::abs(push.x) < 1e-12 && push.y > 2.0 && std::abs(push.z) < 1e-12,
+		    "With its seams at the peak angle a knuckleball is pushed across the plane they turn in");
+		parameters.seamPerturbationPhase = 3.0 * std::numbers::pi / 8.0;
+		auto reversed = InitialAcceleration(ball, parameters);
+		parameters.knuckleball = false;
+		reversed = reversed - InitialAcceleration(ball, parameters);
+		parameters.knuckleball = true;
+		Tests::Check(Tests::Near(reversed.y, -push.y, 1e-9),
+		    "An eighth of a turn later the push reverses");
+
+		double total = 0.0, largest = 0.0;
+		constexpr int Throws = 64;
+		for (int index = 0; index < Throws; ++index)
+		{
+			parameters.seamPerturbationPhase = 2.0 * std::numbers::pi * index / Throws;
+			const double axis = 2.0 * std::numbers::pi * ((index * 37) % Throws) / Throws;
+			parameters.spinAxis = {std::cos(axis), std::sin(axis), 0.0};
+			const auto crossing = PlateCrossing(parameters);
+			const double miss = std::hypot(crossing.x - straight.x, crossing.y - straight.y);
+			total += miss;
+			largest = (std::max)(largest, miss);
+			Tests::Check(Tests::Near(Physics::Length(PlateCrossing(parameters) - crossing), 0.0, 1e-12),
+			    "The same seams and turn give the same knuckleball");
+		}
+		Tests::Check(total / Throws > .05 && total / Throws < .25 && largest < .6,
+		    "Knuckleballs dart several inches off a spinless path, now and then a foot or more");
+	}
+}
+
 void RunPitchAerodynamicsTests()
 {
 	CheckTransverseSpinAndWind();
 	CheckSeamHeuristicContinuity();
 	CheckIntegratedPitchBreak();
+	CheckKnuckleball();
 }

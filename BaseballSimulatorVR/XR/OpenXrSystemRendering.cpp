@@ -1174,6 +1174,12 @@ namespace BaseballSimulatorVR::Xr
 				    appendTriangle(p0, p1, p2, color);
 			    });
 
+			if (m_fieldPresentation.ballVisible)
+			{
+				Common::EmitProjectedBallShadow(projectionState, width, height, m_latestBallState,
+				    [&](const ScreenPoint& p0, const ScreenPoint& p1, const ScreenPoint& p2, const float* color) -> void
+				    { appendTriangle(p0, p1, p2, color); });
+			}
 			Common::EmitProjectedPhaseBallAndTrajectoryMeshOverlay(
 			    projectionState,
 			    width,
@@ -1309,10 +1315,11 @@ namespace BaseballSimulatorVR::Xr
 					    {
 						    appendTriangle(p0, p1, p2, color);
 					    },textContext);
-					const std::array<std::wstring_view, 9> mainPanelLabels{
+					const std::array<std::wstring_view, 10> mainPanelLabels{
 						L"\u8ecc\u9053", // trajectory
 						L"\u5bfe\u6226", // duel
 						L"\u30c6\u30a3\u30fc",
+						L"捕手",
 						m_showPitchControlPanel
 						    ? L"\u6295\u7403UI \u6551\u6e08"
 						    : L"\u6295\u7403UI \u958b\u304f",
@@ -1351,7 +1358,8 @@ namespace BaseballSimulatorVR::Xr
 					{
 						auto statusRect = Common::UiText::BuildPanelCellRect(calibrationInner.innerLeft,
 						    calibrationInner.innerTop, calibrationInner.cellWidth, calibrationInner.cellHeight,
-						    mainPanelLayout.cellGapMeters, mainPanelLayout.columns, 9);
+						    mainPanelLayout.cellGapMeters, mainPanelLayout.columns,
+						    Common::CalibrationMainButtonCellIndex + 1);
 						statusRect.right = calibrationInner.innerRight;
 						const double middle = (statusRect.top + statusRect.bottom) * .5;
 						auto instructionRect = statusRect;
@@ -1859,10 +1867,11 @@ namespace BaseballSimulatorVR::Xr
 					    m_uiTelemetry.duelPitchPreviewEnabled
 					        ? L"\u5148\u8aad\u307f \u96a0"
 					        : L"\u5148\u8aad\u307f \u8868";
+					// Behind the plate the same toggle picks the throwing hand (the mitt goes on the other).
 					const std::wstring batHandToggleLabel =
-					    m_uiTelemetry.batUseRightHand
-					        ? L"\u6301\u3061\u624b \u53f3"
-					        : L"\u6301\u3061\u624b \u5de6";
+					    (m_uiTelemetry.operationMode == UiOperationMode::Catcher ? std::wstring{L"利き手 "}
+					                                                             : std::wstring{L"\u6301\u3061\u624b "}) +
+					    (m_uiTelemetry.batUseRightHand ? L"\u53f3" : L"\u5de6");
 					const std::wstring batAngleDownLabel = L"\u89d2\u5ea6 -";
 					const std::wstring batAngleUpLabel = L"\u89d2\u5ea6 +";
 					const std::wstring batYawDownLabel = L"\u5411\u304d -";

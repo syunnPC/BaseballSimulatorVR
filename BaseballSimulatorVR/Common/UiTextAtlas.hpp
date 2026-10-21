@@ -586,6 +586,27 @@ namespace BaseballSimulatorVR::Common::UiText
 	    TTriangle&& triangle)
 	{
 		EmitProjectedPitcherMesh(state.pitcher, view, width, height, triangle);
+		EmitProjectedCatcherMitt(state.catcherMitt, view, width, height, triangle);
+		if (state.catcherMitt && !state.catcherSignLine.empty())
+		{
+			PanelLayout card;
+			card.center = BuildCatcherMittFrame(*state.catcherMitt).pocket + Physics::Vector3{0.0, .27, 0.0};
+			card.forwardAxis = {0, 0, 1};
+			ScopedPanelGroup cardGroup(context, card, view);
+			EmitCatcherSignCardGeometry(state,
+			    [&](const Physics::Vector3& a, const Physics::Vector3& b, const Physics::Vector3& c, const float* color)
+			    {
+				    EmitProjectedWorldTriangle(a, b, c, view, width, height, color,
+				        [&](const ScreenPoint& p0, const ScreenPoint& p1, const ScreenPoint& p2, const float* shade)
+				        { AppendUntexturedTriangle(context, p0, p1, p2, shade, width, height); });
+			    },
+			    [&](std::wstring_view label, double left, double top, double maxWidth, double maxHeight,
+			        const std::array<float, 4>& color, const auto& worldPoint)
+			    {
+				    AppendProjectedText(label, left, top, maxWidth, maxHeight, 0, 0, color, worldPoint, view, width,
+				        height, context);
+			    });
+		}
 		const auto board = BuildFieldScoreboardLayout();
 		PanelLayout panel;
 		panel.center = {0, board.bottom + board.height * .5, board.centerZ};

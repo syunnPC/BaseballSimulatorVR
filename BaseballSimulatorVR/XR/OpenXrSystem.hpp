@@ -55,6 +55,7 @@ namespace BaseballSimulatorVR::Xr
 		[[nodiscard]] Common::FloorEyeHeightSample GetFloorEyeHeightSample() const noexcept override;
 		[[nodiscard]] HandPoseState GetLeftHandPose() const noexcept override;
 		[[nodiscard]] HandPoseState GetRightHandPose() const noexcept override;
+		[[nodiscard]] ControllerInputState GetControllerInputState() const noexcept override;
 
 	  private:
 		[[nodiscard]] static std::wstring QueryActiveRuntimePath();
@@ -175,6 +176,8 @@ namespace BaseballSimulatorVR::Xr
 		XrAction m_viewStickAction{ XR_NULL_HANDLE };
 		XrAction m_recenterAction{ XR_NULL_HANDLE };
 		XrAction m_hapticAction{ XR_NULL_HANDLE };
+		XrAction m_primaryButtonAction{ XR_NULL_HANDLE };
+		XrAction m_secondaryButtonAction{ XR_NULL_HANDLE };
 		bool m_wasRecenterPressed{ false };
 		XrSpace m_leftAimActionSpace{ XR_NULL_HANDLE };
 		XrSpace m_rightAimActionSpace{ XR_NULL_HANDLE };
@@ -305,6 +308,7 @@ namespace BaseballSimulatorVR::Xr
 		UiTelemetry m_uiTelemetry{};
 		HandPoseState m_leftHandPose{};
 		HandPoseState m_rightHandPose{};
+		ControllerInputState m_controllerInput{};
 		std::vector<UiCommand> m_pendingUiCommands{};
 #endif
 	};

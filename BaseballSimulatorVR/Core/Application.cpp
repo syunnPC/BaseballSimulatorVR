@@ -12,7 +12,9 @@
 #include "../Physics/BatBallCollision.hpp"
 #include "../Physics/BattedBallAerodynamics.hpp"
 #include "../Physics/BatGeometry.hpp"
+#include "../Physics/GroundContact.hpp"
 #include "../Physics/SweptBatCollision.hpp"
+#include "../Simulation/StadiumCollision.hpp"
 
 #include <algorithm>
 #include <array>
@@ -133,13 +135,23 @@ namespace BaseballSimulatorVR::Core
 		constexpr double BatYawOffsetStepDegrees = 2.5;
 		constexpr double BatCollisionSuppressDurationSeconds = 0.04;
 		constexpr double GroundPlaneHeightMeters = 0.0;
-		constexpr double GroundBounceRestitution = 0.50;
-		constexpr double GroundBounceTangentialVelocityScale = 0.88;
-		constexpr double GroundRollingDampingPerSecond = 1.35;
-		constexpr double GroundBounceVelocityThreshold = -0.05;
+		// Below this landing speed the ball stops hopping and runs along the ground.
+		constexpr double GroundRollImpactSpeedMetersPerSecond = .6;
 		constexpr double MinimumGroundFanRadiusMeters = 10.0;
 		constexpr double MaximumGroundFanRadiusMeters = 300.0;
 		constexpr double PostBounceSimulationSeconds = 5.0;
+		// Catcher mode. A pitcher misses the target by about 9 cm each way, and now and then
+		// (6%) badly; the mitt closes on a squeeze from a little before the ball arrives until
+		// just after it hits the pocket; a missed ball rolls on this long before the next sign.
+		constexpr double CatcherCommandErrorMeters = .09;
+		constexpr double CatcherWildPitchChance = .06;
+		constexpr double CatcherWildErrorMeters = .30;
+		constexpr double CatcherEarlySqueezeSeconds = .45;
+		constexpr double CatcherLateSqueezeSeconds = .25;
+		constexpr double CatcherCleanSqueezeSeconds = .12;
+		constexpr double CatcherMissedPlaySeconds = 2.5;
+		// The pitcher walks back to the rubber and comes set before taking the next sign.
+		constexpr double CatcherResetSeconds = Common::PitcherRecoverySeconds + Common::PitcherSetHoldSeconds;
 		constexpr double TeeBallHeightMeters = 1.00;
 		constexpr double TeeBallMinX = -1.0;
 		constexpr double TeeBallMaxX = 1.0;
@@ -848,66 +860,25 @@ namespace BaseballSimulatorVR::Core
 
 	namespace
 	{
-		struct GroundFanShape final
+		// Each knuckleball leaves the hand with its own slow turn: the seams' orientation, the
+		// axis they turn about and how fast all differ from throw to throw, so neither the
+		// pitcher nor the catcher knows where it will dart. Pitchers aim as if it would not.
+		void RandomizeKnuckleball(Baseball::PitchParameters& parameters, std::mt19937& random)
 		{
-			double halfAngleRadians{ 0.0 };
-			double innerRadiusMeters{ 0.0 };
-			double outerRadiusMeters{ 0.0 };
-		};
-
-		[[nodiscard]] GroundFanShape BuildGroundFanShape(
-		    const double strikeZoneWidthMeters,
-		    const double configuredOuterRadiusMeters) noexcept
-		{
-			const double clampedOuterRadiusMeters = std::clamp(
-			    configuredOuterRadiusMeters,
-			    MinimumGroundFanRadiusMeters,
-			    MaximumGroundFanRadiusMeters);
-			const double targetChordLengthMeters =
-			    (std::max)(0.20, strikeZoneWidthMeters) + 2.0;
-			const double halfChordLengthMeters = targetChordLengthMeters * 0.5;
-			const double plateDepthFromCenterMeters = (std::max)(0.10,
-			                                                     std::abs(Common::DebugWorldLayout::BatterToPlateDistanceMeters));
-			const double halfAngleRadians = std::atan2(
-			    halfChordLengthMeters,
-			    plateDepthFromCenterMeters);
-			const double innerRadiusMeters = std::sqrt(
-			    (plateDepthFromCenterMeters * plateDepthFromCenterMeters) +
-			    (halfChordLengthMeters * halfChordLengthMeters));
-			const double outerRadiusMeters = (std::max)(innerRadiusMeters + 1.0,
-			                                            clampedOuterRadiusMeters);
-			return GroundFanShape{
-				halfAngleRadians,
-				innerRadiusMeters,
-				outerRadiusMeters
-			};
-		}
-
-		[[nodiscard]] bool IsWorldPointInsideGroundFan(
-		    const Physics::Vector3& worldPosition,
-		    const GroundFanShape& fanShape) noexcept
-		{
-			if ((fanShape.halfAngleRadians <= 1e-6) ||
-			    (fanShape.outerRadiusMeters <= fanShape.innerRadiusMeters))
+			if (!parameters.knuckleball)
 			{
-				return false;
+				return;
 			}
-
-			const double horizontalRadiusMeters = std::sqrt(
-			    (worldPosition.x * worldPosition.x) +
-			    (worldPosition.z * worldPosition.z));
-			if ((horizontalRadiusMeters < fanShape.innerRadiusMeters) ||
-			    (horizontalRadiusMeters > fanShape.outerRadiusMeters))
-			{
-				return false;
-			}
-
-			const double angleRadians = std::atan2(
-			    worldPosition.x,
-			    -worldPosition.z);
-			return std::abs(angleRadians) <= fanShape.halfAngleRadians;
+			std::uniform_real_distribution<double> unit(0.0, 1.0);
+			parameters.seamPerturbationPhase = 2.0 * std::numbers::pi * unit(random);
+			const double axisAngle = 2.0 * std::numbers::pi * unit(random);
+			parameters.spinAxis = Physics::Vector3{ std::cos(axisAngle), std::sin(axisAngle), 0.0 };
+			parameters.spinRpm = std::abs(parameters.spinRpm) * (.4 + 1.2 * unit(random));
 		}
+	}
 
+	namespace
+	{
 		// A modal MessageBox on the frame thread stops xrWaitFrame/xrEndFrame and
 		// freezes the headset image; show runtime notices from a helper thread.
 		void ShowNonBlockingMessage(std::wstring title, std::wstring text, const UINT iconFlags)
@@ -948,7 +919,8 @@ namespace BaseballSimulatorVR::Core
 		void ApplyGroundCollisionResponse(
 		    Physics::BallState* const ballState,
 		    const double frameDeltaSeconds,
-		    const double groundContactHeight) noexcept
+		    const double groundContactHeight,
+		    const Physics::GroundSurface& surface) noexcept
 		{
 			if (ballState == nullptr)
 			{
@@ -965,25 +937,16 @@ namespace BaseballSimulatorVR::Core
 			{
 				return;
 			}
-			if (ballState->velocity.y < GroundBounceVelocityThreshold)
+			const double impact = -ballState->velocity.y;
+			if (impact >= GroundRollImpactSpeedMetersPerSecond)
 			{
+				Physics::BounceOffGround(*ballState, surface);
 				// Reflect the part of the frame spent below ground so the bounce height
 				// does not depend on where the frame boundary fell.
-				ballState->position.y += penetrationMeters * GroundBounceRestitution;
-				ballState->velocity.y =
-				    -ballState->velocity.y * GroundBounceRestitution;
-				ballState->velocity.x *= GroundBounceTangentialVelocityScale;
-				ballState->velocity.z *= GroundBounceTangentialVelocityScale;
+				ballState->position.y += penetrationMeters * ballState->velocity.y / impact;
 				return;
 			}
-
-			ballState->velocity.y = 0.0;
-			const double rollingDamping = std::clamp(
-			    1.0 - (frameDeltaSeconds * GroundRollingDampingPerSecond),
-			    0.0,
-			    1.0);
-			ballState->velocity.x *= rollingDamping;
-			ballState->velocity.z *= rollingDamping;
+			Physics::RollOnGround(*ballState, surface, frameDeltaSeconds);
 		}
 
 		[[nodiscard]] double BuildWorldDepthOffsetMeters(
@@ -1567,7 +1530,7 @@ namespace BaseballSimulatorVR::Core
 				if (isSimulationTickAllowedInMode &&
 				    !IsWaitingForNextDuelPitch())
 				{
-					const auto flightStep = m_operationMode == OperationMode::BattingDuel
+					const auto flightStep = UsesPitcher()
 					    ? m_pitchDeliveryController.Advance(step)
 					    : step;
 					AdvancePitchSimulation(flightStep);
@@ -1580,6 +1543,7 @@ namespace BaseballSimulatorVR::Core
 			UpdateStrikeZoneCalibration();
 
 			RefreshBatPoseFromXrInput();
+			UpdateCatcherInput();
 
 			Physics::BallState currentBallState = m_pitchSimulationService.GetBallState();
 			UpdateModeSpecificBallState(&currentBallState);
@@ -1731,7 +1695,12 @@ namespace BaseballSimulatorVR::Core
 		m_batCollisionSuppressRemainingSeconds = 0.0;
 		m_currentPitchPresentationName = BuildXrUiTelemetry().presetName;
 		m_activePitchParameters.ballProperties = m_environmentSettings.ballProperties;
-		m_pitchSimulationService.Reset(m_activePitchParameters);
+		Baseball::PitchParameters delivered = m_activePitchParameters;
+		if (UsesPitcher())
+		{
+			RandomizeKnuckleball(delivered, GetThreadLocalRandomEngine());
+		}
+		m_pitchSimulationService.Reset(delivered);
 		if (m_operationMode != OperationMode::TeeBatting)
 			m_pitchFlightAnalysis.Reset(m_pitchSimulationService.GetPitchParameters(),
 			    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters,
@@ -1743,7 +1712,7 @@ namespace BaseballSimulatorVR::Core
 			m_forceTrajectoryResetOnNextFrame = true;
 			return;
 		}
-		if (m_operationMode != OperationMode::BattingDuel) return;
+		if (!UsesPitcher()) return;
 		m_pitchDeliveryController.Reset();
 		m_duelZonePassMarker.reset();
 		m_duelPitchPredictedZonePassPoint = m_pitchFlightAnalysis.Preview().frontCrossing;
@@ -1956,6 +1925,9 @@ namespace BaseballSimulatorVR::Core
 			case VK_F11:
 				SetOperationMode(OperationMode::TeeBatting, L"key_mode_f11");
 				break;
+			case 'F':
+				SetOperationMode(OperationMode::Catcher, L"key_mode_f");
+				break;
 			case VK_F12:
 				ToggleMoundHeightOffset();
 				break;
@@ -2149,6 +2121,9 @@ namespace BaseballSimulatorVR::Core
 				break;
 			case Xr::UiCommandType::SetModeTeeBatting:
 				SetOperationMode(OperationMode::TeeBatting, L"xr_mode");
+				break;
+			case Xr::UiCommandType::SetModeCatcher:
+				SetOperationMode(OperationMode::Catcher, L"xr_mode");
 				break;
 			case Xr::UiCommandType::SetPresetFastball:
 				ApplyPreset(Data::PitchPresetType::Fastball);
@@ -4080,6 +4055,8 @@ namespace BaseballSimulatorVR::Core
 		MarkPlaySettingsDirty();
 		if (m_operationMode == OperationMode::BattingDuel)
 			StartRandomBattingDuelPitch(L"switch_file");
+		else if (m_operationMode == OperationMode::Catcher)
+			EnterCatcherMode();
 		else if (m_operationMode == OperationMode::PitchTrajectory && HasDuelTargetZoneSelection())
 			RefreshPitchTrajectoryFromZoneSelection(L"switch_file");
 	}
@@ -4121,8 +4098,12 @@ namespace BaseballSimulatorVR::Core
 
 	bool Application::IsWaitingForNextDuelPitch() const noexcept
 	{
-		return (m_operationMode == OperationMode::BattingDuel) &&
-		       m_duelRound.isWaitingForNextPitch;
+		return UsesPitcher() && m_duelRound.isWaitingForNextPitch;
+	}
+
+	bool Application::UsesPitcher() const noexcept
+	{
+		return (m_operationMode == OperationMode::BattingDuel) || (m_operationMode == OperationMode::Catcher);
 	}
 
 	Xr::UiTelemetry Application::BuildXrUiTelemetry() const
@@ -4138,6 +4119,9 @@ namespace BaseballSimulatorVR::Core
 				break;
 			case OperationMode::TeeBatting:
 				telemetry.operationMode = Xr::UiOperationMode::TeeBatting;
+				break;
+			case OperationMode::Catcher:
+				telemetry.operationMode = Xr::UiOperationMode::Catcher;
 				break;
 			default:
 				telemetry.operationMode = Xr::UiOperationMode::PitchTrajectory;
@@ -4224,8 +4208,10 @@ namespace BaseballSimulatorVR::Core
 		Common::FieldPresentationState state;
 		const bool duel = m_operationMode == OperationMode::BattingDuel;
 		const bool tee = m_operationMode == OperationMode::TeeBatting;
+		const bool catcher = m_operationMode == OperationMode::Catcher;
+		const bool pitcher = UsesPitcher();
 		const auto& deliveredPitch = m_pitchSimulationService.GetPitchParameters();
-		state.pitcher.visible = duel;
+		state.pitcher.visible = pitcher;
 		state.pitcher.throwsLeftHanded = m_pitcherThrowsLeftHanded;
 		state.pitcher.armSpeedScale = m_pitcherArmSpeedScale;
 		state.pitcher.heldBallRadiusMeters = deliveredPitch.ballProperties.radiusMeters;
@@ -4235,9 +4221,10 @@ namespace BaseballSimulatorVR::Core
 		{
 			// The delivery clock stops during the interval: let the follow-through finish, then
 			// walk the pitcher back to the rubber so the next windup starts from the set position.
+			const double interval = catcher ? CatcherResetSeconds : m_duelPitchIntervalSeconds;
 			state.pitcher.secondsFromRelease = m_pitchDeliveryController.HasReleased()
 			    ? state.pitcher.secondsFromRelease +
-			          (std::max)(0.0, m_duelPitchIntervalSeconds - m_duelRound.cooldownRemainingSeconds)
+			          (std::max)(0.0, interval - m_duelRound.cooldownRemainingSeconds)
 			    : -Simulation::PitchDeliveryController::WindupSeconds;
 			state.pitcher.recoveryProgress = m_pitchDeliveryController.HasReleased()
 			    ? Common::PitcherRecoveryProgress(m_duelRound.cooldownRemainingSeconds)
@@ -4247,16 +4234,16 @@ namespace BaseballSimulatorVR::Core
 		state.pitcher.releasePositionWorld = ConvertSimulationToCollisionWorldPosition(
 		    { 0.0, deliveredPitch.releaseHeightMeters, 0.0 },
 		    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters);
-		state.ballVisible = !duel || (!m_duelRound.isWaitingForNextPitch && m_pitchDeliveryController.HasReleased());
+		state.ballVisible = !pitcher || (!m_duelRound.isWaitingForNextPitch && m_pitchDeliveryController.HasReleased());
 		const BattedBallMetrics* battedMetrics = tee ? &m_teeBattedMetrics
 		    : (duel ? &m_duelRound.battedMetrics : nullptr);
 		state.ballFlightPhase = tee
 		    ? (m_teeFlight.isBallInFlight ? Common::BallFlightPhase::Batted : Common::BallFlightPhase::Stationary)
 		    : (duel && m_duelRound.hasBallBeenBatted ? Common::BallFlightPhase::Batted
-		        : (!duel || m_pitchDeliveryController.HasReleased()
+		        : (!pitcher || m_pitchDeliveryController.HasReleased()
 		            ? Common::BallFlightPhase::Pitch : Common::BallFlightPhase::Stationary));
 		state.trajectoryLifecycle.retainBattedOnBallReset = tee;
-		state.trajectoryLifecycle.clearBatted = duel && !m_duelRound.isWaitingForNextPitch &&
+		state.trajectoryLifecycle.clearBatted = pitcher && !m_duelRound.isWaitingForNextPitch &&
 		    !m_pitchDeliveryController.HasReleased();
 		state.trajectoryLifecycle.battedContactSequence = m_battedContactSequence;
 		if (state.ballFlightPhase == Common::BallFlightPhase::Batted &&
@@ -4274,7 +4261,9 @@ namespace BaseballSimulatorVR::Core
 		statistics.pitchBallRadiusMeters = deliveredPitch.ballProperties.radiusMeters;
 		if (statistics.pitchMetricsVisible)
 		{
-			statistics.pitchName = tee ? L"Tee" : m_currentPitchPresentationName;
+			statistics.pitchName = tee ? L"Tee"
+			    : catcher && m_catcherRound.phase == CatcherPhase::WaitingForSign ? CatcherSignName()
+			                                                                     : m_currentPitchPresentationName;
 			statistics.pitchSpeedMetersPerSecond = tee ? 0.0 : Physics::Length(deliveredPitch.initialVelocity);
 			statistics.pitchSpinRpm = tee ? 0.0 : deliveredPitch.spinRpm;
 			if (!tee)
@@ -4309,11 +4298,38 @@ namespace BaseballSimulatorVR::Core
 			if (battedMetrics->hasFirstGroundContact) statistics.battedResult = battedMetrics->resultLabel;
 			statistics.contactBatLengthMeters = battedMetrics->contactBatLengthMeters;
 		}
+		if (catcher)
+		{
+			statistics.catcherMode = true;
+			statistics.catcherCaught = m_catcherRound.caught;
+			statistics.catcherPitches = m_catcherRound.pitches;
+			statistics.catcherResult = m_catcherRound.result;
+			state.catcherMitt = BuildCatcherMittState();
+			state.catcherSignLine = L"サイン  " + CatcherSignName();
+			switch (m_catcherRound.phase)
+			{
+			case CatcherPhase::WaitingForSign:
+				state.catcherStatusLine = m_duelRound.cooldownRemainingSeconds > 0.0
+				    ? L"投手準備中"
+				    : L"A/X 次  B/Y 前  トリガーで決定";
+				break;
+			case CatcherPhase::Pitching:
+				state.catcherStatusLine = L"ミットを合わせてトリガーで捕球";
+				break;
+			case CatcherPhase::Caught:
+				state.catcherStatusLine = m_catcherRound.result + L"  離すと次の球";
+				break;
+			case CatcherPhase::Missed:
+				state.catcherStatusLine = m_catcherRound.result;
+				break;
+			}
+		}
 		return state;
 	}
 
 	Simulation::BattedBallOutcome Application::JudgeBattedBallLanding(const BattedBallMetrics& metrics,
-	    const Physics::Vector3& landingPosition, const double landingFlightTimeSeconds) const
+	    const Physics::Vector3& landingPosition, const double landingFlightTimeSeconds,
+	    const std::optional<double> wallHeightMeters) const
 	{
 		// Simulation z grows toward the plate, so the field lies toward -z from home plate.
 		const double homeZ = m_environmentSettings.pitchDistanceMeters + Common::HomePlateDepthMeters;
@@ -4332,7 +4348,26 @@ namespace BaseballSimulatorVR::Core
 		flight.hangTimeSeconds = (std::max)(0.0, landingFlightTimeSeconds - metrics.contactFlightTimeSeconds);
 		flight.apexHeightMeters = metrics.maxHeightMeters;
 		flight.rightHandedBatter = m_batUseRightHand;
+		flight.wallHeightMeters = wallHeightMeters;
 		return Simulation::JudgeBattedBall(flight);
+	}
+
+	std::optional<Physics::Vector3> Application::ProjectBattedBallLanding(
+	    Physics::BallState state, const double groundContactHeight) const
+	{
+		// Fly a copy on with the same aerodynamics and no stadium in the way.
+		Physics::PitchPhysicsEngine engine;
+		const Baseball::PitchParameters& parameters = m_pitchSimulationService.GetPitchParameters();
+		for (int step = 0; step < 20000; ++step)
+		{
+			const Physics::BallState previous = state;
+			state = engine.Step(previous, parameters, FixedSimulationStep);
+			if (state.position.y <= groundContactHeight)
+			{
+				return ResolveGroundCrossPoint(previous, state, groundContactHeight);
+			}
+		}
+		return std::nullopt;
 	}
 
 	void Application::RefreshBatPoseFromXrInput()
@@ -4827,6 +4862,14 @@ namespace BaseballSimulatorVR::Core
 				m_duelPitchPredictedZonePassPoint.reset();
 				RefreshTeeBallSpawnFromZoneSelection(L"mode_enter");
 				break;
+			case OperationMode::Catcher:
+				m_duelZonePassMarker.reset();
+				m_duelPitchPredictedZonePassPoint.reset();
+				m_batPoseState = BatPoseState{};
+				m_previousBatPoseState = BatPoseState{};
+				m_batOverlayState.reset();
+				EnterCatcherMode();
+				break;
 			default:
 				break;
 		}
@@ -4841,6 +4884,8 @@ namespace BaseballSimulatorVR::Core
 					return L"batting-duel";
 				case OperationMode::TeeBatting:
 					return L"tee-batting";
+				case OperationMode::Catcher:
+					return L"catcher";
 				default:
 					return L"unknown";
 			}
@@ -4857,6 +4902,323 @@ namespace BaseballSimulatorVR::Core
 		OutputDebugStringW(logMessage.c_str());
 		(void)LogPitchEvent(L"operation_mode", modeNote);
 		UpdateWindowTitle();
+	}
+
+	std::wstring Application::CatcherSignName() const
+	{
+		if (m_pitchProfiles.empty())
+		{
+			return m_currentPitchPresentationName;
+		}
+		const int index = std::clamp(m_catcherRound.signIndex, 0, static_cast<int>(m_pitchProfiles.size()) - 1);
+		return m_pitchProfiles[static_cast<std::size_t>(index)].name;
+	}
+
+	std::optional<Common::CatcherMittState> Application::BuildCatcherMittState() const
+	{
+		if (m_operationMode != OperationMode::Catcher)
+		{
+			return std::nullopt;
+		}
+		// The mitt goes on the hand that does not throw.
+		const bool mittOnRightHand = !m_batUseRightHand;
+		const Xr::HandPoseState hand = mittOnRightHand ? m_xrSystem->GetRightHandPose() : m_xrSystem->GetLeftHandPose();
+		if (!hand.isValid || !std::isfinite(hand.position.x) || !std::isfinite(hand.position.y) ||
+		    !std::isfinite(hand.position.z))
+		{
+			return std::nullopt;
+		}
+		Common::CatcherMittState mitt;
+		mitt.gripWorld = hand.position;
+		mitt.forwardWorld = hand.forward;
+		mitt.upWorld = hand.up;
+		mitt.leftHand = !mittOnRightHand;
+		const Xr::ControllerButtonState& buttons =
+		    mittOnRightHand ? m_previousControllerInput.right : m_previousControllerInput.left;
+		mitt.closedAmount = m_catcherRound.phase == CatcherPhase::Caught ? .75 : (buttons.triggerPressed ? 1.0 : 0.0);
+		return mitt;
+	}
+
+	void Application::EnterCatcherMode()
+	{
+		EnsureDefaultPitchProfiles();
+		m_catcherRound = {};
+		if (!m_pitchProfiles.empty())
+		{
+			m_catcherRound.signIndex =
+			    std::clamp(m_activePitchProfileIndex, 0, static_cast<int>(m_pitchProfiles.size()) - 1);
+			m_activePitchProfileIndex = m_catcherRound.signIndex;
+			m_activePresetType = Data::PitchPresetType::Custom;
+			m_activePitchParameters =
+			    m_pitchProfiles[static_cast<std::size_t>(m_catcherRound.signIndex)].pitchParameters;
+		}
+		ApplyPitchParameterChanges();
+		m_duelRound.isWaitingForNextPitch = true;
+		m_duelRound.cooldownRemainingSeconds = 0.0;
+	}
+
+	void Application::UpdateCatcherInput()
+	{
+		const Xr::ControllerInputState input = m_xrSystem->GetControllerInputState();
+		const Xr::ControllerInputState previous = m_previousControllerInput;
+		m_previousControllerInput = input;
+		if (m_operationMode != OperationMode::Catcher)
+		{
+			return;
+		}
+		m_catcherRound.clockSeconds += m_lastFrameDeltaSeconds;
+		const auto rising = [](const bool now, const bool before) { return now && !before; };
+		const bool next = rising(input.left.primaryPressed, previous.left.primaryPressed) ||
+		    rising(input.right.primaryPressed, previous.right.primaryPressed);
+		const bool back = rising(input.left.secondaryPressed, previous.left.secondaryPressed) ||
+		    rising(input.right.secondaryPressed, previous.right.secondaryPressed);
+		const bool mittOnRightHand = !m_batUseRightHand;
+		const Xr::ControllerButtonState& mitt = mittOnRightHand ? input.right : input.left;
+		const Xr::ControllerButtonState& mittBefore = mittOnRightHand ? previous.right : previous.left;
+		const bool squeezed = rising(mitt.triggerPressed, mittBefore.triggerPressed);
+		const bool released = !mitt.triggerPressed && mittBefore.triggerPressed;
+		// The laser hand's trigger belongs to the panels while the laser is out.
+		const bool confirm = !input.uiPointerActive &&
+		    (rising(input.left.triggerPressed, previous.left.triggerPressed) ||
+		     rising(input.right.triggerPressed, previous.right.triggerPressed));
+		if (squeezed)
+		{
+			m_catcherRound.squeezeSeconds = m_catcherRound.clockSeconds;
+		}
+		switch (m_catcherRound.phase)
+		{
+		case CatcherPhase::WaitingForSign:
+		{
+			const int count = static_cast<int>(m_pitchProfiles.size());
+			if (count > 0 && (next || back))
+			{
+				m_catcherRound.signIndex = ((m_catcherRound.signIndex + (next ? 1 : -1)) % count + count) % count;
+			}
+			if (confirm && m_duelRound.cooldownRemainingSeconds <= 0.0)
+			{
+				StartCatcherPitch();
+			}
+			break;
+		}
+		case CatcherPhase::Caught:
+			if (released)
+			{
+				ReturnToCatcherSign();
+			}
+			break;
+		case CatcherPhase::Missed:
+			if (released && m_catcherRound.missedSeconds > .3)
+			{
+				ReturnToCatcherSign();
+			}
+			break;
+		case CatcherPhase::Pitching:
+			break;
+		}
+	}
+
+	void Application::StartCatcherPitch()
+	{
+		EnsureDefaultPitchProfiles();
+		if (m_pitchProfiles.empty())
+		{
+			return;
+		}
+		const int index = std::clamp(m_catcherRound.signIndex, 0, static_cast<int>(m_pitchProfiles.size()) - 1);
+		// Target: the pocket of the mitt as it is set now, or the middle of the zone without one.
+		const double plateApexWorldZ =
+		    -Common::DebugWorldLayout::BatterToPlateDistanceMeters + Common::HomePlateDepthMeters;
+		Physics::Vector3 target{0.0, m_strikeZoneSettings.bottomMeters + m_strikeZoneSettings.heightMeters * .5,
+		    plateApexWorldZ + .35};
+		if (const auto mitt = BuildCatcherMittState())
+		{
+			target = Common::BuildCatcherMittFrame(*mitt).pocket;
+		}
+		target.x = std::clamp(target.x, -1.2, 1.2);
+		target.y = std::clamp(target.y, .15, 2.4);
+		target.z = std::clamp(target.z, plateApexWorldZ - .45, plateApexWorldZ + 1.5);
+		// The pitcher misses the spot a little, and once in a while a lot.
+		std::mt19937& random = GetThreadLocalRandomEngine();
+		const bool wild = std::uniform_real_distribution<double>(0.0, 1.0)(random) < CatcherWildPitchChance;
+		std::normal_distribution<double> miss(0.0, wild ? CatcherWildErrorMeters : CatcherCommandErrorMeters);
+		Physics::Vector3 aim = target;
+		aim.x += miss(random);
+		aim.y = (std::max)(.05, aim.y + miss(random));
+
+		Baseball::PitchParameters parameters = m_pitchProfiles[static_cast<std::size_t>(index)].pitchParameters;
+		// Solve with the air the pitch will actually fly through.
+		parameters.ballProperties = m_environmentSettings.ballProperties;
+		parameters.integratorType = m_environmentSettings.integratorType;
+		parameters.windVelocity = m_environmentSettings.windVelocity;
+		parameters.enableHeightDependentWind = m_environmentSettings.enableHeightDependentWind;
+		parameters.windShearFactor = m_environmentSettings.windShearFactor;
+		parameters.airDensityKilogramsPerCubicMeter = EnvironmentAirDensity();
+		parameters.knuckleball = false;
+		const double depth = ConvertCollisionWorldToSimulationPosition(aim, m_environmentSettings.pitchDistanceMeters,
+		    m_environmentSettings.moundHeightOffsetMeters).z;
+		constexpr double Tolerance = .015;
+		const DuelZoneCellBounds bounds{aim.x - Tolerance, aim.x + Tolerance, aim.y + Tolerance, aim.y - Tolerance};
+		const auto velocity = ResolveTrajectoryZoneTargetVelocity(parameters, depth, -1, bounds,
+		    Physics::Vector3{aim.x, aim.y, depth}, m_environmentSettings.moundHeightOffsetMeters);
+
+		m_activePitchProfileIndex = index;
+		m_activePresetType = Data::PitchPresetType::Custom;
+		m_activePitchParameters = m_pitchProfiles[static_cast<std::size_t>(index)].pitchParameters;
+		if (velocity)
+		{
+			m_activePitchParameters.initialVelocity.x = std::clamp(velocity->x, MinimumHorizontalSpeed, MaximumHorizontalSpeed);
+			m_activePitchParameters.initialVelocity.y = std::clamp(velocity->y, MinimumVerticalSpeed, MaximumVerticalSpeed);
+		}
+		const int caught = m_catcherRound.caught, pitches = m_catcherRound.pitches;
+		const double clock = m_catcherRound.clockSeconds, squeeze = m_catcherRound.squeezeSeconds;
+		m_catcherRound = {};
+		m_catcherRound.signIndex = index;
+		m_catcherRound.caught = caught;
+		m_catcherRound.pitches = pitches + 1;
+		m_catcherRound.clockSeconds = clock;
+		m_catcherRound.squeezeSeconds = squeeze;
+		m_catcherRound.phase = CatcherPhase::Pitching;
+		m_catcherRound.targetWorld = target;
+		m_catcherRound.aimWorld = aim;
+		std::wostringstream note{};
+		note << std::fixed << std::setprecision(2) << L"catcher_sign,profile="
+		     << m_pitchProfiles[static_cast<std::size_t>(index)].name << L",target=" << target.x << L"," << target.y
+		     << L",aim=" << aim.x << L"," << aim.y << (wild ? L",wild" : L"") << (velocity ? L"" : L",solve=fallback");
+		ApplyPitchParameterChangesAndLog(L"pitch_config", note.str(), true);
+		m_duelRound.isWaitingForNextPitch = false;
+	}
+
+	void Application::CatchPitchIfReached(const Physics::BallState& previousState, Physics::BallState* const ballState)
+	{
+		const double pitchDistance = m_environmentSettings.pitchDistanceMeters;
+		const double mound = m_environmentSettings.moundHeightOffsetMeters;
+		const auto toWorld = [&](const Physics::Vector3& position)
+		{ return ConvertSimulationToCollisionWorldPosition(position, pitchDistance, mound); };
+		const auto toSimulation = [&](const Physics::Vector3& position)
+		{ return ConvertCollisionWorldToSimulationPosition(position, pitchDistance, mound); };
+		const std::optional<Common::CatcherMittState> mitt = BuildCatcherMittState();
+		const std::optional<Common::CatcherMittFrame> frame =
+		    mitt ? std::optional<Common::CatcherMittFrame>(Common::BuildCatcherMittFrame(*mitt)) : std::nullopt;
+		const double now = m_catcherRound.clockSeconds;
+		const auto holdInPocket = [&]()
+		{
+			if (frame)
+			{
+				ballState->position = toSimulation(frame->pocket);
+			}
+			ballState->velocity = {};
+			m_pitchSimulationService.SetBallState(*ballState);
+		};
+		if (m_catcherRound.phase == CatcherPhase::Caught)
+		{
+			holdInPocket();
+			return;
+		}
+		if (m_catcherRound.ballInPocket)
+		{
+			// The ball sits in the pocket for a moment waiting for the squeeze.
+			if (m_catcherRound.squeezeSeconds >= m_catcherRound.arrivalSeconds - 1e-9)
+			{
+				holdInPocket();
+				FinishCatcherPitch(L"捕球", true);
+				return;
+			}
+			if (now - m_catcherRound.arrivalSeconds > CatcherLateSqueezeSeconds)
+			{
+				m_catcherRound.ballInPocket = false;
+				// Pops out and drops in front of the plate.
+				ballState->velocity = (frame ? frame->palm * 1.2 : Physics::Vector3{}) + Physics::Vector3{0.0, .5, 0.0};
+				m_pitchSimulationService.SetBallState(*ballState);
+				FinishCatcherPitch(L"落球", false);
+				return;
+			}
+			holdInPocket();
+			return;
+		}
+		const Physics::Vector3 from = toWorld(previousState.position);
+		const Physics::Vector3 to = toWorld(ballState->position);
+		if (frame)
+		{
+			// Closest approach of this frame's stretch of flight to the pocket.
+			const Physics::Vector3 path = to - from;
+			const double lengthSquared = Physics::LengthSquared(path);
+			const double t = lengthSquared > 1e-12
+			    ? std::clamp(Physics::Dot(frame->pocket - from, path) / lengthSquared, 0.0, 1.0) : 1.0;
+			const Physics::Vector3 closest = from + path * t;
+			const double distance = Physics::Length(frame->pocket - closest);
+			m_catcherRound.closestApproachMeters = (std::min)(m_catcherRound.closestApproachMeters, distance);
+			const Xr::ControllerButtonState& mittButtons =
+			    m_batUseRightHand ? m_previousControllerInput.left : m_previousControllerInput.right;
+			if (distance <= Common::CatcherMittPocketRadiusMeters)
+			{
+				m_catcherRound.arrivalSeconds = now;
+				const double sinceSqueeze = now - m_catcherRound.squeezeSeconds;
+				if (mittButtons.triggerPressed && sinceSqueeze <= CatcherEarlySqueezeSeconds)
+				{
+					holdInPocket();
+					FinishCatcherPitch(sinceSqueeze <= CatcherCleanSqueezeSeconds ? L"ナイスキャッチ" : L"捕球", true);
+					return;
+				}
+				if (mittButtons.triggerPressed)
+				{
+					// The mitt was already shut: the ball glances off it.
+					ballState->position = toSimulation(closest + frame->palm * .05);
+					ballState->velocity = (ballState->velocity - frame->palm * (1.3 * Physics::Dot(ballState->velocity, frame->palm))) * .3;
+					m_pitchSimulationService.SetBallState(*ballState);
+					FinishCatcherPitch(L"はじいた", false);
+					return;
+				}
+				m_catcherRound.ballInPocket = true;
+				holdInPocket();
+				return;
+			}
+			if (distance <= Common::CatcherMittRimRadiusMeters && t < 1.0)
+			{
+				// Off the edge of the mitt.
+				const Physics::Vector3 away = Physics::NormalizeOrZero(closest - frame->pocket);
+				ballState->position = toSimulation(closest + away * .03);
+				ballState->velocity = (ballState->velocity - away * (1.4 * Physics::Dot(ballState->velocity, away))) * .45;
+				m_pitchSimulationService.SetBallState(*ballState);
+				FinishCatcherPitch(L"はじいた", false);
+				return;
+			}
+		}
+		// Past the catcher without reaching the mitt: a passed ball if it was within reach.
+		const double behind = frame ? frame->pocket.z : -Common::DebugWorldLayout::BatterToPlateDistanceMeters + 1.0;
+		if (to.z > behind + .5 && ballState->velocity.z > 0.0)
+		{
+			FinishCatcherPitch(m_catcherRound.closestApproachMeters <= .45 ? L"パスボール" : L"ワイルドピッチ", false);
+		}
+	}
+
+	void Application::FinishCatcherPitch(const std::wstring_view result, const bool caught)
+	{
+		m_catcherRound.result = std::wstring{ result };
+		m_catcherRound.ballInPocket = false;
+		m_catcherRound.missedSeconds = 0.0;
+		if (caught)
+		{
+			m_catcherRound.phase = CatcherPhase::Caught;
+			++m_catcherRound.caught;
+			// A pop in the mitt hand, harder for a harder pitch.
+			const double speed = Physics::Length(m_activePitchParameters.initialVelocity);
+			m_xrSystem->ApplyHapticPulse(!m_batUseRightHand, std::clamp(speed / 45.0, .3, 1.0), .07);
+		}
+		else
+		{
+			m_catcherRound.phase = CatcherPhase::Missed;
+		}
+		(void)LogPitchEvent(L"catcher_result", L"result=" + m_catcherRound.result);
+		UpdateWindowTitle();
+	}
+
+	void Application::ReturnToCatcherSign()
+	{
+		m_catcherRound.phase = CatcherPhase::WaitingForSign;
+		m_catcherRound.ballInPocket = false;
+		m_catcherRound.missedSeconds = 0.0;
+		m_duelRound.isWaitingForNextPitch = true;
+		m_duelRound.cooldownRemainingSeconds = CatcherResetSeconds;
 	}
 
 	// Everything a duel pitch depends on, chosen on the main thread. The zone
@@ -4894,7 +5256,7 @@ namespace BaseballSimulatorVR::Core
 			    a.enableSeamPerturbation == b.enableSeamPerturbation &&
 			    a.seamPerturbationAmplitude == b.seamPerturbationAmplitude &&
 			    a.seamPerturbationFrequencyHz == b.seamPerturbationFrequencyHz &&
-			    a.seamPerturbationPhase == b.seamPerturbationPhase &&
+			    a.seamPerturbationPhase == b.seamPerturbationPhase && a.knuckleball == b.knuckleball &&
 			    a.airDensityKilogramsPerCubicMeter == b.airDensityKilogramsPerCubicMeter;
 		}
 
@@ -4907,7 +5269,9 @@ namespace BaseballSimulatorVR::Core
 			{
 				return std::nullopt;
 			}
-			return ResolveTrajectoryZoneTargetVelocity(parameters, pitchDistanceMeters, zoneIndex,
+			Baseball::PitchParameters aimed = parameters;
+			aimed.knuckleball = false;
+			return ResolveTrajectoryZoneTargetVelocity(aimed, pitchDistanceMeters, zoneIndex,
 			    *zoneBounds, *zoneTarget, verticalOffsetMeters);
 		}
 	} // namespace
@@ -5104,9 +5468,10 @@ namespace BaseballSimulatorVR::Core
 		                                                    m_batCollisionSuppressRemainingSeconds - m_lastFrameDeltaSeconds);
 		const double groundContactHeight = GroundPlaneHeightMeters + ballState->properties.radiusMeters -
 		    m_environmentSettings.moundHeightOffsetMeters;
-		const GroundFanShape groundFanShape = BuildGroundFanShape(
-		    m_strikeZoneSettings.widthMeters,
-		    m_environmentSettings.groundFanRadiusMeters);
+		// The stadium bounds the playing field: walls, netting and seats stop the ball.
+		const Simulation::StadiumPlacement stadium{
+			m_environmentSettings.pitchDistanceMeters + Common::HomePlateDepthMeters,
+			GroundPlaneHeightMeters - m_environmentSettings.moundHeightOffsetMeters };
 
 		auto applyPendingTrajectoryReset = [&](Physics::BallState* const mutableBallState) -> void
 		{
@@ -5166,18 +5531,76 @@ namespace BaseballSimulatorVR::Core
 			}
 			return true;
 		};
-		auto isBallBelowGroundOutsideFan = [&](const Physics::BallState& state) -> bool
+		auto applyStadiumCollision = [&](const Physics::BallState& previousState,
+		                                 const bool hasPreviousState) -> Simulation::StadiumCollisionResult
 		{
-			if (state.position.y > groundContactHeight)
+			if (!hasPreviousState)
+			{
+				return {};
+			}
+			const Simulation::StadiumCollisionResult result =
+			    Simulation::ApplyStadiumCollision(previousState, ballState, stadium);
+			if ((result.contact == Simulation::StadiumContact::Wall) ||
+			    (result.contact == Simulation::StadiumContact::Stands))
+			{
+				m_pitchSimulationService.SetBallState(*ballState);
+			}
+			return result;
+		};
+		// Out over the top of the stands, or somehow below the ground: the play is over.
+		auto hasBallLeftStadium = [&](const Physics::BallState& state,
+		                              const Simulation::StadiumCollisionResult& result) -> bool
+		{
+			return (result.contact == Simulation::StadiumContact::LeftStadium) ||
+			       (state.position.y < groundContactHeight - 1.0);
+		};
+		// The first time a batted ball reaches the wall or the seats before coming down in
+		// the field, its carry ends there; one that clears the outfield wall is measured to
+		// where it would have come down, as Statcast projects home-run distance.
+		auto registerStadiumContactForMetrics =
+		    [&](BattedBallMetrics* const metrics,
+		        const Physics::BallState& previousState,
+		        const Physics::BallState& unobstructedState,
+		        const Simulation::StadiumCollisionResult& result) -> bool
+		{
+			if ((metrics == nullptr) || !metrics->hasContact || metrics->hasFirstGroundContact ||
+			    (!result.reachedWall && (result.contact != Simulation::StadiumContact::Stands)))
 			{
 				return false;
 			}
-			const Physics::Vector3 worldPosition =
-			    ConvertSimulationToCollisionWorldPosition(
-			        state.position,
-			        m_environmentSettings.pitchDistanceMeters,
-			        m_environmentSettings.moundHeightOffsetMeters);
-			return !IsWorldPointInsideGroundFan(worldPosition, groundFanShape);
+			const double fraction = result.reachedWall ? result.wallFrameFraction : 1.0;
+			const Physics::Vector3 reached = previousState.position +
+			    ((unobstructedState.position - previousState.position) * fraction);
+			const double reachedTime = previousState.flightTimeSeconds +
+			    ((unobstructedState.flightTimeSeconds - previousState.flightTimeSeconds) * fraction);
+			const auto carry = [&](const Physics::Vector3& point)
+			{
+				return std::hypot(point.x - metrics->contactPosition.x, point.z - metrics->contactPosition.z);
+			};
+			metrics->hasFirstGroundContact = true;
+			metrics->firstGroundDistanceMeters = carry(reached);
+			if (result.clearedWall)
+			{
+				if (const auto landing = ProjectBattedBallLanding(unobstructedState, groundContactHeight))
+				{
+					metrics->firstGroundDistanceMeters = carry(*landing);
+				}
+			}
+			// The judge compares the bottom of the ball with the top of the wall, as the
+			// collision does.
+			const std::optional<double> wallHeight = result.reachedWall
+			    ? std::optional<double>(result.wallHeightMeters - unobstructedState.properties.radiusMeters)
+			    : std::nullopt;
+			metrics->resultLabel = JudgeBattedBallLanding(*metrics, reached, reachedTime, wallHeight).label;
+			if (m_isSessionLogAvailable && (m_lastBattedBallEventId > 0))
+			{
+				(void)m_sessionLogRepository.UpdateBattedBallLanding(
+				    m_lastBattedBallEventId,
+				    metrics->firstGroundDistanceMeters,
+				    metrics->maxHeightMeters,
+				    metrics->resultLabel);
+			}
+			return true;
 		};
 		auto applyGroundCollisionIfNeeded =
 		    [&](const Physics::BallState& previousState,
@@ -5190,18 +5613,14 @@ namespace BaseballSimulatorVR::Core
 				collisionCheckPosition =
 				    ResolveGroundCrossPoint(previousState, *ballState, groundContactHeight);
 			}
-			const Physics::Vector3 collisionCheckWorldPosition =
-			    ConvertSimulationToCollisionWorldPosition(
-			        collisionCheckPosition,
-			        m_environmentSettings.pitchDistanceMeters,
-			        m_environmentSettings.moundHeightOffsetMeters);
-			if (!IsWorldPointInsideGroundFan(
-			        collisionCheckWorldPosition,
-			        groundFanShape))
+			const Simulation::FieldPosition field = Simulation::ToField(collisionCheckPosition, stadium);
+			if (!Common::Stadium::IsInsidePlayingField(field.u, field.v))
 			{
 				return;
 			}
-			ApplyGroundCollisionResponse(ballState, m_lastSimulationDeltaSeconds, groundContactHeight);
+			ApplyGroundCollisionResponse(ballState, m_lastSimulationDeltaSeconds, groundContactHeight,
+			    Common::FieldSurfaceAt(field.u, field.v) == Common::FieldSurface::Dirt ? Physics::DirtSurface
+			                                                                            : Physics::GrassSurface);
 			m_pitchSimulationService.SetBallState(*ballState);
 		};
 
@@ -5250,17 +5669,22 @@ namespace BaseballSimulatorVR::Core
 				groundPreviousState.position = m_teeBattedMetrics.contactPosition;
 			}
 			updateBattedMetricsLiveState(&m_teeBattedMetrics);
+			const Physics::BallState unobstructedState = *ballState;
+			const Simulation::StadiumCollisionResult stadiumResult = applyStadiumCollision(
+			    groundPreviousState, m_teeFlight.hasPreviousBallState || collidedWithBat);
 			if (!m_teeFlight.hasBattedBallBounced &&
-			    registerGroundContactForMetrics(
-			        &m_teeBattedMetrics,
-			        groundPreviousState,
-			        m_teeFlight.hasPreviousBallState || collidedWithBat))
+			    (registerStadiumContactForMetrics(
+			         &m_teeBattedMetrics, groundPreviousState, unobstructedState, stadiumResult) ||
+			     registerGroundContactForMetrics(
+			         &m_teeBattedMetrics,
+			         groundPreviousState,
+			         m_teeFlight.hasPreviousBallState || collidedWithBat)))
 			{
 				m_teeFlight.hasBattedBallBounced = true;
 				m_teeFlight.postBounceElapsedSeconds = 0.0;
 			}
 			if (m_teeBattedMetrics.hasContact &&
-			    isBallBelowGroundOutsideFan(*ballState))
+			    hasBallLeftStadium(*ballState, stadiumResult))
 			{
 				m_teeFlight = {};
 				if (HasDuelTargetZoneSelection())
@@ -5307,6 +5731,69 @@ namespace BaseballSimulatorVR::Core
 					m_forceTrajectoryResetOnNextFrame = true;
 				}
 			}
+			applyPendingTrajectoryReset(ballState);
+			return;
+		}
+
+		if (m_operationMode == OperationMode::Catcher)
+		{
+			m_teeFlight = {};
+			if (m_catcherRound.phase == CatcherPhase::WaitingForSign)
+			{
+				// The pitcher walks back and comes set; the ball waits in the glove.
+				m_duelRound.cooldownRemainingSeconds =
+				    (std::max)(0.0, m_duelRound.cooldownRemainingSeconds - m_lastFrameDeltaSeconds);
+				applyPendingTrajectoryReset(ballState);
+				return;
+			}
+			if (!m_pitchDeliveryController.HasReleased())
+			{
+				m_duelRound.previousBallState = *ballState;
+				m_duelRound.hasPreviousBallState = true;
+				applyPendingTrajectoryReset(ballState);
+				return;
+			}
+			const Physics::BallState previousState = m_duelRound.previousBallState;
+			const bool hasPreviousState = m_duelRound.hasPreviousBallState;
+			switch (m_catcherRound.phase)
+			{
+			case CatcherPhase::Pitching:
+			{
+				const bool wasResolved = m_pitchFlightAnalysis.IsResolved();
+				CommitPitchAnalysis(ballState->position, ballState->flightTimeSeconds);
+				if (!wasResolved && m_pitchFlightAnalysis.IsResolved())
+				{
+					ApplyAutoZoneResultTag(m_pitchFlightAnalysis.Actual().call, L"auto_zone_catcher");
+				}
+				// A pitch in the dirt bounces before it gets to the mitt.
+				applyGroundCollisionIfNeeded(previousState, hasPreviousState);
+				if (hasPreviousState)
+				{
+					CatchPitchIfReached(previousState, ballState);
+				}
+				break;
+			}
+			case CatcherPhase::Caught:
+				CatchPitchIfReached(previousState, ballState);
+				break;
+			case CatcherPhase::Missed:
+			{
+				m_catcherRound.missedSeconds += m_lastFrameDeltaSeconds;
+				const Simulation::StadiumCollisionResult stadiumResult =
+				    applyStadiumCollision(previousState, hasPreviousState);
+				applyGroundCollisionIfNeeded(previousState, hasPreviousState);
+				if (hasBallLeftStadium(*ballState, stadiumResult) ||
+				    (m_catcherRound.missedSeconds >= CatcherMissedPlaySeconds))
+				{
+					ReturnToCatcherSign();
+				}
+				break;
+			}
+			case CatcherPhase::WaitingForSign:
+				break;
+			}
+			m_duelRound.previousBallState = *ballState;
+			m_duelRound.hasPreviousBallState = true;
 			applyPendingTrajectoryReset(ballState);
 			return;
 		}
@@ -5396,19 +5883,25 @@ namespace BaseballSimulatorVR::Core
 			m_duelRound.hasBattedBallBounced = false;
 			m_duelRound.postBounceElapsedSeconds = 0.0;
 		}
+		const Physics::BallState unobstructedState = *ballState;
+		const Simulation::StadiumCollisionResult stadiumResult = m_duelRound.hasBallBeenBatted
+		    ? applyStadiumCollision(groundPreviousState, m_duelRound.hasPreviousBallState || collidedWithBat)
+		    : Simulation::StadiumCollisionResult{};
 		if (m_duelRound.hasBallBeenBatted &&
 		    !m_duelRound.hasBattedBallBounced &&
-		    registerGroundContactForMetrics(
-		        &m_duelRound.battedMetrics,
-		        groundPreviousState,
-		        m_duelRound.hasPreviousBallState || collidedWithBat))
+		    (registerStadiumContactForMetrics(
+		         &m_duelRound.battedMetrics, groundPreviousState, unobstructedState, stadiumResult) ||
+		     registerGroundContactForMetrics(
+		         &m_duelRound.battedMetrics,
+		         groundPreviousState,
+		         m_duelRound.hasPreviousBallState || collidedWithBat)))
 		{
 			m_duelRound.hasBattedBallBounced = true;
 			m_duelRound.postBounceElapsedSeconds = 0.0;
 		}
 		if (m_duelRound.hasBallBeenBatted &&
 		    m_duelRound.battedMetrics.hasContact &&
-		    isBallBelowGroundOutsideFan(*ballState))
+		    hasBallLeftStadium(*ballState, stadiumResult))
 		{
 			m_duelRound.isWaitingForNextPitch = true;
 			m_duelRound.cooldownRemainingSeconds = m_duelPitchIntervalSeconds;
@@ -5424,10 +5917,11 @@ namespace BaseballSimulatorVR::Core
 		if (m_duelRound.hasBallBeenBatted)
 		{
 			updateBattedMetricsLiveState(&m_duelRound.battedMetrics);
-			applyGroundCollisionIfNeeded(
-			    groundPreviousState,
-			    m_duelRound.hasPreviousBallState || collidedWithBat);
 		}
+		// Batted balls, and pitches in the dirt, bounce and roll on the field.
+		applyGroundCollisionIfNeeded(
+		    groundPreviousState,
+		    m_duelRound.hasPreviousBallState || collidedWithBat);
 		if (m_duelRound.hasBallBeenBatted &&
 		    m_duelRound.hasBattedBallBounced)
 		{
@@ -5485,9 +5979,10 @@ namespace BaseballSimulatorVR::Core
 		if (category == Data::SessionEventCategory::Pitch)
 		{
 			Data::PitchDetails details{};
-			details.mode = m_operationMode == OperationMode::BattingDuel
-			    ? L"batting-duel"
-			    : (m_operationMode == OperationMode::TeeBatting ? L"tee-batting" : L"trajectory");
+			details.mode = m_operationMode == OperationMode::BattingDuel ? L"batting-duel"
+			    : m_operationMode == OperationMode::TeeBatting           ? L"tee-batting"
+			    : m_operationMode == OperationMode::Catcher              ? L"catcher"
+			                                                             : L"trajectory";
 			details.profileName = pitchName;
 			details.pitchSettingsFile = m_activePitchSettingsFileName;
 			details.pitcherThrowsLeftHanded = m_pitcherThrowsLeftHanded;
@@ -5606,6 +6101,8 @@ namespace BaseballSimulatorVR::Core
 					return L"BattingDuel";
 				case OperationMode::TeeBatting:
 					return L"TeeBatting";
+				case OperationMode::Catcher:
+					return L"Catcher";
 				default:
 					return L"Unknown";
 			}
