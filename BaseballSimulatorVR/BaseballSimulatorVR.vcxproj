@@ -59,7 +59,11 @@
       <Command>if not exist "$(ProjectDir)..\external\openxr\bin\x64\openxr_loader.dll" exit /b 1
 copy /Y "$(ProjectDir)..\external\openxr\bin\x64\openxr_loader.dll" "$(OutDir)openxr_loader.dll"
 if not exist "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" exit /b 1
-copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.dll"</Command>
+copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.dll"
+if not exist "$(ProjectDir)..\LICENSE.txt" exit /b 1
+copy /Y "$(ProjectDir)..\LICENSE.txt" "$(OutDir)LICENSE.txt"
+if not exist "$(ProjectDir)..\THIRD_PARTY_NOTICES.md" exit /b 1
+copy /Y "$(ProjectDir)..\THIRD_PARTY_NOTICES.md" "$(OutDir)THIRD_PARTY_NOTICES.md"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
