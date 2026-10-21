@@ -143,11 +143,11 @@ namespace BaseballSimulatorVR::Core
 			SetUpTee(*app);
 			MoveBat(*app, *xr, -0.2, 1.0);
 			(void)UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight && app->m_hasPreviousTeeBallState,
+			Tests::Check(!app->m_teeFlight.isBallInFlight && app->m_teeFlight.hasPreviousBallState,
 			             "A resting tee ball retains history for the next swept bat test");
 			MoveBat(*app, *xr, 0.2, 1.01);
 			const auto hit = UpdateBall(*app);
-			Tests::Check(app->m_isTeeBallInFlight && app->m_teeBattedMetrics.hasContact,
+			Tests::Check(app->m_teeFlight.isBallInFlight && app->m_teeBattedMetrics.hasContact,
 			             "Moving a tracked bat across the resting tee ball launches it");
 			Tests::Check(hit.velocity.x > 1.0 && hit.position.x > 0.0,
 			             "The application applies bat contact velocity and advances the outgoing ball");
@@ -180,7 +180,7 @@ namespace BaseballSimulatorVR::Core
 			(void)UpdateBall(*app);
 			MoveBat(*app, *xr, 0.2, 2.01);
 			const auto pausedBall = UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight && !app->m_teeBattedMetrics.hasContact &&
+			Tests::Check(!app->m_teeFlight.isBallInFlight && !app->m_teeBattedMetrics.hasContact &&
 			    Physics::LengthSquared(pausedBall.velocity) == 0.0,
 			    "A physical swing cannot launch a tee ball while playback is paused");
 		}
@@ -189,19 +189,19 @@ namespace BaseballSimulatorVR::Core
 		{
 			auto app = MakeApplication();
 			SetUpTee(*app);
-			app->m_isTeeBallInFlight = true;
-			app->m_hasTeeBattedBallBounced = true;
-			app->m_teePostBounceElapsedSeconds = 4.0;
+			app->m_teeFlight.isBallInFlight = true;
+			app->m_teeFlight.hasBattedBallBounced = true;
+			app->m_teeFlight.postBounceElapsedSeconds = 4.0;
 			app->m_teeBattedMetrics.hasContact = true;
-			app->m_hasPreviousTeeBallState = true;
-			app->m_previousTeeBallState.position = { 20.0, 3.0, 4.0 };
-			app->m_pitchSimulationService.SetBallState(app->m_previousTeeBallState);
+			app->m_teeFlight.hasPreviousBallState = true;
+			app->m_teeFlight.previousBallState.position = { 20.0, 3.0, 4.0 };
+			app->m_pitchSimulationService.SetBallState(app->m_teeFlight.previousBallState);
 			app->m_environmentSettings.moundHeightOffsetMeters = 0.30;
 			app->ApplyEnvironmentSettingsChanges(L"test_reset", false);
 			const auto resetBall = app->m_pitchSimulationService.GetBallState();
-			Tests::Check(!app->m_isTeeBallInFlight && !app->m_hasTeeBattedBallBounced &&
-			    !app->m_hasPreviousTeeBallState && app->m_teeBattedMetrics.hasContact &&
-			    app->m_teePostBounceElapsedSeconds == 0.0,
+			Tests::Check(!app->m_teeFlight.isBallInFlight && !app->m_teeFlight.hasBattedBallBounced &&
+			    !app->m_teeFlight.hasPreviousBallState && app->m_teeBattedMetrics.hasContact &&
+			    app->m_teeFlight.postBounceElapsedSeconds == 0.0,
 			    "Changing the environment resets tee flight and collision history while retaining its last hit result");
 			Tests::Check(SamePosition(resetBall.position, app->BuildTeeBallState().position) &&
 			    Physics::LengthSquared(resetBall.velocity) == 0.0,
@@ -224,10 +224,10 @@ namespace BaseballSimulatorVR::Core
 			    "The duel test begins with a released moving pitch");
 			app->m_duelZonePassMarker = Physics::Vector3{ 99.0, 99.0, 99.0 };
 			app->m_duelPitchPredictedZonePassPoint = Physics::Vector3{ 99.0, 99.0, 99.0 };
-			app->m_hasPreviousDuelBallState = true;
-			app->m_hasDuelBallBeenBatted = true;
-			app->m_isWaitingForNextDuelPitch = true;
-			app->m_duelPitchCooldownRemainingSeconds = 2.0;
+			app->m_duelRound.hasPreviousBallState = true;
+			app->m_duelRound.hasBallBeenBatted = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
+			app->m_duelRound.cooldownRemainingSeconds = 2.0;
 			app->m_environmentSettings.pitchDistanceMeters = 17.0;
 			app->ApplyEnvironmentSettingsChanges(L"test_duel_reset", false);
 			const auto state = app->BuildFieldPresentationState();
@@ -236,8 +236,8 @@ namespace BaseballSimulatorVR::Core
 			    Near(state.pitcher.secondsFromRelease, -Simulation::PitchDeliveryController::WindupSeconds) &&
 			    !state.ballVisible && Near(resetBall.flightTimeSeconds, 0.0) && Near(resetBall.position.z, 0.0),
 			    "Resetting a released duel pitch synchronizes hidden ball and pitcher windup");
-			Tests::Check(!app->m_isWaitingForNextDuelPitch && !app->m_hasPreviousDuelBallState &&
-			    !app->m_hasDuelBallBeenBatted && app->m_duelPitchCooldownRemainingSeconds == 0.0 &&
+			Tests::Check(!app->m_duelRound.isWaitingForNextPitch && !app->m_duelRound.hasPreviousBallState &&
+			    !app->m_duelRound.hasBallBeenBatted && app->m_duelRound.cooldownRemainingSeconds == 0.0 &&
 			    !app->m_duelZonePassMarker,
 			    "Resetting a duel pitch discards previous flight, cooldown and result markers");
 			Tests::Check(app->m_duelPitchPredictedZonePassPoint &&
@@ -251,11 +251,11 @@ namespace BaseballSimulatorVR::Core
 			auto app = MakeApplication();
 			SetUpTee(*app);
 			app->m_environmentSettings.moundHeightOffsetMeters = 0.18;
-			app->m_isTeeBallInFlight = true;
+			app->m_teeFlight.isBallInFlight = true;
 			app->m_teeBattedMetrics.hasContact = true;
 			app->m_teeBattedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
-			app->m_hasPreviousTeeBallState = true;
-			app->m_previousTeeBallState.position = { 0.0, 0.2 - 0.18, 10.0 };
+			app->m_teeFlight.hasPreviousBallState = true;
+			app->m_teeFlight.previousBallState.position = { 0.0, 0.2 - 0.18, 10.0 };
 			Physics::BallState falling;
 			falling.position = { 0.0, 0.027 - 0.18, 9.9 };
 			falling.velocity = { 0.0, -2.0, -5.0 };
@@ -266,7 +266,7 @@ namespace BaseballSimulatorVR::Core
 			// 0.5 ground restitution, independent of where the frame boundary fell.
 			Tests::Check(Near(bounced.position.y + 0.18, 0.037 + 0.010 * 0.50) && bounced.velocity.y > 0.0,
 			             "With a mound offset the ball bounces at physical ground plus ball radius");
-			Tests::Check(app->m_teeBattedMetrics.hasFirstGroundContact && app->m_hasTeeBattedBallBounced,
+			Tests::Check(app->m_teeBattedMetrics.hasFirstGroundContact && app->m_teeFlight.hasBattedBallBounced,
 			             "Ground response and first-ground-contact statistics use the same offset plane");
 			Tests::Check(SamePosition(bounced.position, app->m_pitchSimulationService.GetBallState().position),
 			             "Ground response writes its corrected position back into the simulation");
@@ -282,25 +282,25 @@ namespace BaseballSimulatorVR::Core
 			(void)app->m_pitchDeliveryController.Advance(std::chrono::duration<double>(1.2));
 			app->m_lastFrameDeltaSeconds = 0.25;
 			app->m_lastSimulationDeltaSeconds = 0.5;
-			app->m_hasDuelBallBeenBatted = true;
-			app->m_duelBattedMetrics.hasContact = true;
-			app->m_duelBattedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
-			app->m_hasPreviousDuelBallState = true;
-			app->m_previousDuelBallState.position = { 0.0, 0.137, 18.44 - 100.0 };
-			app->m_previousDuelBallState.flightTimeSeconds = 4.0;
+			app->m_duelRound.hasBallBeenBatted = true;
+			app->m_duelRound.battedMetrics.hasContact = true;
+			app->m_duelRound.battedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
+			app->m_duelRound.hasPreviousBallState = true;
+			app->m_duelRound.previousBallState.position = { 0.0, 0.137, 18.44 - 100.0 };
+			app->m_duelRound.previousBallState.flightTimeSeconds = 4.0;
 			Physics::BallState falling{};
 			falling.position = { 0.0, -0.063, 18.44 - 120.0 };
 			falling.velocity = { 0.0, -2.0, -40.0 };
 			falling.flightTimeSeconds = 4.5;
 			app->m_pitchSimulationService.SetBallState(falling);
 			(void)UpdateBall(*app);
-			Tests::Check(app->m_duelBattedMetrics.hasFirstGroundContact &&
-			    Near(app->m_duelBattedMetrics.firstGroundDistanceMeters, 110.0),
+			Tests::Check(app->m_duelRound.battedMetrics.hasFirstGroundContact &&
+			    Near(app->m_duelRound.battedMetrics.firstGroundDistanceMeters, 110.0),
 			    "Carry beyond the ground fan interpolates the first landing rather than the coarse frame endpoint");
-			Tests::Check(app->m_isWaitingForNextDuelPitch,
+			Tests::Check(app->m_duelRound.isWaitingForNextPitch,
 			    "An out-of-field landing still starts the duel interval after measuring carry");
 			(void)UpdateBall(*app);
-			Tests::Check(Near(app->m_duelBattedMetrics.firstGroundDistanceMeters, 110.0),
+			Tests::Check(Near(app->m_duelRound.battedMetrics.firstGroundDistanceMeters, 110.0),
 			    "The first landing distance remains frozen throughout the next-pitch interval");
 
 			TestXrSystem* xr = nullptr;
@@ -318,7 +318,7 @@ namespace BaseballSimulatorVR::Core
 			app->RefreshBatPoseFromXrInput();
 			const auto bounced = UpdateBall(*app);
 			Tests::Check(app->m_teeBattedMetrics.hasContact &&
-			    app->m_teeBattedMetrics.hasFirstGroundContact && app->m_hasTeeBattedBallBounced,
+			    app->m_teeBattedMetrics.hasFirstGroundContact && app->m_teeFlight.hasBattedBallBounced,
 			    "A downward tee hit records its first landing even when impact and bounce share one frame");
 			Tests::Check(bounced.velocity.y > 0.0 && bounced.position.y >= 0.037 - 1e-12,
 			    "Same-frame tee landing also applies the physical ground response");
@@ -328,7 +328,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_teeBattedMetrics.maxHeightMeters >=
 			    app->m_teeBattedMetrics.contactPosition.y,
 			    "A same-frame downward hit includes contact height in its recorded maximum height");
-			app->m_previousTeeBallState.position = { 0.0, 0.137, 8.0 };
+			app->m_teeFlight.previousBallState.position = { 0.0, 0.137, 8.0 };
 			falling.position = { 0.0, -0.063, 7.0 };
 			app->m_pitchSimulationService.SetBallState(falling);
 			(void)UpdateBall(*app);
@@ -390,10 +390,10 @@ namespace BaseballSimulatorVR::Core
 			    Near(frozen.pitcher.releasePositionWorld.y, 1.98 + 0.18),
 			    "Changing the selected preset cannot mix its name or parameters into the delivered pitch snapshot");
 
-			app->m_hasDuelBallBeenBatted = true;
-			app->m_duelBattedMetrics.hasContact = true;
-			app->m_duelBattedMetrics.contactPosition = { 0.2, 1.5, app->m_environmentSettings.pitchDistanceMeters };
-			app->m_duelBattedMetrics.launchVelocity = { 30.0, 0.0, -40.0 };
+			app->m_duelRound.hasBallBeenBatted = true;
+			app->m_duelRound.battedMetrics.hasContact = true;
+			app->m_duelRound.battedMetrics.contactPosition = { 0.2, 1.5, app->m_environmentSettings.pitchDistanceMeters };
+			app->m_duelRound.battedMetrics.launchVelocity = { 30.0, 0.0, -40.0 };
 			Physics::BallState slowerBall{};
 			slowerBall.velocity = { 3.0, -1.0, -5.0 };
 			app->m_pitchSimulationService.SetBallState(slowerBall);
@@ -404,7 +404,7 @@ namespace BaseballSimulatorVR::Core
 			    Near(batted.battedContactWorld->x, 0.2) && Near(batted.battedContactWorld->y, 1.68) &&
 			    Near(batted.battedContactWorld->z, -Common::DebugWorldLayout::BatterToPlateDistanceMeters),
 			    "Current contact displays its launch speed independently of later ball deceleration and reports world contact coordinates");
-			app->m_isWaitingForNextDuelPitch = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
 			const auto interval = app->BuildFieldPresentationState();
 			Tests::Check(interval.statistics.hasBattedMetrics && !interval.statistics.battedMetricsLive,
 			    "A completed current-ball result remains visible during the inter-pitch interval");
@@ -442,8 +442,8 @@ namespace BaseballSimulatorVR::Core
 			app->m_pitchFlightAnalysis.FinishContact(app->m_pitchSimulationService.GetBallState().position);
 			Tests::Check(app->BuildFieldPresentationState().statistics.pitchName == L"次のスプリット",
 			    "Resolving the next delivery publishes its own frozen pitch name");
-			app->m_duelBattedMetrics.hasContact = true;
-			app->m_duelBattedMetrics.launchVelocity = { 50.0, 0.0, 0.0 };
+			app->m_duelRound.battedMetrics.hasContact = true;
+			app->m_duelRound.battedMetrics.launchVelocity = { 50.0, 0.0, 0.0 };
 			app->ResetPitchSimulation();
 			Tests::Check(!app->BuildFieldPresentationState().statistics.hasBattedMetrics &&
 			    !app->BuildXrUiTelemetry().hasBattedMetrics,
@@ -485,9 +485,9 @@ namespace BaseballSimulatorVR::Core
 					Tests::Check(app->BuildFieldPresentationState().statistics.pitchMetricsVisible == preview &&
 					    app->BuildXrUiTelemetry().pitchInformationVisible,
 					    "Released pitch information appears on the handheld while the board still awaits the plate result");
-					app->m_hasDuelBallBeenBatted = true;
-					app->m_duelBattedMetrics.hasContact = true;
-					app->m_isWaitingForNextDuelPitch = true;
+					app->m_duelRound.hasBallBeenBatted = true;
+					app->m_duelRound.battedMetrics.hasContact = true;
+					app->m_duelRound.isWaitingForNextPitch = true;
 					const auto interval = app->BuildFieldPresentationState();
 					Tests::Check(!interval.ballVisible && !interval.trajectoryLifecycle.clearBatted &&
 					    interval.ballFlightPhase == Common::BallFlightPhase::Batted,
@@ -553,7 +553,7 @@ namespace BaseballSimulatorVR::Core
 				app->m_lastSimulationDeltaSeconds = .001;
 				const double endDepth = 9. + Common::HomePlateDepthMeters + .037;
 				bool checkedFront = false, checkedRearMargin = false;
-				for (int step = 0; step < 600 && !app->m_isWaitingForNextDuelPitch; ++step)
+				for (int step = 0; step < 600 && !app->m_duelRound.isWaitingForNextPitch; ++step)
 				{
 					app->AdvancePitchSimulation(std::chrono::duration<double>(.001));
 					auto ball = app->m_pitchSimulationService.GetBallState();
@@ -582,7 +582,7 @@ namespace BaseballSimulatorVR::Core
 					}
 				}
 				const auto result = app->BuildFieldPresentationState().statistics;
-				Tests::Check(checkedFront && checkedRearMargin && app->m_isWaitingForNextDuelPitch &&
+				Tests::Check(checkedFront && checkedRearMargin && app->m_duelRound.isWaitingForNextPitch &&
 				    result.pitchMetricsVisible && result.zoneCall == test.call && result.pitchName == L"実投球の判定" &&
 				    Near(result.pitchSpeedMetersPerSecond,Physics::Length(parameters.initialVelocity)) &&
 				    Near(result.pitchSpinRpm,2300.) && result.hasPitchBreak && !result.pitchTrace.empty() &&
@@ -684,7 +684,7 @@ namespace BaseballSimulatorVR::Core
 			SetUpTee(*app);
 			const auto seedContact = [&]
 			{
-				app->m_isTeeBallInFlight = true;
+				app->m_teeFlight.isBallInFlight = true;
 				app->m_teeBattedMetrics.hasContact = true;
 				app->m_teeBattedMetrics.hasFirstGroundContact = true;
 				app->m_teeBattedMetrics.launchVelocity = { 18.0, 24.0, 0.0 };
@@ -723,8 +723,8 @@ namespace BaseballSimulatorVR::Core
 			app->RefreshTeeBallSpawnFromZoneSelection(L"test_board_tee_spawn");
 			checkRetainedResult();
 			seedContact();
-			app->m_hasTeeBattedBallBounced = true;
-			app->m_teePostBounceElapsedSeconds = 100.0;
+			app->m_teeFlight.hasBattedBallBounced = true;
+			app->m_teeFlight.postBounceElapsedSeconds = 100.0;
 			Physics::BallState settled{};
 			settled.position = { 0.0, 0.037, app->m_environmentSettings.pitchDistanceMeters };
 			app->m_pitchSimulationService.SetBallState(settled);
@@ -1002,7 +1002,7 @@ namespace BaseballSimulatorVR::Core
 				}
 				app->RefreshBatPoseFromXrInput();
 				(void)UpdateBall(*app);
-				Tests::Check(!app->m_isTeeBallInFlight && !app->m_teeBattedMetrics.hasContact,
+				Tests::Check(!app->m_teeFlight.isBallInFlight && !app->m_teeBattedMetrics.hasContact,
 				    "Tracking loss, coordinate/hand changes, stale time, gaps and nonfinite samples cannot invent a swing");
 			}
 
@@ -1016,18 +1016,18 @@ namespace BaseballSimulatorVR::Core
 			    "Starting or resetting a pitch discards both sides of the previous bat-motion interval");
 			MoveBat(*app, *xr, 0.2, 2.01);
 			(void)UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight, "The first post-reset sample establishes a pose without a collision sweep");
+			Tests::Check(!app->m_teeFlight.isBallInFlight, "The first post-reset sample establishes a pose without a collision sweep");
 			app->TogglePlaybackPause(L"test");
 			MoveBat(*app, *xr, -0.2, 2.02);
 			(void)UpdateBall(*app);
 			app->TogglePlaybackPause(L"test");
 			MoveBat(*app, *xr, 0.2, 2.03);
 			(void)UpdateBall(*app);
-			Tests::Check(!app->m_isTeeBallInFlight,
+			Tests::Check(!app->m_teeFlight.isBallInFlight,
 			    "Resuming playback cannot convert a movement made during pause into an impact");
 			MoveBat(*app, *xr, -0.2, 2.04);
 			(void)UpdateBall(*app);
-			Tests::Check(app->m_isTeeBallInFlight,
+			Tests::Check(app->m_teeFlight.isBallInFlight,
 			    "Two fresh tracked poses after resuming still produce the real physical swing");
 		}
 
@@ -1062,10 +1062,10 @@ namespace BaseballSimulatorVR::Core
 			ball.spinAxis = { 1.0, 0.0, 0.0 };
 			ball.spinRpm = 2300.0;
 			ball.flightTimeSeconds = 0.46;
-			app->m_previousDuelBallState = ball;
-			app->m_previousDuelBallState.position.z -= 0.4;
-			app->m_previousDuelBallState.flightTimeSeconds -= 0.01;
-			app->m_hasPreviousDuelBallState = true;
+			app->m_duelRound.previousBallState = ball;
+			app->m_duelRound.previousBallState.position.z -= 0.4;
+			app->m_duelRound.previousBallState.flightTimeSeconds -= 0.01;
+			app->m_duelRound.hasPreviousBallState = true;
 			const double ballWorldZ = -Common::DebugWorldLayout::BatterToPlateDistanceMeters;
 			xr->rightHand = { true, 3.0, 1,
 			    { -0.70 + Physics::BatGripCenterRatio * .85, 0.98, ballWorldZ + 0.2 },
@@ -1074,17 +1074,17 @@ namespace BaseballSimulatorVR::Core
 			xr->rightHand.position.z -= 0.4;
 			xr->rightHand.sampleTimeSeconds = 3.01;
 			app->RefreshBatPoseFromXrInput();
-			app->m_pitchSimulationService.SetBallState(app->m_previousDuelBallState);
+			app->m_pitchSimulationService.SetBallState(app->m_duelRound.previousBallState);
 			for (int sample = 0; sample < 11; ++sample)
 				app->AdvancePitchSimulation(std::chrono::duration<double>(.001));
 			app->AdvancePitchSimulation(std::chrono::duration<double>(.00025));
 			ball = app->m_pitchSimulationService.GetBallState();
 			const double incomingFrameEndTime = ball.flightTimeSeconds;
-			const double incomingFrameStartTime = app->m_previousDuelBallState.flightTimeSeconds;
+			const double incomingFrameStartTime = app->m_duelRound.previousBallState.flightTimeSeconds;
 			Tests::Check(!app->m_pendingPitchSamples.empty() && app->m_pendingPitchSamples.back().position.z > depth,
 			    "The contact frame buffers real incoming physics samples beyond the eventual impact and front plane");
 			app->UpdateModeSpecificBallState(&ball);
-			Tests::Check(app->m_hasDuelBallBeenBatted && app->m_duelBattedMetrics.hasContact,
+			Tests::Check(app->m_duelRound.hasBallBeenBatted && app->m_duelRound.battedMetrics.hasContact,
 			    "The production duel update reaches the real swept oblique bat collision solver");
 			Tests::Check(ball.aerodynamicsModel == Physics::BallAerodynamicsModel::Physical &&
 			    ball.spinRpm > 0.0 && !Near(ball.spinRpm, 2300.0) &&
@@ -1097,15 +1097,15 @@ namespace BaseballSimulatorVR::Core
 			    !Near(after.battedLaunchSpeedMetersPerSecond, before.pitchSpeedMetersPerSecond),
 			    "Real contact preserves delivered pitch name/speed/spin while publishing the new batted launch speed");
 			Tests::Check(app->m_pendingPitchSamples.empty() &&
-			    app->m_duelBattedMetrics.contactFlightTimeSeconds > incomingFrameStartTime &&
-			    app->m_duelBattedMetrics.contactFlightTimeSeconds < incomingFrameEndTime,
+			    app->m_duelRound.battedMetrics.contactFlightTimeSeconds > incomingFrameStartTime &&
+			    app->m_duelRound.battedMetrics.contactFlightTimeSeconds < incomingFrameEndTime,
 			    "The real collision commits the contact-time prefix and discards all buffered post-contact samples");
 			for (const auto& point : after.pitchTrace)
-				Tests::Check(point.z <= app->m_duelBattedMetrics.contactPosition.z + 1e-8,
+				Tests::Check(point.z <= app->m_duelRound.battedMetrics.contactPosition.z + 1e-8,
 				    "Buffered incoming overshoot cannot place future points beyond the physical impact into the trace");
 			Tests::Check(after.pitchMetricsVisible && after.zoneCall == Common::PitchZoneCall::Contact &&
 			    !after.hasPitchBreak && !after.pitchTrace.empty() &&
-			    SamePosition(after.pitchTrace.back(),app->m_duelBattedMetrics.contactPosition) &&
+			    SamePosition(after.pitchTrace.back(),app->m_duelRound.battedMetrics.contactPosition) &&
 			    !SamePosition(after.pitchTrace.back(),ball.position),
 			    "An early real hit reveals the incoming trace up to impact without inventing a future plate crossing or break");
 			Tests::Check(after.hasBatContactPosition && after.batContactFraction >= 0. && after.batContactFraction <= 1. &&
@@ -1123,7 +1123,7 @@ namespace BaseballSimulatorVR::Core
 			    later.zoneCall == Common::PitchZoneCall::Contact && later.hasBatContactPosition &&
 			    Near(later.batContactFraction,after.batContactFraction) && Near(later.contactBatLengthMeters,.85),
 			    "Outgoing flight and later bat adjustments cannot alter the incoming trace or stored impact position");
-			app->m_isWaitingForNextDuelPitch = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
 			const auto interval = app->BuildFieldPresentationState().statistics;
 			Tests::Check(interval.hasBatContactPosition && Near(interval.batContactFraction,after.batContactFraction) &&
 			    Near(interval.contactBatLengthMeters,.85) && interval.zoneCall == Common::PitchZoneCall::Contact &&
@@ -1264,7 +1264,7 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(presentation.ballVisible && Near(presentation.pitcher.secondsFromRelease, 0.0) &&
 			    SamePosition(pose.leftHand, releaseWorld),
 			    "Left-handed presentation releases the ball at the delivery controller's exact release time");
-			app->m_isWaitingForNextDuelPitch = true;
+			app->m_duelRound.isWaitingForNextPitch = true;
 			Tests::Check(app->BuildFieldPresentationState().pitcher.throwsLeftHanded &&
 			    Near(app->BuildFieldPresentationState().pitcher.armSpeedScale, 1.0),
 			    "The interval preserves pitcher hand and preset tempo");
@@ -1431,10 +1431,10 @@ namespace BaseballSimulatorVR::Core
 			auto grounded = tee;
 			grounded.position = {0, .04, app->m_environmentSettings.pitchDistanceMeters - 1.0};
 			grounded.velocity = {0, -1, 0};
-			app->m_isTeeBallInFlight = true;
-			app->m_hasPreviousTeeBallState = true;
-			app->m_previousTeeBallState = grounded;
-			app->m_previousTeeBallState.position.y = .2;
+			app->m_teeFlight.isBallInFlight = true;
+			app->m_teeFlight.hasPreviousBallState = true;
+			app->m_teeFlight.previousBallState = grounded;
+			app->m_teeFlight.previousBallState.position.y = .2;
 			app->UpdateModeSpecificBallState(&grounded);
 			Tests::Check(Near(grounded.position.y, .0485 + (.0485 - .04) * .50) && grounded.velocity.y > 0,
 			    "Softball ground collision uses its physical radius");
@@ -1770,10 +1770,10 @@ namespace BaseballSimulatorVR::Core
 			    app->m_teeBattedMetrics.hasContact && Near(Physics::Length(app->m_teeBattedMetrics.launchVelocity), 30) &&
 			    app->m_battedContactSequence == 11,
 			    "Moving the zone updates a selected stationary tee without discarding the previous hit or its trail sequence");
-			app->m_isTeeBallInFlight = true;
+			app->m_teeFlight.isBallInFlight = true;
 			const auto activeBall = app->m_pitchSimulationService.GetBallState();
 			app->HandleXrUiCommand({Xr::UiCommandType::AdjustStrikeZoneBottomDown});
-			Tests::Check(app->m_isTeeBallInFlight &&
+			Tests::Check(app->m_teeFlight.isBallInFlight &&
 			    SamePosition(app->m_pitchSimulationService.GetBallState().position, activeBall.position),
 			    "Moving the zone during a tee hit never respawns the active ball");
 			const auto savedZone = app->m_strikeZoneSettings;

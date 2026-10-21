@@ -1559,7 +1559,7 @@ namespace BaseballSimulatorVR::Core
 				    (std::min)(remainingSeconds, FixedSimulationStep.count()));
 				const bool isSimulationTickAllowedInMode =
 				    (m_operationMode != OperationMode::TeeBatting) ||
-				    m_isTeeBallInFlight;
+				    m_teeFlight.isBallInFlight;
 				if (isSimulationTickAllowedInMode &&
 				    !IsWaitingForNextDuelPitch())
 				{
@@ -1584,26 +1584,26 @@ namespace BaseballSimulatorVR::Core
 			const bool canShowDuelPitchPreview =
 			    (m_operationMode == OperationMode::BattingDuel) &&
 			    m_duelPitchPreviewEnabled &&
-			    !m_hasCurrentDuelPitchPassedZone &&
-			    !m_hasDuelBallBeenBatted &&
+			    !m_duelRound.hasPitchPassedZone &&
+			    !m_duelRound.hasBallBeenBatted &&
 			    m_duelPitchPredictedZonePassPoint.has_value();
 			if (canShowDuelPitchPreview)
 			{
 				const double previewStartThresholdSeconds =
 				    (std::max)(0.0, m_duelPitchIntervalSeconds * 0.5);
 				const bool isPreviewActiveWhileWaiting =
-				    m_isWaitingForNextDuelPitch &&
-				    (m_duelPitchCooldownRemainingSeconds <=
+				    m_duelRound.isWaitingForNextPitch &&
+				    (m_duelRound.cooldownRemainingSeconds <=
 				     previewStartThresholdSeconds);
 				const bool isPreviewActiveInFlight =
-				    !m_isWaitingForNextDuelPitch;
+				    !m_duelRound.isWaitingForNextPitch;
 				if (isPreviewActiveWhileWaiting || isPreviewActiveInFlight)
 				{
 					markerForRendering = m_duelPitchPredictedZonePassPoint;
 				}
 			}
 			if ((m_operationMode == OperationMode::BattingDuel) &&
-			    m_hasDuelBallBeenBatted)
+			    m_duelRound.hasBallBeenBatted)
 			{
 				markerForRendering.reset();
 			}
@@ -1734,10 +1734,7 @@ namespace BaseballSimulatorVR::Core
 			    m_strikeZoneSettings);
 		if (m_operationMode == OperationMode::TeeBatting)
 		{
-			m_isTeeBallInFlight = false;
-			m_hasTeeBattedBallBounced = false;
-			m_teePostBounceElapsedSeconds = 0.0;
-			m_hasPreviousTeeBallState = false;
+			m_teeFlight = {};
 			m_pitchSimulationService.SetBallState(BuildTeeBallState());
 			m_forceTrajectoryResetOnNextFrame = true;
 			return;
@@ -1748,21 +1745,13 @@ namespace BaseballSimulatorVR::Core
 		m_duelPitchPredictedZonePassPoint = m_pitchFlightAnalysis.Preview().frontCrossing;
 		if (m_duelPitchPredictedZonePassPoint)
 			m_duelPitchPredictedZonePassPoint->y -= m_environmentSettings.moundHeightOffsetMeters;
-		m_isWaitingForNextDuelPitch = false;
-		m_duelPitchCooldownRemainingSeconds = 0.0;
-		m_duelPitchElapsedSeconds = 0.0;
-		m_duelPostBounceElapsedSeconds = 0.0;
-		m_hasPreviousDuelBallState = false;
-		m_hasCurrentDuelPitchPassedZone = false;
-		m_hasDuelBallBeenBatted = false;
-		m_hasDuelBattedBallBounced = false;
-		m_duelBattedMetrics = {};
+		m_duelRound = {};
 	}
 
 	void Application::AdvancePitchSimulation(const std::chrono::duration<double> delta)
 	{
 		m_pitchSimulationService.Tick(delta);
-		if (delta.count() > 0. && m_operationMode != OperationMode::TeeBatting && !m_hasDuelBallBeenBatted &&
+		if (delta.count() > 0. && m_operationMode != OperationMode::TeeBatting && !m_duelRound.hasBallBeenBatted &&
 		    !m_pitchFlightAnalysis.IsResolved())
 			m_pendingPitchSamples.push_back(m_pitchSimulationService.GetBallState());
 	}
@@ -2449,7 +2438,7 @@ namespace BaseballSimulatorVR::Core
 				ResetPitchSimulation();
 				m_forceTrajectoryResetOnNextFrame = true;
 				m_duelZonePassMarker.reset();
-				m_hasPreviousDuelBallState = false;
+				m_duelRound.hasPreviousBallState = false;
 			}
 		}
 		m_playbackPaused = !m_playbackPaused;
@@ -2921,10 +2910,10 @@ namespace BaseballSimulatorVR::Core
 				m_duelTargetZoneMask = Common::BuildZoneBit(legacyZoneIndex);
 			}
 		}
-		if (m_isWaitingForNextDuelPitch)
+		if (m_duelRound.isWaitingForNextPitch)
 		{
-			m_duelPitchCooldownRemainingSeconds = std::clamp(
-			    m_duelPitchCooldownRemainingSeconds,
+			m_duelRound.cooldownRemainingSeconds = std::clamp(
+			    m_duelRound.cooldownRemainingSeconds,
 			    0.0,
 			    m_duelPitchIntervalSeconds);
 		}
@@ -3689,7 +3678,7 @@ namespace BaseballSimulatorVR::Core
 			RefreshPitchTrajectoryFromZoneSelection(L"strike_zone_change");
 		else if (m_operationMode == OperationMode::BattingDuel && !m_pitchDeliveryController.HasReleased())
 			StartRandomBattingDuelPitch(L"strike_zone_change");
-		else if (m_operationMode == OperationMode::TeeBatting && !m_isTeeBallInFlight && HasDuelTargetZoneSelection())
+		else if (m_operationMode == OperationMode::TeeBatting && !m_teeFlight.isBallInFlight && HasDuelTargetZoneSelection())
 			RefreshTeeBallSpawnFromZoneSelection(L"strike_zone_change");
 		UpdateWindowTitle();
 		if (persist) MarkPlaySettingsDirty();
@@ -3763,10 +3752,10 @@ namespace BaseballSimulatorVR::Core
 		}
 
 		m_duelPitchIntervalSeconds = nextInterval;
-		if (m_isWaitingForNextDuelPitch)
+		if (m_duelRound.isWaitingForNextPitch)
 		{
-			m_duelPitchCooldownRemainingSeconds = std::clamp(
-			    m_duelPitchCooldownRemainingSeconds,
+			m_duelRound.cooldownRemainingSeconds = std::clamp(
+			    m_duelRound.cooldownRemainingSeconds,
 			    0.0,
 			    m_duelPitchIntervalSeconds);
 		}
@@ -4116,7 +4105,7 @@ namespace BaseballSimulatorVR::Core
 	bool Application::IsWaitingForNextDuelPitch() const noexcept
 	{
 		return (m_operationMode == OperationMode::BattingDuel) &&
-		       m_isWaitingForNextDuelPitch;
+		       m_duelRound.isWaitingForNextPitch;
 	}
 
 	Xr::UiTelemetry Application::BuildXrUiTelemetry() const
@@ -4184,16 +4173,16 @@ namespace BaseballSimulatorVR::Core
 		const BattedBallMetrics* metricsForTelemetry = nullptr;
 		bool hasLiveBattedMetrics = false;
 		if ((m_operationMode == OperationMode::BattingDuel) &&
-		    m_duelBattedMetrics.hasContact)
+		    m_duelRound.battedMetrics.hasContact)
 		{
-			metricsForTelemetry = &m_duelBattedMetrics;
-			hasLiveBattedMetrics = !m_isWaitingForNextDuelPitch;
+			metricsForTelemetry = &m_duelRound.battedMetrics;
+			hasLiveBattedMetrics = !m_duelRound.isWaitingForNextPitch;
 		}
 		else if ((m_operationMode == OperationMode::TeeBatting) &&
 		         m_teeBattedMetrics.hasContact)
 		{
 			metricsForTelemetry = &m_teeBattedMetrics;
-			hasLiveBattedMetrics = m_isTeeBallInFlight;
+			hasLiveBattedMetrics = m_teeFlight.isBallInFlight;
 		}
 		if (metricsForTelemetry != nullptr)
 		{
@@ -4222,23 +4211,23 @@ namespace BaseballSimulatorVR::Core
 		state.pitcher.armSpeedScale = m_pitcherArmSpeedScale;
 		state.pitcher.heldBallRadiusMeters = deliveredPitch.ballProperties.radiusMeters;
 		state.pitcher.underhandToss = deliveredPitch.underhandToss;
-		state.pitcher.secondsFromRelease = m_isWaitingForNextDuelPitch
+		state.pitcher.secondsFromRelease = m_duelRound.isWaitingForNextPitch
 		    ? -Simulation::PitchDeliveryController::WindupSeconds
 		    : m_pitchDeliveryController.GetSecondsFromRelease();
 		state.pitcher.moundHeightMeters = m_environmentSettings.moundHeightOffsetMeters;
 		state.pitcher.releasePositionWorld = ConvertSimulationToCollisionWorldPosition(
 		    { 0.0, deliveredPitch.releaseHeightMeters, 0.0 },
 		    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters);
-		state.ballVisible = !duel || (!m_isWaitingForNextDuelPitch && m_pitchDeliveryController.HasReleased());
+		state.ballVisible = !duel || (!m_duelRound.isWaitingForNextPitch && m_pitchDeliveryController.HasReleased());
 		const BattedBallMetrics* battedMetrics = tee ? &m_teeBattedMetrics
-		    : (duel ? &m_duelBattedMetrics : nullptr);
+		    : (duel ? &m_duelRound.battedMetrics : nullptr);
 		state.ballFlightPhase = tee
-		    ? (m_isTeeBallInFlight ? Common::BallFlightPhase::Batted : Common::BallFlightPhase::Stationary)
-		    : (duel && m_hasDuelBallBeenBatted ? Common::BallFlightPhase::Batted
+		    ? (m_teeFlight.isBallInFlight ? Common::BallFlightPhase::Batted : Common::BallFlightPhase::Stationary)
+		    : (duel && m_duelRound.hasBallBeenBatted ? Common::BallFlightPhase::Batted
 		        : (!duel || m_pitchDeliveryController.HasReleased()
 		            ? Common::BallFlightPhase::Pitch : Common::BallFlightPhase::Stationary));
 		state.trajectoryLifecycle.retainBattedOnBallReset = tee;
-		state.trajectoryLifecycle.clearBatted = duel && !m_isWaitingForNextDuelPitch &&
+		state.trajectoryLifecycle.clearBatted = duel && !m_duelRound.isWaitingForNextPitch &&
 		    !m_pitchDeliveryController.HasReleased();
 		state.trajectoryLifecycle.battedContactSequence = m_battedContactSequence;
 		if (state.ballFlightPhase == Common::BallFlightPhase::Batted &&
@@ -4249,7 +4238,7 @@ namespace BaseballSimulatorVR::Core
 		auto& statistics = state.statistics;
 		statistics.visible = true;
 		statistics.pitchMetricsVisible = !duel || m_duelPitchPreviewEnabled ||
-		    m_pitchFlightAnalysis.IsResolved() || m_hasDuelBallBeenBatted;
+		    m_pitchFlightAnalysis.IsResolved() || m_duelRound.hasBallBeenBatted;
 		const auto& plotZone = tee ? m_strikeZoneSettings : m_pitchFlightAnalysis.Zone();
 		statistics.zoneBottomMeters = plotZone.bottomMeters;
 		statistics.zoneTopMeters = plotZone.bottomMeters + plotZone.heightMeters;
@@ -4277,7 +4266,7 @@ namespace BaseballSimulatorVR::Core
 		    (!duel || m_pitchDeliveryController.HasReleased());
 		if (statistics.hasBattedMetrics)
 		{
-			statistics.battedMetricsLive = tee ? m_isTeeBallInFlight : !m_isWaitingForNextDuelPitch;
+			statistics.battedMetricsLive = tee ? m_teeFlight.isBallInFlight : !m_duelRound.isWaitingForNextPitch;
 			statistics.battedHasGroundContact = battedMetrics->hasFirstGroundContact;
 			statistics.battedLaunchSpeedMetersPerSecond = Physics::Length(battedMetrics->launchVelocity);
 			statistics.battedLaunchAngleDegrees = std::atan2(battedMetrics->launchVelocity.y,
@@ -4352,10 +4341,10 @@ namespace BaseballSimulatorVR::Core
 		    m_batPoseState.referenceSpaceRevision != m_previousBatPoseState.referenceSpaceRevision)
 			return false;
 		const bool hasPreviousBall = m_operationMode == OperationMode::BattingDuel
-		    ? m_hasPreviousDuelBallState : m_hasPreviousTeeBallState;
+		    ? m_duelRound.hasPreviousBallState : m_teeFlight.hasPreviousBallState;
 		if (!hasPreviousBall) return false;
 		const auto& previousBall = m_operationMode == OperationMode::BattingDuel
-		    ? m_previousDuelBallState : m_previousTeeBallState;
+		    ? m_duelRound.previousBallState : m_teeFlight.previousBallState;
 		const auto worldPosition = [&](const Physics::Vector3& position)
 		{
 			return ConvertSimulationToCollisionWorldPosition(position,
@@ -4454,7 +4443,7 @@ namespace BaseballSimulatorVR::Core
 		    60.0 / (2.0 * std::numbers::pi);
 		contactState.flightTimeSeconds = previousBall.flightTimeSeconds + flightDeltaSeconds * contact->frameFraction;
 		m_pitchSimulationService.SetBallState(contactState);
-		const double remainingSeconds = (m_operationMode == OperationMode::TeeBatting && !m_isTeeBallInFlight)
+		const double remainingSeconds = (m_operationMode == OperationMode::TeeBatting && !m_teeFlight.isBallInFlight)
 		    ? m_lastSimulationDeltaSeconds * (1.0 - contact->frameFraction)
 		    : flightDeltaSeconds * (1.0 - contact->frameFraction);
 		// Integrate the rest of the contact frame with the same fixed step as normal flight.
@@ -4469,7 +4458,7 @@ namespace BaseballSimulatorVR::Core
 		BattedBallMetrics& activeMetrics =
 		    (m_operationMode == OperationMode::TeeBatting)
 		        ? m_teeBattedMetrics
-		        : m_duelBattedMetrics;
+		        : m_duelRound.battedMetrics;
 		activeMetrics = BattedBallMetrics{};
 		++m_battedContactSequence;
 		activeMetrics.hasContact = true;
@@ -4486,7 +4475,7 @@ namespace BaseballSimulatorVR::Core
 		{
 			m_duelZonePassMarker.reset();
 			m_duelPitchPredictedZonePassPoint.reset();
-			m_hasCurrentDuelPitchPassedZone = true;
+			m_duelRound.hasPitchPassedZone = true;
 		}
 
 		// Contact feedback: a clean barrel hit is a short light tap, a miss-hit on
@@ -4678,10 +4667,7 @@ namespace BaseballSimulatorVR::Core
 				std::clamp(zoneCenterPosition->z, TeeBallMinZ, TeeBallMaxZ)
 			};
 		}
-		m_isTeeBallInFlight = false;
-		m_hasTeeBattedBallBounced = false;
-		m_teePostBounceElapsedSeconds = 0.0;
-		m_hasPreviousTeeBallState = false;
+		m_teeFlight = {};
 		m_pitchSimulationService.SetBallState(BuildTeeBallState());
 		m_pitchMetricsSpeedMetersPerSecond = 0.0;
 		m_forceTrajectoryResetOnNextFrame = true;
@@ -4723,10 +4709,7 @@ namespace BaseballSimulatorVR::Core
 		{
 			return;
 		}
-		m_isTeeBallInFlight = false;
-		m_hasTeeBattedBallBounced = false;
-		m_teePostBounceElapsedSeconds = 0.0;
-		m_hasPreviousTeeBallState = false;
+		m_teeFlight = {};
 		m_pitchSimulationService.SetBallState(BuildTeeBallState());
 		m_pitchMetricsSpeedMetersPerSecond = 0.0;
 		m_forceTrajectoryResetOnNextFrame = true;
@@ -4762,28 +4745,17 @@ namespace BaseballSimulatorVR::Core
 		m_operationMode = mode;
 		m_forceTrajectoryResetOnNextFrame = true;
 		m_playbackPaused = false;
-		m_isWaitingForNextDuelPitch = false;
-		m_duelPitchCooldownRemainingSeconds = 0.0;
 		m_trajectoryZoneBiasLateral = 0.0;
 		m_trajectoryZoneBiasVertical = 0.0;
 		m_batCollisionSuppressRemainingSeconds = 0.0;
 		m_previousBatPoseState = BatPoseState{};
-		m_hasDuelBallBeenBatted = false;
-		m_hasDuelBattedBallBounced = false;
-		m_duelPostBounceElapsedSeconds = 0.0;
-		m_duelBattedMetrics = BattedBallMetrics{};
-		m_isTeeBallInFlight = false;
-		m_hasTeeBattedBallBounced = false;
-		m_teePostBounceElapsedSeconds = 0.0;
-		m_hasPreviousTeeBallState = false;
+		m_duelRound = {};
+		m_teeFlight = {};
 		switch (m_operationMode)
 		{
 			case OperationMode::PitchTrajectory:
 				m_duelZonePassMarker.reset();
 				m_duelPitchPredictedZonePassPoint.reset();
-				m_duelPitchElapsedSeconds = 0.0;
-				m_hasCurrentDuelPitchPassedZone = false;
-				m_hasPreviousDuelBallState = false;
 				m_batPoseState = BatPoseState{};
 				m_previousBatPoseState = BatPoseState{};
 				m_batOverlayState.reset();
@@ -4795,9 +4767,6 @@ namespace BaseballSimulatorVR::Core
 			case OperationMode::TeeBatting:
 				m_duelZonePassMarker.reset();
 				m_duelPitchPredictedZonePassPoint.reset();
-				m_duelPitchElapsedSeconds = 0.0;
-				m_hasCurrentDuelPitchPassedZone = false;
-				m_hasPreviousDuelBallState = false;
 				RefreshTeeBallSpawnFromZoneSelection(L"mode_enter");
 				break;
 			default:
@@ -5016,22 +4985,11 @@ namespace BaseballSimulatorVR::Core
 			    MaximumVerticalSpeed);
 		}
 		m_duelZonePassMarker.reset();
-		m_duelPitchElapsedSeconds = 0.0;
-		m_hasCurrentDuelPitchPassedZone = false;
-		m_isWaitingForNextDuelPitch = false;
-		m_duelPitchCooldownRemainingSeconds = 0.0;
-		m_hasPreviousDuelBallState = false;
-		m_hasDuelBallBeenBatted = false;
-		m_hasDuelBattedBallBounced = false;
-		m_duelPostBounceElapsedSeconds = 0.0;
-		m_duelBattedMetrics = BattedBallMetrics{};
+		m_duelRound = {};
 		m_pitchMetricsSpeedMetersPerSecond =
 		    Physics::Length(m_activePitchParameters.initialVelocity);
 		m_batCollisionSuppressRemainingSeconds = 0.0;
-		m_isTeeBallInFlight = false;
-		m_hasTeeBattedBallBounced = false;
-		m_teePostBounceElapsedSeconds = 0.0;
-		m_hasPreviousTeeBallState = false;
+		m_teeFlight = {};
 
 		std::wstring pitchNote = L"duel_random";
 		if ((m_activePitchProfileIndex >= 0) &&
@@ -5186,38 +5144,30 @@ namespace BaseballSimulatorVR::Core
 		{
 			m_duelZonePassMarker.reset();
 			m_duelPitchPredictedZonePassPoint.reset();
-			m_duelPitchElapsedSeconds = 0.0;
-			m_hasCurrentDuelPitchPassedZone = false;
-			m_hasPreviousDuelBallState = false;
-			m_isWaitingForNextDuelPitch = false;
-			m_duelPitchCooldownRemainingSeconds = 0.0;
-			m_hasDuelBallBeenBatted = false;
-			m_hasDuelBattedBallBounced = false;
-			m_duelPostBounceElapsedSeconds = 0.0;
-			m_duelBattedMetrics = BattedBallMetrics{};
-			if (!m_isTeeBallInFlight)
+			m_duelRound = {};
+			if (!m_teeFlight.isBallInFlight)
 			{
 				*ballState = BuildTeeBallState();
 				m_pitchSimulationService.SetBallState(*ballState);
 				if (TryApplyBatCollision(ballState))
 				{
-					m_isTeeBallInFlight = true;
-					m_hasTeeBattedBallBounced = false;
-					m_teePostBounceElapsedSeconds = 0.0;
+					m_teeFlight.isBallInFlight = true;
+					m_teeFlight.hasBattedBallBounced = false;
+					m_teeFlight.postBounceElapsedSeconds = 0.0;
 					updateBattedMetricsLiveState(&m_teeBattedMetrics);
 					Physics::BallState contactState = *ballState;
 					contactState.position = m_teeBattedMetrics.contactPosition;
-					m_hasTeeBattedBallBounced = registerGroundContactForMetrics(
+					m_teeFlight.hasBattedBallBounced = registerGroundContactForMetrics(
 					    &m_teeBattedMetrics, contactState, true);
 					applyGroundCollisionIfNeeded(
 					    contactState, true);
-					m_hasPreviousTeeBallState = true;
-					m_previousTeeBallState = *ballState;
+					m_teeFlight.hasPreviousBallState = true;
+					m_teeFlight.previousBallState = *ballState;
 				}
 				else
 				{
-					m_previousTeeBallState = *ballState;
-					m_hasPreviousTeeBallState = true;
+					m_teeFlight.previousBallState = *ballState;
+					m_teeFlight.hasPreviousBallState = true;
 				}
 				applyPendingTrajectoryReset(ballState);
 				return;
@@ -5225,32 +5175,29 @@ namespace BaseballSimulatorVR::Core
 			const bool collidedWithBat = TryApplyBatCollision(ballState);
 			if (collidedWithBat)
 			{
-				m_isTeeBallInFlight = true;
-				m_hasTeeBattedBallBounced = false;
-				m_teePostBounceElapsedSeconds = 0.0;
+				m_teeFlight.isBallInFlight = true;
+				m_teeFlight.hasBattedBallBounced = false;
+				m_teeFlight.postBounceElapsedSeconds = 0.0;
 			}
-			Physics::BallState groundPreviousState = m_previousTeeBallState;
+			Physics::BallState groundPreviousState = m_teeFlight.previousBallState;
 			if (collidedWithBat)
 			{
 				groundPreviousState.position = m_teeBattedMetrics.contactPosition;
 			}
 			updateBattedMetricsLiveState(&m_teeBattedMetrics);
-			if (!m_hasTeeBattedBallBounced &&
+			if (!m_teeFlight.hasBattedBallBounced &&
 			    registerGroundContactForMetrics(
 			        &m_teeBattedMetrics,
 			        groundPreviousState,
-			        m_hasPreviousTeeBallState || collidedWithBat))
+			        m_teeFlight.hasPreviousBallState || collidedWithBat))
 			{
-				m_hasTeeBattedBallBounced = true;
-				m_teePostBounceElapsedSeconds = 0.0;
+				m_teeFlight.hasBattedBallBounced = true;
+				m_teeFlight.postBounceElapsedSeconds = 0.0;
 			}
 			if (m_teeBattedMetrics.hasContact &&
 			    isBallBelowGroundOutsideFan(*ballState))
 			{
-				m_isTeeBallInFlight = false;
-				m_hasTeeBattedBallBounced = false;
-				m_teePostBounceElapsedSeconds = 0.0;
-				m_hasPreviousTeeBallState = false;
+				m_teeFlight = {};
 				if (HasDuelTargetZoneSelection())
 				{
 					RefreshTeeBallSpawnFromZoneSelection(
@@ -5267,23 +5214,20 @@ namespace BaseballSimulatorVR::Core
 			}
 			applyGroundCollisionIfNeeded(
 			    groundPreviousState,
-			    m_hasPreviousTeeBallState || collidedWithBat);
-			if (m_hasTeeBattedBallBounced)
+			    m_teeFlight.hasPreviousBallState || collidedWithBat);
+			if (m_teeFlight.hasBattedBallBounced)
 			{
-				m_teePostBounceElapsedSeconds += m_lastSimulationDeltaSeconds;
+				m_teeFlight.postBounceElapsedSeconds += m_lastSimulationDeltaSeconds;
 			}
-			m_previousTeeBallState = *ballState;
-			m_hasPreviousTeeBallState = true;
+			m_teeFlight.previousBallState = *ballState;
+			m_teeFlight.hasPreviousBallState = true;
 			const bool shouldRespawnTeeBall =
-			    m_hasTeeBattedBallBounced &&
-			    (m_teePostBounceElapsedSeconds >=
+			    m_teeFlight.hasBattedBallBounced &&
+			    (m_teeFlight.postBounceElapsedSeconds >=
 			     PostBounceSimulationSeconds);
 			if (shouldRespawnTeeBall)
 			{
-				m_isTeeBallInFlight = false;
-				m_hasTeeBattedBallBounced = false;
-				m_teePostBounceElapsedSeconds = 0.0;
-				m_hasPreviousTeeBallState = false;
+				m_teeFlight = {};
 				if (HasDuelTargetZoneSelection())
 				{
 					RefreshTeeBallSpawnFromZoneSelection(
@@ -5321,38 +5265,27 @@ namespace BaseballSimulatorVR::Core
 			}
 			m_duelZonePassMarker.reset();
 			m_duelPitchPredictedZonePassPoint.reset();
-			m_duelPitchElapsedSeconds = 0.0;
-			m_hasCurrentDuelPitchPassedZone = false;
-			m_hasDuelBallBeenBatted = false;
-			m_hasDuelBattedBallBounced = false;
-			m_duelPostBounceElapsedSeconds = 0.0;
-			m_duelBattedMetrics = BattedBallMetrics{};
-			m_hasPreviousDuelBallState = false;
-			m_isWaitingForNextDuelPitch = false;
-			m_duelPitchCooldownRemainingSeconds = 0.0;
-			m_isTeeBallInFlight = false;
-			m_hasTeeBattedBallBounced = false;
-			m_teePostBounceElapsedSeconds = 0.0;
-			m_hasPreviousTeeBallState = false;
+			m_duelRound = {};
+			m_teeFlight = {};
 			applyPendingTrajectoryReset(ballState);
 			return;
 		}
-		m_isTeeBallInFlight = false;
+		m_teeFlight.isBallInFlight = false;
 
-		if (m_isWaitingForNextDuelPitch)
+		if (m_duelRound.isWaitingForNextPitch)
 		{
-			m_duelPitchCooldownRemainingSeconds = (std::max)(0.0,
-			                                                 m_duelPitchCooldownRemainingSeconds - m_lastSimulationDeltaSeconds);
-			if (m_duelPitchCooldownRemainingSeconds <= 1e-6)
+			m_duelRound.cooldownRemainingSeconds = (std::max)(0.0,
+			                                                 m_duelRound.cooldownRemainingSeconds - m_lastSimulationDeltaSeconds);
+			if (m_duelRound.cooldownRemainingSeconds <= 1e-6)
 			{
 				StartRandomBattingDuelPitch(L"duel_cycle");
 				*ballState = m_pitchSimulationService.GetBallState();
-				m_previousDuelBallState = *ballState;
-				m_hasPreviousDuelBallState = true;
+				m_duelRound.previousBallState = *ballState;
+				m_duelRound.hasPreviousBallState = true;
 			}
 			else
 			{
-				*ballState = m_previousDuelBallState;
+				*ballState = m_duelRound.previousBallState;
 				applyPendingTrajectoryReset(ballState);
 				return;
 			}
@@ -5360,8 +5293,8 @@ namespace BaseballSimulatorVR::Core
 
 		if (!m_pitchDeliveryController.HasReleased())
 		{
-			m_previousDuelBallState = *ballState;
-			m_hasPreviousDuelBallState = true;
+			m_duelRound.previousBallState = *ballState;
+			m_duelRound.hasPreviousBallState = true;
 			applyPendingTrajectoryReset(ballState);
 			return;
 		}
@@ -5370,88 +5303,88 @@ namespace BaseballSimulatorVR::Core
 		    m_environmentSettings.pitchDistanceMeters;
 		const double duelPitchEndDepthMeters = duelZoneDepthMeters * 1.10;
 		const Physics::BallState currentState = *ballState;
-		m_duelPitchElapsedSeconds += m_lastSimulationDeltaSeconds;
+		m_duelRound.pitchElapsedSeconds += m_lastSimulationDeltaSeconds;
 		const bool collidedWithBat = TryApplyBatCollision(ballState);
-		if (!m_hasDuelBallBeenBatted)
+		if (!m_duelRound.hasBallBeenBatted)
 		{
 			const bool wasResolved = m_pitchFlightAnalysis.IsResolved();
-			CommitPitchAnalysis(collidedWithBat ? m_duelBattedMetrics.contactPosition : currentState.position,
-			    collidedWithBat ? m_duelBattedMetrics.contactFlightTimeSeconds : currentState.flightTimeSeconds);
-			if (collidedWithBat) m_pitchFlightAnalysis.FinishContact(m_duelBattedMetrics.contactPosition);
+			CommitPitchAnalysis(collidedWithBat ? m_duelRound.battedMetrics.contactPosition : currentState.position,
+			    collidedWithBat ? m_duelRound.battedMetrics.contactFlightTimeSeconds : currentState.flightTimeSeconds);
+			if (collidedWithBat) m_pitchFlightAnalysis.FinishContact(m_duelRound.battedMetrics.contactPosition);
 			if (!wasResolved && m_pitchFlightAnalysis.IsResolved())
 			{
-				m_hasCurrentDuelPitchPassedZone = true;
+				m_duelRound.hasPitchPassedZone = true;
 				m_duelPitchPredictedZonePassPoint.reset();
 				m_duelZonePassMarker = m_pitchFlightAnalysis.Actual().frontCrossing;
 				if (m_duelZonePassMarker) m_duelZonePassMarker->y -= m_environmentSettings.moundHeightOffsetMeters;
 				if (!collidedWithBat) ApplyAutoZoneResultTag(m_pitchFlightAnalysis.Actual().call, L"auto_zone_duel");
 			}
 		}
-		Physics::BallState groundPreviousState = m_previousDuelBallState;
+		Physics::BallState groundPreviousState = m_duelRound.previousBallState;
 		if (collidedWithBat)
 		{
-			groundPreviousState.position = m_duelBattedMetrics.contactPosition;
+			groundPreviousState.position = m_duelRound.battedMetrics.contactPosition;
 			m_duelZonePassMarker.reset();
 			m_duelPitchPredictedZonePassPoint.reset();
-			m_hasCurrentDuelPitchPassedZone = true;
-			m_hasDuelBallBeenBatted = true;
-			m_hasDuelBattedBallBounced = false;
-			m_duelPostBounceElapsedSeconds = 0.0;
+			m_duelRound.hasPitchPassedZone = true;
+			m_duelRound.hasBallBeenBatted = true;
+			m_duelRound.hasBattedBallBounced = false;
+			m_duelRound.postBounceElapsedSeconds = 0.0;
 		}
-		if (m_hasDuelBallBeenBatted &&
-		    !m_hasDuelBattedBallBounced &&
+		if (m_duelRound.hasBallBeenBatted &&
+		    !m_duelRound.hasBattedBallBounced &&
 		    registerGroundContactForMetrics(
-		        &m_duelBattedMetrics,
+		        &m_duelRound.battedMetrics,
 		        groundPreviousState,
-		        m_hasPreviousDuelBallState || collidedWithBat))
+		        m_duelRound.hasPreviousBallState || collidedWithBat))
 		{
-			m_hasDuelBattedBallBounced = true;
-			m_duelPostBounceElapsedSeconds = 0.0;
+			m_duelRound.hasBattedBallBounced = true;
+			m_duelRound.postBounceElapsedSeconds = 0.0;
 		}
-		if (m_hasDuelBallBeenBatted &&
-		    m_duelBattedMetrics.hasContact &&
+		if (m_duelRound.hasBallBeenBatted &&
+		    m_duelRound.battedMetrics.hasContact &&
 		    isBallBelowGroundOutsideFan(*ballState))
 		{
-			m_isWaitingForNextDuelPitch = true;
-			m_duelPitchCooldownRemainingSeconds = m_duelPitchIntervalSeconds;
-			m_duelPitchElapsedSeconds = 0.0;
+			m_duelRound.isWaitingForNextPitch = true;
+			m_duelRound.cooldownRemainingSeconds = m_duelPitchIntervalSeconds;
+			m_duelRound.pitchElapsedSeconds = 0.0;
 			PlanNextDuelPitch();
-			if (m_hasPreviousDuelBallState)
+			if (m_duelRound.hasPreviousBallState)
 			{
-				*ballState = m_previousDuelBallState;
+				*ballState = m_duelRound.previousBallState;
 			}
 			applyPendingTrajectoryReset(ballState);
 			return;
 		}
-		if (m_hasDuelBallBeenBatted)
+		if (m_duelRound.hasBallBeenBatted)
 		{
-			updateBattedMetricsLiveState(&m_duelBattedMetrics);
+			updateBattedMetricsLiveState(&m_duelRound.battedMetrics);
 			applyGroundCollisionIfNeeded(
 			    groundPreviousState,
-			    m_hasPreviousDuelBallState || collidedWithBat);
+			    m_duelRound.hasPreviousBallState || collidedWithBat);
 		}
-		if (m_hasDuelBallBeenBatted &&
-		    m_hasDuelBattedBallBounced)
+		if (m_duelRound.hasBallBeenBatted &&
+		    m_duelRound.hasBattedBallBounced)
 		{
-			m_duelPostBounceElapsedSeconds += m_lastSimulationDeltaSeconds;
+			m_duelRound.postBounceElapsedSeconds += m_lastSimulationDeltaSeconds;
 		}
 		const Physics::BallState stateForTracking = *ballState;
-		m_previousDuelBallState = stateForTracking;
-		m_hasPreviousDuelBallState = true;
+		m_duelRound.previousBallState = stateForTracking;
+		m_duelRound.hasPreviousBallState = true;
 		const bool shouldStartIntervalForUnbattedPitch =
-		    !m_hasDuelBallBeenBatted &&
+		    !m_duelRound.hasBallBeenBatted &&
 		    (stateForTracking.position.z >= duelPitchEndDepthMeters);
 		const bool shouldStartIntervalAfterBattedBounce =
-		    m_hasDuelBallBeenBatted &&
-		    m_hasDuelBattedBallBounced &&
-		    (m_duelPostBounceElapsedSeconds >=
+		    m_duelRound.hasBallBeenBatted &&
+		    m_duelRound.hasBattedBallBounced &&
+		    (m_duelRound.postBounceElapsedSeconds >=
 		     PostBounceSimulationSeconds);
 		if (shouldStartIntervalForUnbattedPitch ||
 		    shouldStartIntervalAfterBattedBounce)
 		{
-			m_isWaitingForNextDuelPitch = true;
-			m_duelPitchCooldownRemainingSeconds = m_duelPitchIntervalSeconds;
-			m_duelPitchElapsedSeconds = 0.0;
+			m_duelRound.isWaitingForNextPitch = true;
+			m_duelRound.cooldownRemainingSeconds = m_duelPitchIntervalSeconds;
+			m_duelRound.pitchElapsedSeconds = 0.0;
 			PlanNextDuelPitch();
 		}
 		applyPendingTrajectoryReset(ballState);
@@ -5613,7 +5546,7 @@ namespace BaseballSimulatorVR::Core
 			}
 		}();
 		Physics::BallState displayBallState = m_pitchSimulationService.GetBallState();
-		if ((m_operationMode == OperationMode::TeeBatting) && !m_isTeeBallInFlight)
+		if ((m_operationMode == OperationMode::TeeBatting) && !m_teeFlight.isBallInFlight)
 		{
 			displayBallState = BuildTeeBallState();
 		}
@@ -5684,9 +5617,9 @@ namespace BaseballSimulatorVR::Core
 		         << L"m";
 		envTitle << L",PitchRnd=" << (m_randomPitchProfileEnabled ? L"On" : L"Off");
 		envTitle << L",Playback=" << (m_playbackPaused ? L"Paused" : L"Run");
-		if (m_isWaitingForNextDuelPitch)
+		if (m_duelRound.isWaitingForNextPitch)
 		{
-			envTitle << L",Next=" << m_duelPitchCooldownRemainingSeconds << L"s";
+			envTitle << L",Next=" << m_duelRound.cooldownRemainingSeconds << L"s";
 		}
 		SetWindowTextW(m_windowHandle, envTitle.str().c_str());
 	}

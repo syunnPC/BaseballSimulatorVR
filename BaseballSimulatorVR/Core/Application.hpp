@@ -294,33 +294,44 @@ namespace BaseballSimulatorVR::Core
 		std::optional<Physics::Vector3> m_duelPitchPredictedZonePassPoint{};
 		std::uint32_t m_duelTargetZoneMask{ 0U };
 		double m_duelPitchIntervalSeconds{ 5.0 };
-		double m_duelPitchCooldownRemainingSeconds{ 0.0 };
-		double m_duelPitchElapsedSeconds{ 0.0 };
 		bool m_duelPitchPreviewEnabled{ true };
 		bool m_batUseRightHand{ true };
 		Physics::BatMaterial m_batMaterial{ Physics::BatMaterial::Wood };
-		bool m_isWaitingForNextDuelPitch{ false };
+		// Progress of the current batting-duel pitch. Assigning {} starts a fresh round.
+		struct DuelRoundState final
+		{
+			double pitchElapsedSeconds{ 0.0 };
+			bool hasPitchPassedZone{ false };
+			bool isWaitingForNextPitch{ false };
+			double cooldownRemainingSeconds{ 0.0 };
+			bool hasBallBeenBatted{ false };
+			bool hasBattedBallBounced{ false };
+			double postBounceElapsedSeconds{ 0.0 };
+			BattedBallMetrics battedMetrics{};
+			bool hasPreviousBallState{ false };
+			Physics::BallState previousBallState{};
+		};
+		// Flight of the tee ball after contact. Assigning {} puts the ball back on the tee
+		// state-wise; the last batted metrics stay in m_teeBattedMetrics for display.
+		struct TeeFlightState final
+		{
+			bool isBallInFlight{ false };
+			bool hasBattedBallBounced{ false };
+			double postBounceElapsedSeconds{ 0.0 };
+			bool hasPreviousBallState{ false };
+			Physics::BallState previousBallState{};
+		};
+		DuelRoundState m_duelRound{};
+		TeeFlightState m_teeFlight{};
 		struct DuelPitchPlan;
 		std::shared_ptr<DuelPitchPlan> m_nextDuelPitchPlan{};
-		bool m_hasCurrentDuelPitchPassedZone{ false };
-		bool m_hasDuelBallBeenBatted{ false };
-		bool m_hasDuelBattedBallBounced{ false };
-		double m_duelPostBounceElapsedSeconds{ 0.0 };
-		BattedBallMetrics m_duelBattedMetrics{};
-		bool m_hasPreviousDuelBallState{ false };
-		Physics::BallState m_previousDuelBallState{};
 		BatPoseState m_batPoseState{};
 		BatPoseState m_previousBatPoseState{};
 		std::optional<Common::BatOverlayState> m_batOverlayState{};
 		bool m_lastBatSampleUsedRightHand{ true };
 		double m_batCollisionSuppressRemainingSeconds{ 0.0 };
-		bool m_isTeeBallInFlight{ false };
-		bool m_hasTeeBattedBallBounced{ false };
-		double m_teePostBounceElapsedSeconds{ 0.0 };
 		BattedBallMetrics m_teeBattedMetrics{};
 		std::uint64_t m_battedContactSequence{ 0 };
-		bool m_hasPreviousTeeBallState{ false };
-		Physics::BallState m_previousTeeBallState{};
 		Physics::Vector3 m_teeBallPosition{ 0.0, 1.0, 18.44 };
 		double m_pitchMetricsSpeedMetersPerSecond{ 0.0 };
 		double m_lastFrameDeltaSeconds{ 0.0 };
