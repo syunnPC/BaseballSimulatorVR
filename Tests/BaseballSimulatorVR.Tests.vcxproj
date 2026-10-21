@@ -18,37 +18,28 @@
   <PropertyGroup Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
     <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
     <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+    <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">true</WholeProgramOptimization>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
-    <OutDir>$(ProjectDir)..\x64\$(Configuration)\</OutDir>
-    <IntDir>$(ProjectDir)..\x64\$(Configuration)\Tests\</IntDir>
     <TargetName>BaseballSimulatorVR.Tests</TargetName>
+    <LinkIncremental Condition="'$(Configuration)'=='Release'">false</LinkIncremental>
   </PropertyGroup>
+  <!-- Compiler and linker settings shared with the app and the library live in ..\Directory.Build.props. -->
   <ItemDefinitionGroup>
     <Manifest>
       <AdditionalManifestFiles>$(ProjectDir)..\BaseballSimulatorVR\BaseballSimulatorVR.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
-    <ClCompile>
-      <WarningLevel>Level4</WarningLevel>
-      <TreatWarningAsError>true</TreatWarningAsError>
-      <SDLCheck>true</SDLCheck>
-      <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp20</LanguageStandard>
-      <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <PreprocessorDefinitions>NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\external\sqlite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
-      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
-      <AdditionalOptions>/utf-8 /external:templates- %(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalLibraryDirectories>$(ProjectDir)..\external\sqlite\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>sqlite3.lib;gdi32.lib;user32.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;shell32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>gdi32.lib;user32.lib;shell32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <Link>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -84,18 +75,12 @@
     <ClCompile Include="UiPointerInputTests.cpp" />
     <ClCompile Include="DesktopRenderResizeTests.cpp" />
     <ClCompile Include="ApplicationSimulationTests.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Core\FrameStatistics.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Data\SessionLogRepository.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Data\PitchPresetJsonStorage.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Data\RuntimeSettingsJsonStorage.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Physics\PitchPhysicsEngine.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Physics\BatBallCollision.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Simulation\PitchSimulationService.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Simulation\PitchFlightAnalysis.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Render\Dx12RenderBackend.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Core\Application.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\UI\DesktopHudViewModel.cpp" />
-    <ClCompile Include="..\BaseballSimulatorVR\Data\PresetRepository.cpp" />
+  </ItemGroup>
+  <!-- Production code is compiled once, in the library the app links as well. -->
+  <ItemGroup>
+    <ProjectReference Include="..\BaseballSimulatorVR\BaseballSimulatorVR.Lib.vcxproj">
+      <Project>{f5d889bf-46fa-4e6c-aca3-cd2975afe51a}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Target Name="CopyTestRuntime" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />

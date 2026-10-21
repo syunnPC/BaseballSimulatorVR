@@ -145,7 +145,8 @@ namespace Tests
 			const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 			Check(event != nullptr, "Create GPU completion event");
 			const HRESULT eventResult = fence->SetEventOnCompletion(value, event);
-			const DWORD wait = SUCCEEDED(eventResult) ? WaitForSingleObject(event, 10000) : WAIT_FAILED;
+			const DWORD wait = SUCCEEDED(eventResult)
+			    ? WaitForSingleObject(event, ScaleTimeoutMilliseconds(10000)) : WAIT_FAILED;
 			CloseHandle(event);
 			Check(wait == WAIT_OBJECT_0, "Offscreen GPU drawing completes within ten seconds");
 			copied = true;

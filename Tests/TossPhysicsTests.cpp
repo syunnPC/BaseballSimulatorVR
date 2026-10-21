@@ -12,7 +12,7 @@
 namespace
 {
 	using namespace BaseballSimulatorVR;
-	bool Near(double a, double b) { return std::abs(a - b) < 1e-10; }
+	bool Near(double a, double b) { return Tests::Near(a, b, 1e-10, 0.0); }
 }
 
 void RunTossPhysicsTests(const std::filesystem::path& sourceRoot)

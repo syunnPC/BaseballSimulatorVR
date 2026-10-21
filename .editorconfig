@@ -1,0 +1,44 @@
+# Editor settings that match the existing files. C++ layout details live in
+# .clang-format; line endings are normalized by .gitattributes.
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cpp,hpp,h,inl}]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+max_line_length = 120
+
+# UTF-8 without BOM and CRLF, which the resource compiler input has always used.
+[*.rc]
+indent_style = space
+indent_size = 4
+end_of_line = crlf
+
+[*.{vcxproj,vcxproj.filters,props,targets,slnx}]
+indent_style = space
+indent_size = 2
+end_of_line = crlf
+
+[*.{manifest,xml,json,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Two trailing spaces are a Markdown line break.
+trim_trailing_whitespace = false
+
+# Vendored third-party files keep their upstream formatting.
+[external/**]
+charset = unset
+end_of_line = unset
+indent_style = unset
+indent_size = unset
+tab_width = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+max_line_length = unset

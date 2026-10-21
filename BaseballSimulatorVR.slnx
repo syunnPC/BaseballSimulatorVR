@@ -2,6 +2,14 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
+  <Folder Name="/Solution Items/">
+    <File Path=".clang-format" />
+    <File Path=".editorconfig" />
+    <File Path="Directory.Build.props" />
+    <File Path="README.md" />
+    <File Path="THIRD_PARTY_NOTICES.md" />
+  </Folder>
   <Project Path="BaseballSimulatorVR/BaseballSimulatorVR.vcxproj" Id="a85445c2-e3c5-446e-88ee-d16c24c26994" />
+  <Project Path="BaseballSimulatorVR/BaseballSimulatorVR.Lib.vcxproj" Id="f5d889bf-46fa-4e6c-aca3-cd2975afe51a" />
   <Project Path="Tests/BaseballSimulatorVR.Tests.vcxproj" Id="a182f7df-1245-4bf8-bce3-1da55db13618" />
 </Solution>

@@ -797,14 +797,46 @@ namespace BaseballSimulatorVR::Core
 			return TrajectoryTargetVelocity{ bestVelocityX, bestVelocityY };
 		}
 
+		// BASEBALLSIM_RANDOM_SEED (a decimal 32-bit unsigned integer) makes the
+		// random zone and pitch selection reproducible; otherwise seed randomly.
+		[[nodiscard]] std::uint32_t InitialRandomSeed()
+		{
+			std::array<wchar_t, 16> text{};
+			const DWORD length = GetEnvironmentVariableW(
+			    L"BASEBALLSIM_RANDOM_SEED",
+			    text.data(),
+			    static_cast<DWORD>(text.size()));
+			std::uint64_t seed = 0;
+			bool valid = (length > 0) && (length < text.size());
+			for (DWORD index = 0; valid && (index < length); ++index)
+			{
+				const wchar_t digit = text[index];
+				valid = (digit >= L'0') && (digit <= L'9');
+				if (valid)
+				{
+					seed = (seed * 10) + static_cast<std::uint64_t>(digit - L'0');
+					valid = seed <= UINT32_MAX;
+				}
+			}
+			return valid ? static_cast<std::uint32_t>(seed) : std::random_device{}();
+		}
+
 		[[nodiscard]] std::mt19937& GetThreadLocalRandomEngine()
 		{
 			static thread_local std::mt19937 randomEngine{
-				std::random_device{}()
+				InitialRandomSeed()
 			};
 			return randomEngine;
 		}
+	} // namespace
 
+	void SeedRandomEngine(const std::uint32_t seed)
+	{
+		GetThreadLocalRandomEngine().seed(seed);
+	}
+
+	namespace
+	{
 		struct GroundFanShape final
 		{
 			double halfAngleRadians{ 0.0 };

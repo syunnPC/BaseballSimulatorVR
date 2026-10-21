@@ -92,7 +92,7 @@ namespace
 		}
 	};
 
-	bool Near(const double a, const double b) { return std::abs(a - b) < 1e-8; }
+	bool Near(const double a, const double b) { return Tests::Near(a, b, 1e-8, 0.0); }
 	bool SamePosition(const Physics::Vector3& a, const Physics::Vector3& b)
 	{
 		return Near(a.x, b.x) && Near(a.y, b.y) && Near(a.z, b.z);

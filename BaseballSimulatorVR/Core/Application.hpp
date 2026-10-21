@@ -27,6 +27,12 @@
 
 namespace BaseballSimulatorVR::Core
 {
+	// Re-seeds the calling thread's engine behind random zone and pitch
+	// selection, for reproducible tests. Without a call, each thread seeds from
+	// BASEBALLSIM_RANDOM_SEED when it holds a decimal 32-bit unsigned integer,
+	// otherwise from std::random_device.
+	void SeedRandomEngine(std::uint32_t seed);
+
 	class Application final
 	{
 	  public:
