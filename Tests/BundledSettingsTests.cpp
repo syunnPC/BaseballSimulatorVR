@@ -317,7 +317,17 @@ void RunBundledSettingsTests(const std::filesystem::path& sourceRoot)
 	CheckPresetLayoutAndLabels(sourceRoot);
 	const Data::PresetCatalog catalog{ sourceRoot / L"Presets", {} };
 	const auto entries = catalog.EnumeratePitchSettings();
-	Tests::Check(entries.size() == 25U, "The bundled catalog offers every preset and both hands of mirrored families");
+	Tests::Check(entries.size() == 27U, "The bundled catalog offers every preset and both hands of mirrored families");
+	for (const auto hand : {L"RHP", L"LHP"})
+	{
+		const auto knuckleballer = LoadBundledPitch(sourceRoot, std::wstring{L"PitchSettings.Knuckleball."} + hand + L".json", error);
+		Tests::Check(knuckleballer && knuckleballer->pitchProfiles.size() == 1 &&
+		        knuckleballer->pitchProfiles.front().name == L"ナックル" &&
+		        knuckleballer->pitchProfiles.front().pitchParameters.knuckleball &&
+		        knuckleballer->pitchProfiles.front().pitchParameters.spinRpm < 100.0 &&
+		        std::abs(knuckleballer->pitchProfiles.front().pitchParameters.initialVelocity.z * 3.6 - 120.0) < .5,
+		    "The knuckleballer throws only a 120 km/h knuckleball with almost no spin");
+	}
 	for (const auto& entry : entries)
 	{
 		const auto settings = catalog.LoadPitchSettings(entry, error);

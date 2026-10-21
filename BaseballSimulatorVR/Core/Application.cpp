@@ -861,6 +861,25 @@ namespace BaseballSimulatorVR::Core
 
 	namespace
 	{
+		// Each knuckleball leaves the hand with its own slow turn: the seams' orientation, the
+		// axis they turn about and how fast all differ from throw to throw, so neither the
+		// pitcher nor the catcher knows where it will dart. Pitchers aim as if it would not.
+		void RandomizeKnuckleball(Baseball::PitchParameters& parameters, std::mt19937& random)
+		{
+			if (!parameters.knuckleball)
+			{
+				return;
+			}
+			std::uniform_real_distribution<double> unit(0.0, 1.0);
+			parameters.seamPerturbationPhase = 2.0 * std::numbers::pi * unit(random);
+			const double axisAngle = 2.0 * std::numbers::pi * unit(random);
+			parameters.spinAxis = Physics::Vector3{ std::cos(axisAngle), std::sin(axisAngle), 0.0 };
+			parameters.spinRpm = std::abs(parameters.spinRpm) * (.4 + 1.2 * unit(random));
+		}
+	}
+
+	namespace
+	{
 		// A modal MessageBox on the frame thread stops xrWaitFrame/xrEndFrame and
 		// freezes the headset image; show runtime notices from a helper thread.
 		void ShowNonBlockingMessage(std::wstring title, std::wstring text, const UINT iconFlags)
@@ -1685,7 +1704,12 @@ namespace BaseballSimulatorVR::Core
 		m_batCollisionSuppressRemainingSeconds = 0.0;
 		m_currentPitchPresentationName = BuildXrUiTelemetry().presetName;
 		m_activePitchParameters.ballProperties = m_environmentSettings.ballProperties;
-		m_pitchSimulationService.Reset(m_activePitchParameters);
+		Baseball::PitchParameters delivered = m_activePitchParameters;
+		if (UsesPitcher())
+		{
+			RandomizeKnuckleball(delivered, GetThreadLocalRandomEngine());
+		}
+		m_pitchSimulationService.Reset(delivered);
 		if (m_operationMode != OperationMode::TeeBatting)
 			m_pitchFlightAnalysis.Reset(m_pitchSimulationService.GetPitchParameters(),
 			    m_environmentSettings.pitchDistanceMeters, m_environmentSettings.moundHeightOffsetMeters,
@@ -5038,6 +5062,7 @@ namespace BaseballSimulatorVR::Core
 		parameters.enableHeightDependentWind = m_environmentSettings.enableHeightDependentWind;
 		parameters.windShearFactor = m_environmentSettings.windShearFactor;
 		parameters.airDensityKilogramsPerCubicMeter = EnvironmentAirDensity();
+		parameters.knuckleball = false;
 		const double depth = ConvertCollisionWorldToSimulationPosition(aim, m_environmentSettings.pitchDistanceMeters,
 		    m_environmentSettings.moundHeightOffsetMeters).z;
 		constexpr double Tolerance = .015;
@@ -5240,7 +5265,7 @@ namespace BaseballSimulatorVR::Core
 			    a.enableSeamPerturbation == b.enableSeamPerturbation &&
 			    a.seamPerturbationAmplitude == b.seamPerturbationAmplitude &&
 			    a.seamPerturbationFrequencyHz == b.seamPerturbationFrequencyHz &&
-			    a.seamPerturbationPhase == b.seamPerturbationPhase &&
+			    a.seamPerturbationPhase == b.seamPerturbationPhase && a.knuckleball == b.knuckleball &&
 			    a.airDensityKilogramsPerCubicMeter == b.airDensityKilogramsPerCubicMeter;
 		}
 
@@ -5253,7 +5278,9 @@ namespace BaseballSimulatorVR::Core
 			{
 				return std::nullopt;
 			}
-			return ResolveTrajectoryZoneTargetVelocity(parameters, pitchDistanceMeters, zoneIndex,
+			Baseball::PitchParameters aimed = parameters;
+			aimed.knuckleball = false;
+			return ResolveTrajectoryZoneTargetVelocity(aimed, pitchDistanceMeters, zoneIndex,
 			    *zoneBounds, *zoneTarget, verticalOffsetMeters);
 		}
 	} // namespace

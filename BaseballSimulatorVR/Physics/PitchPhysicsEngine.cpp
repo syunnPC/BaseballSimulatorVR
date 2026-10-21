@@ -16,6 +16,8 @@ namespace BaseballSimulatorVR::Physics
 		constexpr double SeamLiftInfluence = 0.40;
 		constexpr double SeamSideForceScale = 0.28;
 		constexpr double TwoPi = 2.0 * std::numbers::pi;
+		// Peak lateral force coefficient on a knuckleball's seams; see KnuckleballAcceleration.
+		constexpr double KnuckleballLateralCoefficient = 0.20;
 
 		[[nodiscard]] bool IsFinite(const double value) noexcept
 		{
@@ -39,6 +41,34 @@ namespace BaseballSimulatorVR::Physics
 		[[nodiscard]] Vector3 FiniteOrZero(const Vector3& value) noexcept
 		{
 			return IsFinite(value) ? value : Vector3{};
+		}
+
+		// A knuckleball turns less than once on its way to the plate, so its seams sit nearly
+		// still against the air and the flow separates unevenly around them. Wind-tunnel
+		// measurements on a non-spinning baseball (Watts & Sawyer 1975) show the resulting
+		// sideways force reversing four times per turn of the ball and peaking at about a
+		// fifth of the dynamic pressure times its cross section. The push acts across the
+		// plane the seams turn in, so as they slowly turn the ball darts one way and then the
+		// other.
+		[[nodiscard]] Vector3 KnuckleballAcceleration(const BallState& state,
+		    const Baseball::PitchParameters& parameters, const Vector3& velocityDirection, const double speed,
+		    const double airDensity) noexcept
+		{
+			if (!parameters.knuckleball)
+			{
+				return {};
+			}
+			Vector3 across = Cross(NormalizeOrZero(state.spinAxis), velocityDirection);
+			if (LengthSquared(across) < 1e-12)
+			{
+				across = Cross(Vector3{ 1.0, 0.0, 0.0 }, velocityDirection);
+			}
+			across = NormalizeOrZero(across);
+			const double turn = std::abs(FiniteOr(state.spinRpm, 0.0)) * (TwoPi / 60.0) *
+			        FiniteOr(state.flightTimeSeconds, 0.0) +
+			    FiniteOr(parameters.seamPerturbationPhase, 0.0);
+			const double coefficient = KnuckleballLateralCoefficient * std::sin(4.0 * std::fmod(turn, TwoPi));
+			return across * (AerodynamicAccelerationScale(state.properties, airDensity) * coefficient * speed * speed);
 		}
 
 		[[nodiscard]] BallState SanitizeBallState(
@@ -282,7 +312,8 @@ namespace BaseballSimulatorVR::Physics
 			seamSideAcceleration = seamSideDirection * (liftCoefficient * speed * SeamSideForceScale * seamAmplitude * seamWave);
 		}
 
-		return dragAcceleration + magnusAcceleration + seamSideAcceleration;
+		return dragAcceleration + magnusAcceleration + seamSideAcceleration +
+		    KnuckleballAcceleration(currentState, pitchParameters, velocityDirection, speed, airDensity);
 	}
 
 	std::pair<double, double> PitchPhysicsEngine::ResolveAerodynamicCoefficients(

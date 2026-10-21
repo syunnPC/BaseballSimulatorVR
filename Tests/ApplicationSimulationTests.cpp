@@ -2185,6 +2185,47 @@ namespace BaseballSimulatorVR::Core
 			    "A pitch far from the mitt gets by as a wild pitch");
 		}
 
+		static void TestKnuckleballDelivery()
+		{
+			Tests::TempDirectory output;
+			auto app = MakeApplication();
+			app->m_userDataDirectoryPath = output.path.wstring();
+			Data::PitchRuntimeSettings settings{};
+			auto knuckleball = settings.pitchParameters;
+			knuckleball.knuckleball = true;
+			knuckleball.spinRpm = 30.0;
+			knuckleball.initialVelocity.z = 33.3;
+			knuckleball.useCoefficientTable = true;
+			settings.pitchParameters = knuckleball;
+			settings.pitchProfiles = { { L"ナックル", knuckleball } };
+			settings.activePitchProfileIndex = 0;
+			settings.randomPitchProfileEnabled = false;
+			const auto path = output.path / "PitchSettings.Knuckle.json";
+			std::wstring error;
+			Tests::Check(app->m_pitchPresetJsonStorage.SavePitchSettings(path.wstring(), settings, error) &&
+			        app->LoadUserPresetFromJsonFile(path.wstring(), L"test_knuckle_load"),
+			    "A knuckleball settings file saves and loads");
+			const auto saved = app->m_pitchPresetJsonStorage.LoadPitchSettings(path.wstring(), error);
+			Tests::Check(saved && saved->pitchProfiles.size() == 1 && saved->pitchProfiles.front().pitchParameters.knuckleball,
+			    "The knuckleball flag survives the round trip through JSON");
+			app->SetOperationMode(Application::OperationMode::BattingDuel, L"test_knuckle_duel");
+			std::vector<double> phases;
+			for (int pitch = 0; pitch < 6; ++pitch)
+			{
+				app->StartRandomBattingDuelPitch(L"test_knuckle");
+				const auto& delivered = app->m_pitchSimulationService.GetPitchParameters();
+				Tests::Check(delivered.knuckleball && delivered.spinRpm >= 30.0 * .4 - 1e-9 &&
+				        delivered.spinRpm <= 30.0 * 1.6 + 1e-9 && std::abs(delivered.spinAxis.z) < 1e-12,
+				    "Each knuckleball leaves the hand with its own slow turn about an axis across its path");
+				phases.push_back(delivered.seamPerturbationPhase);
+			}
+			std::sort(phases.begin(), phases.end());
+			Tests::Check(std::adjacent_find(phases.begin(), phases.end()) == phases.end(),
+			    "No two knuckleballs start with the same seams");
+			Tests::Check(app->m_pitchProfiles.front().pitchParameters.spinRpm == 30.0,
+			    "Varying the throws leaves the stored repertoire untouched");
+		}
+
 		static void Run(const std::filesystem::path& sourceRoot)
 		{
 			const RuntimeSettingsGuard settingsGuard;
@@ -2200,6 +2241,7 @@ namespace BaseballSimulatorVR::Core
 			TestGroundCarryInterpolationAndFirstBounce();
 			TestStadiumWallAndHomeRun();
 			TestCatcherMode();
+			TestKnuckleballDelivery();
 			TestDuelBoardLifecycle();
 			TestFixedPitchVisibilityAndTrajectoryBoundary();
 			TestActualDuelPlateDecisionAndResultRetention();
