@@ -98,6 +98,7 @@ namespace BaseballSimulatorVR::Common
 			stream << (cm < 0.0 ? L'-' : L'+') << std::fixed << std::setprecision(1) << std::abs(cm);
 			return stream.str();
 		};
+		if (!state.battedResult.empty()) call = state.battedResult;
 		const bool reveal = state.pitchMetricsVisible && state.hasPitchBreak;
 		return {L"判定  " + call,
 		    L"変化  横 " + (reveal ? signedCentimeters(state.pitchHorizontalBreakMeters) : L"--") +

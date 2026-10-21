@@ -75,6 +75,13 @@ GitHub Actions（`.github/workflows/build.yml`）では、Windows ランナー�
 
 グラウンドには公式規格の寸法で、内野の土と芝、ベース、ファウルライン、バッターボックスを描画します（地面の表示（3 キー）と連動）。
 
+対戦とティー打撃では、打球が最初に地面に落ちた時点で、標準的な守備位置の 9 人を相手にした結果（「ショートゴロ」「センターフライ」「レフト前ヒット」「左中間二塁打」「センターへホームラン」のように、どこへ飛んだかを含む呼び方）を判定し、スコアボードの「判定」と計測パネルの「結果」に表示します。セッションログにも記録されます。
+
+- 打球の種類は打球角度で分けます（10° 未満がゴロ、25° 未満がライナー、50° 以下がフライ、それより上がポップフライ）。
+- 野手は Statcast の標準守備位置の中央から、反応・加速・最高速（外野手は平均スプリント速度 27 ft/s）で打球へ向かいます。フライ・ライナーは捕れる高さで追いつけばアウトです。ゴロは捕球して一塁へ送球し、打者走者（一塁到達 右 4.4 秒・左 4.3 秒）より早ければアウト、遅ければ内野安打です。
+- 外野に抜けた打球は、外野手が追いつくまでの時間と二塁・三塁への送球から、単打・二塁打・三塁打を決めます。フェンスは公認野球規則 2.01 の最小値（両翼 325 ft・中堅 400 ft）の位置に、高さ 8 ft で置いた球場として扱います。
+- 典型的な打球の分布で平均すると、打率はゴロ 約 .22、ライナー 約 .54、フライ 約 .21、ポップフライ ほぼ 0 になります（MLB はおおよそ .24・.65・.22・.02）。個々の野手の能力や守備シフト、走者の状況は扱いません。
+
 ストライクゾーンの高さは HMD の高さから推定した身長に合わせます。未設定の場合は起動後に自動で調整するので、3 秒ほどまっすぐ立ってください。Ctrl+H または手元 UI からやり直せます。
 
 ### VR の操作
@@ -192,5 +199,6 @@ OpenXR の次のインタラクションプロファイルに入力を割り当�
 - 芯の範囲：Russell [2004](https://www.acs.psu.edu/drussell/bats/sweetspot.html)・[2013](https://www.acs.psu.edu/drussell/bats/sting-damp.html)、Cross [1998](https://baseball.physics.illinois.edu/CrossSweetSpotBat.pdf)。34インチの先端から5〜7インチを全長比に換算した近似で、個別バットの形状・振動特性は計算しません。軟式球とウレタンの反発は [JSME 2017](https://www.jstage.jst.go.jp/article/jsmeshd/2017/0/2017_C-16/_article/-char/ja) を参照。
 - ゾーンの身体位置：[AIST人体寸法統計](https://www.airc.aist.go.jp/dhrt/97-98_Statistics.pdf)。HMDから身長を推定し、膝付近と胸骨上縁・胴囲高の中間を近似します。個人の関節位置は測定しません。
 - ベース寸法と球の接触判定：[MLB Field Dimensions](https://www.mlb.com/glossary/rules/field-dimensions)、[MLB Strike Zone](https://www.mlb.com/glossary/rules/strike-zone)。
+- 打球の判定：打球の種類は [MLB Glossary: Launch Angle](https://www.mlb.com/glossary/statcast/launch-angle)、守備位置は [Fielding Alignments](https://www.mlb.com/glossary/statcast/shifts) の標準守備位置、外野手の到達範囲は [Catch Probability](https://www.mlb.com/glossary/statcast/catch-probability) と [Sprint Speed](https://baseballsavant.mlb.com/sprint_speed_leaderboard)、フェンスの距離は公認野球規則 2.01 を参照。
 
 本体は [LICENSE.txt](LICENSE.txt)、同梱の OpenXR・SQLite は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。

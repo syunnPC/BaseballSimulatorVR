@@ -67,7 +67,7 @@ namespace BaseballSimulatorVR::Common
 		const auto world = [&](const double u, const double v, const Layer layer)
 		{
 			const double distance = std::hypot(u, apexZ - v);
-			return Vector3{u, floorHeight + layer * (.003 + .00015 * distance), apexZ - v};
+			return Vector3{u, floorHeight + static_cast<int>(layer) * (.003 + .00015 * distance), apexZ - v};
 		};
 		const auto shade = [&](const std::array<float, 4>& color, const double u, const double v)
 		{

@@ -301,6 +301,9 @@ namespace BaseballSimulatorVR::Core
 			app->m_duelRound.hasBallBeenBatted = true;
 			app->m_duelRound.battedMetrics.hasContact = true;
 			app->m_duelRound.battedMetrics.contactPosition = { 0.0, 1.0, 18.44 };
+			// A 42 m/s, 17 degree liner straightaway that tops out at 14 m.
+			app->m_duelRound.battedMetrics.launchVelocity = { 0.0, 12.0, -40.0 };
+			app->m_duelRound.battedMetrics.maxHeightMeters = 14.0;
 			app->m_duelRound.hasPreviousBallState = true;
 			app->m_duelRound.previousBallState.position = { 0.0, 0.137, 18.44 - 100.0 };
 			app->m_duelRound.previousBallState.flightTimeSeconds = 4.0;
@@ -313,6 +316,10 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_duelRound.battedMetrics.hasFirstGroundContact &&
 			    Near(app->m_duelRound.battedMetrics.firstGroundDistanceMeters, 110.0),
 			    "Carry beyond the ground fan interpolates the first landing rather than the coarse frame endpoint");
+			Tests::Check(app->m_duelRound.battedMetrics.resultLabel == L"センターライナー" &&
+			        app->BuildFieldPresentationState().statistics.battedResult == L"センターライナー" &&
+			        app->BuildXrUiTelemetry().battedResultLabel == L"センターライナー",
+			    "The first landing is called against the standard defense and shown on the board and the panel");
 			Tests::Check(app->m_duelRound.isWaitingForNextPitch,
 			    "An out-of-field landing still starts the duel interval after measuring carry");
 			(void)UpdateBall(*app);

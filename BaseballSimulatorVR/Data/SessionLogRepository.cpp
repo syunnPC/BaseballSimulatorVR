@@ -115,7 +115,8 @@ namespace BaseballSimulatorVR::Data
 		    " max_height REAL,"
 		    " contact_fraction REAL NOT NULL,"
 		    " bat_material TEXT NOT NULL,"
-		    " bat_hand TEXT NOT NULL"
+		    " bat_hand TEXT NOT NULL,"
+		    " result TEXT"
 		    ");"
 		    "CREATE INDEX IF NOT EXISTS idx_batted_balls_session ON batted_balls(session_id, mode);"
 		    "CREATE INDEX IF NOT EXISTS idx_batted_balls_pitch ON batted_balls(pitch_event_id);";
@@ -159,7 +160,7 @@ namespace BaseballSimulatorVR::Data
 		    " p.plate_x, p.plate_y, p.zone_call, p.horizontal_break, p.vertical_break,"
 		    " b.mode AS batted_mode, b.pitch_event_id AS batted_pitch_event_id, b.exit_speed,"
 		    " b.launch_angle, b.spray_angle, b.carry_distance, b.max_height, b.contact_fraction,"
-		    " b.bat_material, b.bat_hand,"
+		    " b.bat_material, b.bat_hand, b.result AS batted_result,"
 		    " r.result_label, r.result_score, r.note AS result_note, r.updated_at AS result_updated_at"
 		    " FROM pitch_events e"
 		    " LEFT JOIN pitches p ON p.event_id = e.id"
@@ -201,7 +202,7 @@ namespace BaseballSimulatorVR::Data
 		    " spray_angle, carry_distance, contact_fraction, bat_material, bat_hand)"
 		    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
 		constexpr char UpdateBattedBallLandingSql[] =
-		    "UPDATE batted_balls SET carry_distance = ?, max_height = ? WHERE event_id = ?;";
+		    "UPDATE batted_balls SET carry_distance = ?, max_height = ?, result = ? WHERE event_id = ?;";
 		constexpr char UpsertResultSql[] =
 		    "INSERT INTO pitch_event_results (event_id, result_label, result_score, note, updated_at)"
 		    " VALUES (?, ?, ?, ?, ?)"
@@ -276,6 +277,7 @@ namespace BaseballSimulatorVR::Data
 			std::int64_t eventId{ 0 };
 			double carryDistance{ 0.0 };
 			double maxHeight{ 0.0 };
+			std::string result{};
 		};
 
 		struct UpsertResultJob final
@@ -678,7 +680,8 @@ namespace BaseballSimulatorVR::Data
 			sqlite3_stmt* statement = Statement(UpdateBattedBallLandingSql);
 			const bool bound = statement != nullptr && sqlite3_bind_double(statement, 1, job.carryDistance) == SQLITE_OK &&
 			    sqlite3_bind_double(statement, 2, job.maxHeight) == SQLITE_OK &&
-			    sqlite3_bind_int64(statement, 3, job.eventId) == SQLITE_OK;
+			    BindOptionalText(statement, 3, job.result) &&
+			    sqlite3_bind_int64(statement, 4, job.eventId) == SQLITE_OK;
 			if (!bound)
 			{
 				errorMessage = L"Failed to bind a batted-ball landing: " + DescribeSqliteError(database);
@@ -1014,6 +1017,16 @@ namespace BaseballSimulatorVR::Data
 			           Execute(database, RecreateViewsSql, error) &&
 			           Execute(database, "PRAGMA user_version = 2;", error);
 		    }, L"Failed to migrate the session log schema to version 2"))
+		{
+			return false;
+		}
+		// Schema version 3: the scorer's call for each batted ball, also in the comparison view.
+		if (version < 3 &&
+		    !migrate([&] {
+			    return EnsureColumnExists(database, "batted_balls", "result", "result TEXT", error) &&
+			           Execute(database, RecreateViewsSql, error) &&
+			           Execute(database, "PRAGMA user_version = 3;", error);
+		    }, L"Failed to migrate the session log schema to version 3"))
 		{
 			return false;
 		}
@@ -1399,7 +1412,8 @@ namespace BaseballSimulatorVR::Data
 	}
 
 	OperationResult SessionLogRepository::UpdateBattedBallLanding(
-	    const std::int64_t battedBallEventId, const double carryDistanceMeters, const double maxHeightMeters)
+	    const std::int64_t battedBallEventId, const double carryDistanceMeters, const double maxHeightMeters,
+	    const std::wstring_view resultLabel)
 	{
 		if (!IsInitialized())
 		{
@@ -1415,7 +1429,8 @@ namespace BaseballSimulatorVR::Data
 		{
 			return { false, L"Landings can only be recorded for batted balls of the current session." };
 		}
-		implementation.EnqueueLocked(BattedBallLandingJob{ battedBallEventId, carryDistanceMeters, maxHeightMeters });
+		implementation.EnqueueLocked(BattedBallLandingJob{ battedBallEventId, carryDistanceMeters, maxHeightMeters,
+		    Text::TryWideToUtf8(resultLabel).value_or(std::string{}) });
 		return { true, {} };
 	}
 

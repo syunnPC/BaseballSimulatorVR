@@ -1881,6 +1881,10 @@ namespace BaseballSimulatorVR::Xr
 						              << m_uiTelemetry.battedFirstGroundDistanceMeters
 						              << L"m";
 						landingLabel = landingStream.str();
+						if (!m_uiTelemetry.battedResultLabel.empty())
+						{
+							landingLabel = L"結果 " + m_uiTelemetry.battedResultLabel;
+						}
 					}
 					std::wstring directionLaunchLine = L"\u65b9\u5411 -- / \u6253\u89d2 --";
 					std::wstring carryApexLine = L"\u98db\u8ddd -- / \u6700\u9ad8 --";

@@ -105,6 +105,8 @@ struct UiTelemetry final {
   bool battedMetricsLive{false};
   bool battedMetricsHasGroundContact{false};
   double battedFirstGroundDistanceMeters{0.0};
+  // Scorer's call for the batted ball once it has come down; empty before.
+  std::wstring battedResultLabel{};
   double battedMaxHeightMeters{0.0};
   Physics::Vector3 battedLaunchVelocity{};
   Common::StrikeZoneCalibrationProgress strikeZoneCalibration{};

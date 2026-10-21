@@ -117,6 +117,7 @@
     <ClInclude Include="Physics\Vector3.hpp" />
     <ClInclude Include="Render\Dx12RenderBackend.hpp" />
     <ClInclude Include="Render\IRenderBackend.hpp" />
+    <ClInclude Include="Simulation\BattedBallOutcome.hpp" />
     <ClInclude Include="Simulation\PitchDeliveryController.hpp" />
     <ClInclude Include="Simulation\PitchFlightAnalysis.hpp" />
     <ClInclude Include="Simulation\PitchSimulationService.hpp" />
@@ -139,6 +140,7 @@
     <ClCompile Include="Physics\BatBallCollision.cpp" />
     <ClCompile Include="Physics\PitchPhysicsEngine.cpp" />
     <ClCompile Include="Render\Dx12RenderBackend.cpp" />
+    <ClCompile Include="Simulation\BattedBallOutcome.cpp" />
     <ClCompile Include="Simulation\PitchFlightAnalysis.cpp" />
     <ClCompile Include="Simulation\PitchSimulationService.cpp" />
     <ClCompile Include="UI\DesktopHudViewModel.cpp" />

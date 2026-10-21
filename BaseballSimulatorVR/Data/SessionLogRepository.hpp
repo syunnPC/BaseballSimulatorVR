@@ -98,7 +98,7 @@ namespace BaseballSimulatorVR::Data
 
 		~SessionLogRepository();
 
-		static constexpr int CurrentSchemaVersion = 2;
+		static constexpr int CurrentSchemaVersion = 3;
 
 		[[nodiscard]] OperationResult Initialize(std::wstring_view databasePath);
 		[[nodiscard]] bool Initialize(std::wstring_view databasePath, std::wstring& errorMessage);
@@ -149,10 +149,12 @@ namespace BaseballSimulatorVR::Data
 		    const Baseball::PitchParameters& pitchParameters,
 		    std::wstring_view note,
 		    const BattedBallDetails& details);
+		// Records where the batted ball came down and the scorer's call for it.
 		[[nodiscard]] OperationResult UpdateBattedBallLanding(
 		    std::int64_t battedBallEventId,
 		    double carryDistanceMeters,
-		    double maxHeightMeters);
+		    double maxHeightMeters,
+		    std::wstring_view resultLabel = {});
 		[[nodiscard]] OperationResult UpsertPitchEventResult(
 		    std::int64_t eventId,
 		    std::wstring_view resultLabel,

@@ -57,6 +57,8 @@ namespace BaseballSimulatorVR::Common
         bool hasBattedMetrics{ false };
         bool battedMetricsLive{ false };
         bool battedHasGroundContact{ false };
+        // Out or hit and where it went, once the batted ball has come down.
+        std::wstring battedResult{};
         double battedLaunchSpeedMetersPerSecond{ 0.0 };
         double battedLaunchAngleDegrees{ 0.0 };
         double battedDistanceMeters{ 0.0 };

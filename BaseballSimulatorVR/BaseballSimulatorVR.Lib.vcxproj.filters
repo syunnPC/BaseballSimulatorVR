@@ -215,6 +215,9 @@
     <ClInclude Include="Render\IRenderBackend.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Simulation\BattedBallOutcome.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Simulation\PitchDeliveryController.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -275,6 +278,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="Render\Dx12RenderBackend.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="Simulation\BattedBallOutcome.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="Simulation\PitchFlightAnalysis.cpp">

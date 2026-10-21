@@ -4209,6 +4209,8 @@ namespace BaseballSimulatorVR::Core
 			    metricsForTelemetry->hasFirstGroundContact;
 			telemetry.battedFirstGroundDistanceMeters =
 			    metricsForTelemetry->firstGroundDistanceMeters;
+			telemetry.battedResultLabel = metricsForTelemetry->hasFirstGroundContact
+			    ? metricsForTelemetry->resultLabel : std::wstring{};
 			telemetry.battedMaxHeightMeters =
 			    metricsForTelemetry->maxHeightMeters;
 			telemetry.battedLaunchVelocity =
@@ -4304,9 +4306,33 @@ namespace BaseballSimulatorVR::Core
 			statistics.hasBatContactPosition = battedMetrics->hasBatContactPosition;
 			statistics.batContactFraction = battedMetrics->batContactFraction;
 			statistics.batMaterial = m_batMaterial;
+			if (battedMetrics->hasFirstGroundContact) statistics.battedResult = battedMetrics->resultLabel;
 			statistics.contactBatLengthMeters = battedMetrics->contactBatLengthMeters;
 		}
 		return state;
+	}
+
+	Simulation::BattedBallOutcome Application::JudgeBattedBallLanding(const BattedBallMetrics& metrics,
+	    const Physics::Vector3& landingPosition, const double landingFlightTimeSeconds) const
+	{
+		// Simulation z grows toward the plate, so the field lies toward -z from home plate.
+		const double homeZ = m_environmentSettings.pitchDistanceMeters + Common::HomePlateDepthMeters;
+		const Physics::Vector3& launch = metrics.launchVelocity;
+		const double horizontalLaunch = std::hypot(launch.x, launch.z);
+		const bool groundBall = Simulation::ClassifyBattedBallType(
+		    std::atan2(launch.y, horizontalLaunch) * 180.0 / std::numbers::pi) == Simulation::BattedBallType::GroundBall;
+		// Ground balls are judged along their launch direction; air balls where they came down.
+		const double sprayX = groundBall ? launch.x : landingPosition.x;
+		const double sprayDepth = groundBall ? -launch.z : homeZ - landingPosition.z;
+		Simulation::BattedBallFlight flight;
+		flight.exitSpeedMetersPerSecond = Physics::Length(launch);
+		flight.launchAngleDegrees = std::atan2(launch.y, horizontalLaunch) * 180.0 / std::numbers::pi;
+		flight.sprayAngleDegrees = std::atan2(sprayX, sprayDepth) * 180.0 / std::numbers::pi;
+		flight.landingDistanceMeters = metrics.firstGroundDistanceMeters;
+		flight.hangTimeSeconds = (std::max)(0.0, landingFlightTimeSeconds - metrics.contactFlightTimeSeconds);
+		flight.apexHeightMeters = metrics.maxHeightMeters;
+		flight.rightHandedBatter = m_batUseRightHand;
+		return Simulation::JudgeBattedBall(flight);
 	}
 
 	void Application::RefreshBatPoseFromXrInput()
@@ -5124,12 +5150,19 @@ namespace BaseballSimulatorVR::Core
 			metrics->firstGroundDistanceMeters = std::sqrt(
 			    (contactDelta.x * contactDelta.x) +
 			    (contactDelta.z * contactDelta.z));
+			const double heightChange = ballState->position.y - previousState.position.y;
+			const double crossBlend = std::abs(heightChange) > 1e-9
+			    ? std::clamp((groundContactHeight - previousState.position.y) / heightChange, 0.0, 1.0) : 1.0;
+			metrics->resultLabel = JudgeBattedBallLanding(*metrics, groundCrossPosition,
+			    previousState.flightTimeSeconds +
+			        (ballState->flightTimeSeconds - previousState.flightTimeSeconds) * crossBlend).label;
 			if (m_isSessionLogAvailable && (m_lastBattedBallEventId > 0))
 			{
 				(void)m_sessionLogRepository.UpdateBattedBallLanding(
 				    m_lastBattedBallEventId,
 				    metrics->firstGroundDistanceMeters,
-				    metrics->maxHeightMeters);
+				    metrics->maxHeightMeters,
+				    metrics->resultLabel);
 			}
 			return true;
 		};
