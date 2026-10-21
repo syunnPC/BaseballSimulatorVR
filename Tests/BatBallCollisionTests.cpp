@@ -121,6 +121,60 @@ namespace
 		}
 	}
 
+	void CheckBeginnerBat()
+	{
+		using namespace BaseballSimulatorVR::Physics;
+		Tests::Check(BatResponseRatio(BatMaterial::Beginner, BatGripEndRatio) == 28.0 / 34.0 &&
+		    BatResponseRatio(BatMaterial::Beginner, 1.0) == 28.0 / 34.0 &&
+		    BatResponseRatio(BatMaterial::Beginner, .1) == .1 &&
+		    BatResponseRatio(BatMaterial::Wood, .5) == .5,
+		    "Only the beginner bat moves its response point, and only beyond the grip");
+		for (double length : {0.5, 0.84, 1.2})
+		for (double mass : {0.145, 0.190})
+		for (double baseCor : {0.30, 0.45, 0.60})
+		{
+			BatBallCollisionInput input;
+			input.ballVelocityWorld = {-40.0, 0.0, 0.0};
+			input.batContactVelocityWorld = {30.0, 0.0, 0.0};
+			input.collisionNormal = {1.0, 0.0, 0.0};
+			input.batAxisDirectionWorld = {0.0, 1.0, 0.0};
+			input.batSurfaceOffsetWorld = input.collisionNormal * input.batRadiusMeters;
+			input.batLengthMeters = length;
+			input.ballProperties.massKilograms = mass;
+			input.ballProperties.radiusMeters = mass == 0.145 ? .037 : .0485;
+			input.ballProperties.restitutionAtReferenceSpeed = baseCor;
+			input.batMaterial = BatMaterial::Urethane;
+			input.contactDistanceFromHandleMeters = length * 28.0 / 34.0;
+			const double urethaneBest = ResolveBatBallCollision(input).ballVelocityWorld.x;
+			input.batMaterial = BatMaterial::Beginner;
+			input.contactDistanceFromHandleMeters = length * BatGripEndRatio;
+			const auto reference = ResolveBatBallCollision(input);
+			Tests::Check(reference.hasImpulse && reference.restitution < 1.0 &&
+			    reference.ballVelocityWorld.x > urethaneBest,
+			    "The beginner bat launches the ball faster than a urethane bat's sweet spot");
+			double previousExit = 0.0;
+			for (int sample = 0; sample <= 1000; ++sample)
+			{
+				const double ratio = .15 + sample * .00085;
+				input.contactDistanceFromHandleMeters = ratio * length;
+				const auto response = ResolveBatBallCollision(input);
+				if (ratio >= BatGripEndRatio)
+					Tests::Check(std::abs(response.ballVelocityWorld.x - reference.ballVelocityWorld.x) < 1e-9 &&
+					    std::abs(response.restitution - reference.restitution) < 1e-12,
+					    "Every beginner-bat hit beyond the grip launches the ball identically, up to the tip");
+				else if (ratio < BatGripCenterRatio)
+					Tests::Check(response.ballVelocityWorld.x < reference.ballVelocityWorld.x,
+					    "Hits on the beginner bat's grip stay weaker than the barrel");
+				// Samples are under a millimeter apart; the ramp over the upper grip is steep
+				// (about 0.65 m/s per sample) but has no jump.
+				if (sample > 0)
+					Tests::Check(std::abs(response.ballVelocityWorld.x - previousExit) < 1.0,
+					    "The beginner bat's response changes continuously into the grip");
+				previousExit = response.ballVelocityWorld.x;
+			}
+		}
+	}
+
 	void CheckPhysicalSurfaceOffsets()
 	{
 		using namespace BaseballSimulatorVR::Physics;
@@ -221,6 +275,7 @@ void RunBatBallCollisionTests()
 
 	using namespace BaseballSimulatorVR::Physics;
 	CheckMaterialsAndSweetSpot();
+	CheckBeginnerBat();
 	CheckPhysicalSurfaceOffsets();
 	BatBallCollisionInput input{};
 	input.ballVelocityWorld = { -40.0, 3.0, 2.0 };

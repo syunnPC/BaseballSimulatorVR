@@ -1869,7 +1869,8 @@ namespace BaseballSimulatorVR::Xr
 					const std::wstring batYawUpLabel = L"\u5411\u304d +";
 					const std::wstring batMaterialLabel = m_uiTelemetry.batMaterial == Physics::BatMaterial::Wood
 					    ? L"材質 木製" : m_uiTelemetry.batMaterial == Physics::BatMaterial::Metal
-					    ? L"材質 金属" : L"材質 ウレタン";
+					    ? L"材質 金属" : m_uiTelemetry.batMaterial == Physics::BatMaterial::Urethane
+					    ? L"材質 ウレタン" : L"材質 初心者";
 					std::wstring landingLabel = L"\u7740\u5f3e --";
 					if (m_uiTelemetry.hasBattedMetrics &&
 					    m_uiTelemetry.battedMetricsHasGroundContact)
@@ -1880,6 +1881,10 @@ namespace BaseballSimulatorVR::Xr
 						              << m_uiTelemetry.battedFirstGroundDistanceMeters
 						              << L"m";
 						landingLabel = landingStream.str();
+						if (!m_uiTelemetry.battedResultLabel.empty())
+						{
+							landingLabel = L"結果 " + m_uiTelemetry.battedResultLabel;
+						}
 					}
 					std::wstring directionLaunchLine = L"\u65b9\u5411 -- / \u6253\u89d2 --";
 					std::wstring carryApexLine = L"\u98db\u8ddd -- / \u6700\u9ad8 --";

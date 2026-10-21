@@ -13,6 +13,7 @@
 #include "../Simulation/PitchSimulationService.hpp"
 #include "../Simulation/PitchDeliveryController.hpp"
 #include "../Simulation/PitchFlightAnalysis.hpp"
+#include "../Simulation/BattedBallOutcome.hpp"
 #include "../Common/StrikeZoneCalibration.hpp"
 #include "../Common/StrikeZoneSettings.hpp"
 #include "../UI/DesktopHudViewModel.hpp"
@@ -175,6 +176,9 @@ namespace BaseballSimulatorVR::Core
 		// Moist-air density from the environment's altitude, temperature and humidity.
 		[[nodiscard]] double EnvironmentAirDensity() const noexcept;
 		[[nodiscard]] Xr::UiTelemetry BuildXrUiTelemetry() const;
+		struct BattedBallMetrics;
+		[[nodiscard]] Simulation::BattedBallOutcome JudgeBattedBallLanding(const BattedBallMetrics& metrics,
+		    const Physics::Vector3& landingPosition, double landingFlightTimeSeconds) const;
 		void RefreshBatPoseFromXrInput();
 		void UpdateModeSpecificBallState(Physics::BallState* ballState);
 		[[nodiscard]] bool TryApplyBatCollision(Physics::BallState* ballState);
@@ -230,6 +234,8 @@ namespace BaseballSimulatorVR::Core
 			double contactFlightTimeSeconds{};
 			double firstGroundDistanceMeters{ 0.0 };
 			double maxHeightMeters{ 0.0 };
+			// Scorer's call (out, hit and where) made when the ball first comes down.
+			std::wstring resultLabel{};
 		};
 
 		std::unique_ptr<Xr::IXrSystem> m_xrSystem;

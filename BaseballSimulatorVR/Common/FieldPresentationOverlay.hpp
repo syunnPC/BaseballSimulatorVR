@@ -98,6 +98,7 @@ namespace BaseballSimulatorVR::Common
 			stream << (cm < 0.0 ? L'-' : L'+') << std::fixed << std::setprecision(1) << std::abs(cm);
 			return stream.str();
 		};
+		if (!state.battedResult.empty()) call = state.battedResult;
 		const bool reveal = state.pitchMetricsVisible && state.hasPitchBreak;
 		return {L"判定  " + call,
 		    L"変化  横 " + (reveal ? signedCentimeters(state.pitchHorizontalBreakMeters) : L"--") +
@@ -254,7 +255,8 @@ namespace BaseballSimulatorVR::Common
 		const double batWidth = plot.width - .8 * sizeScale;
 		const double batY = bottom + 2.0 * sizeScale;
 		const auto batX = [&](double fraction) { return batLeft + batWidth * fraction; };
-		const auto& sweet = Physics::GetBatMaterialProfile(Physics::BatMaterial::Wood);
+		const auto& sweet = Physics::GetBatMaterialProfile(
+		    Physics::IsValidBatMaterial(state.batMaterial) ? state.batMaterial : Physics::BatMaterial::Wood);
 		std::wstring contactLabel = L"打点  --   緑＝芯";
 		if (state.hasBattedMetrics && state.hasBatContactPosition)
 		{

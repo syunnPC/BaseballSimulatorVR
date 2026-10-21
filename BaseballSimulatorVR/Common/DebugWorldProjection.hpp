@@ -5,6 +5,7 @@
 #include "../Physics/BatGeometry.hpp"
 #include "../Physics/Vector3.hpp"
 #include "BatOverlayState.hpp"
+#include "FieldMarkings.hpp"
 #include "HomePlateGeometry.hpp"
 #include "PreparedWorldProjection.hpp"
 #include "IndexedWorldMesh.hpp"
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -183,6 +185,8 @@ namespace BaseballSimulatorVR::Common
 		inline constexpr std::array<float, 4> BatColor{ 0.79F, 0.56F, 0.26F, 1.0F };
 		inline constexpr std::array<float, 4> MetalBatColor{ 0.78F, 0.81F, 0.85F, 1.0F };
 		inline constexpr std::array<float, 4> UrethaneBatColor{ 0.22F, 0.24F, 0.27F, 1.0F };
+		// Bright practice-bat orange so the forgiving bat is recognizable at a glance.
+		inline constexpr std::array<float, 4> BeginnerBatColor{ 0.98F, 0.55F, 0.12F, 1.0F };
 		inline constexpr std::array<float, 4> BatSweetSpotColor{ 0.08F, 0.95F, 0.20F, 0.35F };
 		inline constexpr double BatSweetSpotShellOffsetMeters = 0.001;
 		inline constexpr std::array<float, 4> TrailMeshColor{ 0.20F, 0.64F, 0.90F, 0.92F };
@@ -613,6 +617,7 @@ namespace BaseballSimulatorVR::Common
 		case Physics::BatMaterial::Wood: return DebugWorldStyle::BatColor;
 		case Physics::BatMaterial::Metal: return DebugWorldStyle::MetalBatColor;
 		case Physics::BatMaterial::Urethane: return DebugWorldStyle::UrethaneBatColor;
+		case Physics::BatMaterial::Beginner: return DebugWorldStyle::BeginnerBatColor;
 		}
 		throw std::invalid_argument("Invalid bat material");
 	}
@@ -1751,8 +1756,10 @@ namespace BaseballSimulatorVR::Common
 		const double plateDepthFromCenterMeters =
 		    (std::max)(.10, std::abs(DebugWorldLayout::BatterToPlateDistanceMeters));
 		const double halfChordLengthMeters = targetChordLengthMeters * .5;
-		const double halfAngleRadians =
-		    std::atan2(halfChordLengthMeters, plateDepthFromCenterMeters);
+		// Wide enough to carry the foul lines and the infield out to the corners.
+		const double halfAngleRadians = (std::max)(
+		    std::atan2(halfChordLengthMeters, plateDepthFromCenterMeters),
+		    (45.0 + FieldMarkingStyle::FoulTerritoryMarginDegrees) * std::numbers::pi / 180.0);
 		const double innerRadiusMeters =
 		    std::sqrt(plateDepthFromCenterMeters * plateDepthFromCenterMeters +
 		              halfChordLengthMeters * halfChordLengthMeters);
@@ -1856,6 +1863,18 @@ namespace BaseballSimulatorVR::Common
 		static thread_local FloorWorldMeshCache cache;
 		return cache.Get(strikeZoneWidthMeters, fanRadiusMeters);
 	}
+	[[nodiscard]] inline const IndexedWorldMesh& GetFieldMarkingsWorldMesh(double fanRadiusMeters)
+	{
+		static thread_local IndexedWorldMesh mesh;
+		static thread_local double builtRadius = -1.0;
+		if (builtRadius != fanRadiusMeters)
+		{
+			mesh = BuildFieldMarkingsWorldMesh(-DebugWorldLayout::BatterToPlateDistanceMeters,
+			    DebugWorldStyle::FloorMeshHeightMeters, fanRadiusMeters);
+			builtRadius = fanRadiusMeters;
+		}
+		return mesh;
+	}
 	template <typename TDrawTriangleFn>
 	void EmitProjectedFloorMeshOverlay(
 	    const ViewProjectionState& view, LONG width, LONG height, TDrawTriangleFn&& triangle)
@@ -1867,9 +1886,11 @@ namespace BaseballSimulatorVR::Common
 		static thread_local WorldMeshProjectionWorkspace workspace;
 		const auto& mesh =
 		    GetFloorWorldMesh(GetStrikeZoneHalfWidthMeters() * 2.0, GetGroundFanRadiusMeters());
-		workspace.Emit(mesh,
-		    PreparedWorldProjection(view, width, height, DebugWorldLayout::NearClipMeters,
-		        DebugWorldLayout::FarClipMeters),
-		    triangle);
+		const PreparedWorldProjection projection(view, width, height, DebugWorldLayout::NearClipMeters,
+		    DebugWorldLayout::FarClipMeters);
+		workspace.Emit(mesh, projection, triangle);
+		// Infield, chalk lines, bases and batter's boxes, layered just above the floor.
+		static thread_local WorldMeshProjectionWorkspace markingsWorkspace;
+		markingsWorkspace.Emit(GetFieldMarkingsWorldMesh(GetGroundFanRadiusMeters()), projection, triangle);
 	}
 } // namespace BaseballSimulatorVR::Common

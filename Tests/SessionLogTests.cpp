@@ -77,7 +77,9 @@ namespace
 			Tests::Check(next.eventId && *next.eventId > 5, "New ids continue after the migrated rows");
 		}
 		RawDatabase migrated(path);
-		Tests::Check(migrated.Text("PRAGMA user_version;") == "2", "The schema version is recorded in user_version");
+		Tests::Check(migrated.Text("PRAGMA user_version;") == "3", "The schema version is recorded in user_version");
+		Tests::Check(migrated.Text("SELECT COUNT(*) FROM pragma_table_info('batted_balls') WHERE name = 'result';") == "1",
+		    "Migrated databases gain the batted-ball result column");
 		Tests::Check(migrated.Text("SELECT group_concat(event_category, ',') FROM (SELECT event_category FROM pitch_events"
 		                           " WHERE session_id = 'old' ORDER BY id);") == "pitch,pitch,config,config,batted_ball",
 		    "Existing rows are classified into pitch, configuration and batted-ball events");
@@ -123,7 +125,8 @@ namespace
 			const auto battedResult = first.LogBattedBall(L"ストレート", L"Rk4", pitch, L"contact", batted);
 			Tests::Check(battedResult.eventId.has_value(), "Batted balls are logged");
 			battedId = *battedResult.eventId;
-			Tests::Check(first.UpdateBattedBallLanding(battedId, 97.25, 21.0).succeeded, "Landings are queued");
+			Tests::Check(first.UpdateBattedBallLanding(battedId, 97.25, 21.0, L"センターフライ").succeeded,
+			    "Landings are queued with the judged result");
 			batted.contactFractionAlongBat = 1.5;
 			Tests::Check(!first.LogBattedBall(L"x", L"Rk4", pitch, L"", batted).eventId.has_value(),
 			    "Out-of-range batted-ball values are rejected synchronously");
@@ -152,6 +155,9 @@ namespace
 			                         " contact_fraction FROM batted_balls WHERE event_id = " + std::to_string(battedId) + ";").c_str()) ==
 			        "41.5,97.25," + std::to_string(pitchId) + ",0.82",
 			    "Batted balls store exit speed, carry, the hit pitch and the contact position");
+			Tests::Check(probe.Text(("SELECT result FROM batted_balls WHERE event_id = " + std::to_string(battedId) + ";").c_str()) ==
+			        reinterpret_cast<const char*>(u8"センターフライ"),
+			    "Batted balls store the judged hit or out call");
 			Tests::Check(probe.Text("SELECT batted_ball_count FROM batted_ball_summary;") == "1" &&
 			        probe.Text("SELECT ball_count FROM pitch_outcome_summary;") == "1",
 			    "Normalized summary views aggregate pitches and batted balls");
@@ -169,6 +175,8 @@ namespace
 			Tests::Check(csv.find("\"event_category\",\"pitch_mode\",\"profile_name\"") != std::string::npos &&
 			    csv.find("\"exit_speed\"") != std::string::npos && csv.find("\"zone_call\"") != std::string::npos &&
 			    csv.find("41.5") != std::string::npos && csv.find("\"batting-duel\"") != std::string::npos &&
+			    csv.find("\"batted_result\"") != std::string::npos &&
+			    csv.find(reinterpret_cast<const char*>(u8"\"センターフライ\"")) != std::string::npos &&
 			    csv.ends_with("\r\n"), "The CSV export includes the normalized pitch and batted-ball columns");
 		}
 		{

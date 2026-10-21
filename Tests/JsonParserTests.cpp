@@ -344,8 +344,7 @@ void RunJsonParserTests()
 		    "Play round trip with null optional zone under comma locale");
 	}
 	const auto loadedPitch = presets.LoadPitchSettings(presetPath.wstring(), error);
-	for (const auto material : { Physics::BatMaterial::Wood, Physics::BatMaterial::Metal,
-	    Physics::BatMaterial::Urethane })
+	for (const auto material : Physics::AllBatMaterials)
 	{
 		PlayRuntimeSettings play{};
 		play.batMaterial = material;

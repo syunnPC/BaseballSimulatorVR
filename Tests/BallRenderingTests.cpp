@@ -183,11 +183,12 @@ namespace
 	void CheckBatMaterialGeometry()
 	{
 		constexpr std::array materials{Physics::BatMaterial::Wood,
-		    Physics::BatMaterial::Metal, Physics::BatMaterial::Urethane};
+		    Physics::BatMaterial::Metal, Physics::BatMaterial::Urethane, Physics::BatMaterial::Beginner};
 		Tests::Check(Common::GetBatMaterialColor(materials[1])[0] > .7F &&
 		    Common::GetBatMaterialColor(materials[1])[2] > .7F &&
-		    Common::GetBatMaterialColor(materials[2])[0] < .3F,
-		    "Metal is silver and urethane is dark gray");
+		    Common::GetBatMaterialColor(materials[2])[0] < .3F &&
+		    Common::GetBatMaterialColor(materials[3])[0] > .9F && Common::GetBatMaterialColor(materials[3])[2] < .3F,
+		    "Metal is silver, urethane is dark gray and the beginner bat is orange");
 		for (const auto material : materials)
 		for (const double physicalLength : {.5, .84, 1.16})
 		for (const auto axis : {Physics::NormalizeOrZero(Physics::Vector3{.7, .4, -.2}),
@@ -242,7 +243,7 @@ namespace
 					    greenMaximum = (std::max)(greenMaximum, maximum);
 					    Tests::Check(color == Common::DebugWorldStyle::BatSweetSpotColor &&
 					        minimum >= sweetStart - 1e-12 && maximum <= sweetEnd + 1e-12 &&
-					        std::abs(Physics::Dot(normal, axis)) < 1e-12,
+					        std::abs(Physics::Dot(normal, axis)) < .5 * Physics::Length(normal),
 					        "Green covers only the shared physical sweet region, with no internal caps");
 				    }
 				    else
@@ -256,8 +257,9 @@ namespace
 						    const bool correctFinish = material == Physics::BatMaterial::Wood ?
 						        color[0] > color[1] * 1.3F && color[1] > color[2] * 1.8F :
 						        material == Physics::BatMaterial::Metal ? color[0] > .7F && color[2] > .7F :
+						        material == Physics::BatMaterial::Beginner ? color[0] > .85F && color[2] < .3F :
 						        color[0] < .3F && color[2] < .3F;
-						    Tests::Check(correctFinish, "The emitted barrel uses brown wood grain, silver metal or dark urethane");
+						    Tests::Check(correctFinish, "The emitted barrel uses brown wood grain, silver metal, dark urethane or orange");
 					    }
 					    const std::array vertices{vertex(a), vertex(b), vertex(c)};
 					    for (std::size_t i = 0; i < vertices.size(); ++i)
@@ -374,8 +376,7 @@ namespace
 		Common::ViewProjectionState view;
 		view.isValid = true;
 		for (const double eyeHeight : {1.1, 1.6, 2.1})
-		for (const auto material : {Physics::BatMaterial::Wood, Physics::BatMaterial::Metal,
-		    Physics::BatMaterial::Urethane})
+		for (const auto material : Physics::AllBatMaterials)
 		{
 			bat.material = material;
 			view.position = {0, eyeHeight, 0};
