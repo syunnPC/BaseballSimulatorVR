@@ -111,6 +111,7 @@
     <ClInclude Include="Physics\BallAerodynamicsModel.hpp" />
     <ClInclude Include="Physics\BallProperties.hpp" />
     <ClInclude Include="Physics\BallState.hpp" />
+    <ClInclude Include="Physics\GroundContact.hpp" />
     <ClInclude Include="Physics\BatBallCollision.hpp" />
     <ClInclude Include="Physics\BatGeometry.hpp" />
     <ClInclude Include="Physics\BatMaterial.hpp" />

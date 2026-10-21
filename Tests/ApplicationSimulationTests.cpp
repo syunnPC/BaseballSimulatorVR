@@ -1,4 +1,5 @@
 #include "TestSupport.hpp"
+#include "../BaseballSimulatorVR/Physics/GroundContact.hpp"
 #include "../BaseballSimulatorVR/Core/Application.hpp"
 #include "../BaseballSimulatorVR/Common/DebugWorldProjection.hpp"
 #include "../BaseballSimulatorVR/Common/PitcherPresentation.hpp"
@@ -265,8 +266,11 @@ namespace BaseballSimulatorVR::Core
 			app->m_pitchSimulationService.SetBallState(falling);
 			const auto bounced = UpdateBall(*app);
 			// The 1 cm penetration below physical ground plus ball radius is reflected with the
-			// 0.5 ground restitution, independent of where the frame boundary fell.
-			Tests::Check(Near(bounced.position.y + 0.18, 0.037 + 0.010 * 0.50) && bounced.velocity.y > 0.0,
+			// ground's restitution at the 2 m/s landing (the infield grass here), independent of
+			// where the frame boundary fell.
+			const double restitution = Physics::GroundRestitution(Physics::GrassSurface, 2.0);
+			Tests::Check(Near(bounced.position.y + 0.18, 0.037 + 0.010 * restitution) &&
+			        Near(bounced.velocity.y, 2.0 * restitution),
 			             "With a mound offset the ball bounces at physical ground plus ball radius");
 			Tests::Check(app->m_teeBattedMetrics.hasFirstGroundContact && app->m_teeFlight.hasBattedBallBounced,
 			             "Ground response and first-ground-contact statistics use the same offset plane");
@@ -1523,7 +1527,9 @@ namespace BaseballSimulatorVR::Core
 			app->m_teeFlight.previousBallState = grounded;
 			app->m_teeFlight.previousBallState.position.y = .2;
 			app->UpdateModeSpecificBallState(&grounded);
-			Tests::Check(Near(grounded.position.y, .0485 + (.0485 - .04) * .50) && grounded.velocity.y > 0,
+			// The tee stands in the dirt circle around the plate.
+			Tests::Check(Near(grounded.position.y, .0485 + (.0485 - .04) * Physics::GroundRestitution(Physics::DirtSurface, 1.0)) &&
+			        grounded.velocity.y > 0,
 			    "Softball ground collision uses its physical radius");
 			app->m_operationMode = Application::OperationMode::PitchTrajectory;
 			{

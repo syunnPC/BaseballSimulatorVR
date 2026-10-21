@@ -72,6 +72,7 @@
     <ClCompile Include="BattedBallFlightTests.cpp" />
     <ClCompile Include="BattedBallOutcomeTests.cpp" />
     <ClCompile Include="StadiumTests.cpp" />
+    <ClCompile Include="GroundContactTests.cpp" />
     <ClCompile Include="TossPhysicsTests.cpp" />
     <ClCompile Include="BallRenderingTests.cpp" />
     <ClCompile Include="StrikeZoneCalibrationUiTests.cpp" />

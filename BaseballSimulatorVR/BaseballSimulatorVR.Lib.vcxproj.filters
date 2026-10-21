@@ -197,6 +197,9 @@
     <ClInclude Include="Physics\BallState.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Physics\GroundContact.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Physics\BatBallCollision.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>

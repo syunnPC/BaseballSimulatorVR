@@ -12,6 +12,7 @@
 #include "../Physics/BatBallCollision.hpp"
 #include "../Physics/BattedBallAerodynamics.hpp"
 #include "../Physics/BatGeometry.hpp"
+#include "../Physics/GroundContact.hpp"
 #include "../Physics/SweptBatCollision.hpp"
 #include "../Simulation/StadiumCollision.hpp"
 
@@ -134,10 +135,8 @@ namespace BaseballSimulatorVR::Core
 		constexpr double BatYawOffsetStepDegrees = 2.5;
 		constexpr double BatCollisionSuppressDurationSeconds = 0.04;
 		constexpr double GroundPlaneHeightMeters = 0.0;
-		constexpr double GroundBounceRestitution = 0.50;
-		constexpr double GroundBounceTangentialVelocityScale = 0.88;
-		constexpr double GroundRollingDampingPerSecond = 1.35;
-		constexpr double GroundBounceVelocityThreshold = -0.05;
+		// Below this landing speed the ball stops hopping and runs along the ground.
+		constexpr double GroundRollImpactSpeedMetersPerSecond = .6;
 		constexpr double MinimumGroundFanRadiusMeters = 10.0;
 		constexpr double MaximumGroundFanRadiusMeters = 300.0;
 		constexpr double PostBounceSimulationSeconds = 5.0;
@@ -920,7 +919,8 @@ namespace BaseballSimulatorVR::Core
 		void ApplyGroundCollisionResponse(
 		    Physics::BallState* const ballState,
 		    const double frameDeltaSeconds,
-		    const double groundContactHeight) noexcept
+		    const double groundContactHeight,
+		    const Physics::GroundSurface& surface) noexcept
 		{
 			if (ballState == nullptr)
 			{
@@ -937,25 +937,16 @@ namespace BaseballSimulatorVR::Core
 			{
 				return;
 			}
-			if (ballState->velocity.y < GroundBounceVelocityThreshold)
+			const double impact = -ballState->velocity.y;
+			if (impact >= GroundRollImpactSpeedMetersPerSecond)
 			{
+				Physics::BounceOffGround(*ballState, surface);
 				// Reflect the part of the frame spent below ground so the bounce height
 				// does not depend on where the frame boundary fell.
-				ballState->position.y += penetrationMeters * GroundBounceRestitution;
-				ballState->velocity.y =
-				    -ballState->velocity.y * GroundBounceRestitution;
-				ballState->velocity.x *= GroundBounceTangentialVelocityScale;
-				ballState->velocity.z *= GroundBounceTangentialVelocityScale;
+				ballState->position.y += penetrationMeters * ballState->velocity.y / impact;
 				return;
 			}
-
-			ballState->velocity.y = 0.0;
-			const double rollingDamping = std::clamp(
-			    1.0 - (frameDeltaSeconds * GroundRollingDampingPerSecond),
-			    0.0,
-			    1.0);
-			ballState->velocity.x *= rollingDamping;
-			ballState->velocity.z *= rollingDamping;
+			Physics::RollOnGround(*ballState, surface, frameDeltaSeconds);
 		}
 
 		[[nodiscard]] double BuildWorldDepthOffsetMeters(
@@ -5627,7 +5618,9 @@ namespace BaseballSimulatorVR::Core
 			{
 				return;
 			}
-			ApplyGroundCollisionResponse(ballState, m_lastSimulationDeltaSeconds, groundContactHeight);
+			ApplyGroundCollisionResponse(ballState, m_lastSimulationDeltaSeconds, groundContactHeight,
+			    Common::FieldSurfaceAt(field.u, field.v) == Common::FieldSurface::Dirt ? Physics::DirtSurface
+			                                                                            : Physics::GrassSurface);
 			m_pitchSimulationService.SetBallState(*ballState);
 		};
 
@@ -5772,6 +5765,8 @@ namespace BaseballSimulatorVR::Core
 				{
 					ApplyAutoZoneResultTag(m_pitchFlightAnalysis.Actual().call, L"auto_zone_catcher");
 				}
+				// A pitch in the dirt bounces before it gets to the mitt.
+				applyGroundCollisionIfNeeded(previousState, hasPreviousState);
 				if (hasPreviousState)
 				{
 					CatchPitchIfReached(previousState, ballState);
@@ -5922,10 +5917,11 @@ namespace BaseballSimulatorVR::Core
 		if (m_duelRound.hasBallBeenBatted)
 		{
 			updateBattedMetricsLiveState(&m_duelRound.battedMetrics);
-			applyGroundCollisionIfNeeded(
-			    groundPreviousState,
-			    m_duelRound.hasPreviousBallState || collidedWithBat);
 		}
+		// Batted balls, and pitches in the dirt, bounce and roll on the field.
+		applyGroundCollisionIfNeeded(
+		    groundPreviousState,
+		    m_duelRound.hasPreviousBallState || collidedWithBat);
 		if (m_duelRound.hasBallBeenBatted &&
 		    m_duelRound.hasBattedBallBounced)
 		{
