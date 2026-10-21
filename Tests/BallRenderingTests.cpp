@@ -519,9 +519,11 @@ namespace
 				    "A one-meter toss release keeps an adult-sized torso and head");
 				Physics::Vector3 previous{};
 				bool hasPrevious = false;
-				for (int frame = 0; frame <= 360; ++frame)
+				// About one sample per millisecond at the fastest tempo; the toss hand
+				// reaches the ball's release speed.
+				for (int frame = 0; frame <= 1440; ++frame)
 				{
-					state.secondsFromRelease = -1.2 + frame * (1.2 + .6 / speed) / 360.;
+					state.secondsFromRelease = -1.2 + frame * (1.2 + .6 / speed) / 1440.;
 					const auto pose = Common::BuildPitcherPose(state);
 					Tests::Check(pose.leftFoot.y >= state.moundHeightMeters &&
 					                 pose.rightFoot.y >= state.moundHeightMeters,
