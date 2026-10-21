@@ -174,7 +174,7 @@ namespace BaseballSimulatorVR::Core
 		// target on a worker thread, so the start of a pitch does not stall a frame.
 		void PlanNextDuelPitch();
 		[[nodiscard]] bool IsWaitingForNextDuelPitch() const noexcept;
-		// The pitcher works from the mound: batting against him or catching him.
+		// The pitcher works from the mound: batting against the pitcher or catching.
 		[[nodiscard]] bool UsesPitcher() const noexcept;
 		// Catcher mode: give the sign with the face buttons, set the target with the mitt and
 		// squeeze the mitt hand's trigger to catch; letting go calls for the next pitch.

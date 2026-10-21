@@ -140,7 +140,7 @@ namespace BaseballSimulatorVR::Core
 		constexpr double MinimumGroundFanRadiusMeters = 10.0;
 		constexpr double MaximumGroundFanRadiusMeters = 300.0;
 		constexpr double PostBounceSimulationSeconds = 5.0;
-		// Catcher mode. A pitcher misses his target by about 9 cm each way, and now and then
+		// Catcher mode. A pitcher misses the target by about 9 cm each way, and now and then
 		// (6%) badly; the mitt closes on a squeeze from a little before the ball arrives until
 		// just after it hits the pocket; a missed ball rolls on this long before the next sign.
 		constexpr double CatcherCommandErrorMeters = .09;
@@ -5037,7 +5037,7 @@ namespace BaseballSimulatorVR::Core
 		target.x = std::clamp(target.x, -1.2, 1.2);
 		target.y = std::clamp(target.y, .15, 2.4);
 		target.z = std::clamp(target.z, plateApexWorldZ - .45, plateApexWorldZ + 1.5);
-		// The pitcher misses his spot a little, and once in a while a lot.
+		// The pitcher misses the spot a little, and once in a while a lot.
 		std::mt19937& random = GetThreadLocalRandomEngine();
 		const bool wild = std::uniform_real_distribution<double>(0.0, 1.0)(random) < CatcherWildPitchChance;
 		std::normal_distribution<double> miss(0.0, wild ? CatcherWildErrorMeters : CatcherCommandErrorMeters);
@@ -5183,7 +5183,7 @@ namespace BaseballSimulatorVR::Core
 				return;
 			}
 		}
-		// Past the catcher without reaching the mitt: his fault if it was within reach.
+		// Past the catcher without reaching the mitt: a passed ball if it was within reach.
 		const double behind = frame ? frame->pocket.z : -Common::DebugWorldLayout::BatterToPlateDistanceMeters + 1.0;
 		if (to.z > behind + .5 && ballState->velocity.z > 0.0)
 		{
@@ -5740,7 +5740,7 @@ namespace BaseballSimulatorVR::Core
 			m_teeFlight = {};
 			if (m_catcherRound.phase == CatcherPhase::WaitingForSign)
 			{
-				// The pitcher walks back and comes set; the ball waits in his glove.
+				// The pitcher walks back and comes set; the ball waits in the glove.
 				m_duelRound.cooldownRemainingSeconds =
 				    (std::max)(0.0, m_duelRound.cooldownRemainingSeconds - m_lastFrameDeltaSeconds);
 				applyPendingTrajectoryReset(ballState);

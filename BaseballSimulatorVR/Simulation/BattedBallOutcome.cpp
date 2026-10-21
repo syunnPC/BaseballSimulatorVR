@@ -63,7 +63,7 @@ namespace BaseballSimulatorVR::Simulation
 		// CF 280-350 ft at -8..7, RF 260-320 ft at 21..33. Against right-handed batters the
 		// glossary puts 1B at 23..38 and 2B at 0..18 (the mirrored shortstop zone); the
 		// shortstop and third baseman mirror the left-handed 2B and 1B zones. The pitcher
-		// finishes his delivery a little in front of the rubber; the catcher is behind home.
+		// finishes the delivery a little in front of the rubber; the catcher is behind home.
 		[[nodiscard]] std::array<Station, 9> Defense(const bool rightHandedBatter) noexcept
 		{
 			const double mirror = rightHandedBatter ? -1.0 : 1.0;
@@ -181,7 +181,7 @@ namespace BaseballSimulatorVR::Simulation
 			return flight.rightHandedBatter ? 4.4 : 4.3;
 		}
 		// Each further base takes an average runner about 3.5 s rounding the bag (about 7.9 s
-		// home to second, 11.4 s to third), and he only tries for it when the throw will
+		// home to second, 11.4 s to third), and only tries for it when the throw will
 		// clearly be late. Outfielders gather a rolling ball and throw on a longer, slower arc.
 		constexpr double ExtraBaseSeconds = 3.5;
 		constexpr double ExtraBaseMarginSeconds = .3;
@@ -317,10 +317,10 @@ namespace BaseballSimulatorVR::Simulation
 			return outcome;
 		}
 
-		// A ball an outfielder picks up is a single, double or triple depending on whether his
+		// A ball an outfielder picks up is a single, double or triple depending on whether the
 		// throw would beat the batter to second or third. `landing` is where it came down (or
 		// reached the outfield, for ground balls); past the fielder's starting depth it went
-		// over him.
+		// over the fielder.
 		[[nodiscard]] BattedBallOutcome OutfieldHit(const BattedBallFlight& flight, const Retrieval& play,
 		    const double landing, const bool offWall, BattedBallOutcome outcome)
 		{
@@ -347,7 +347,7 @@ namespace BaseballSimulatorVR::Simulation
 			const Region region = RegionOf(spray);
 			if (outcome.result == BattedBallResult::Single)
 			{
-				// "センター前ヒット" in front of him, "左中間へのヒット" past him.
+				// "センター前ヒット" in front of the fielder, "左中間へのヒット" past.
 				outcome.label = offWall       ? std::wstring{FieldSide(spray)} + L"フェンス直撃のヒット"
 				              : overFielder ? std::wstring{RegionName(region)} + L"へのヒット"
 				                            : std::wstring{FielderName(play.fielder)} + L"前ヒット";
@@ -393,7 +393,7 @@ namespace BaseballSimulatorVR::Simulation
 				return ContactHeightMeters * (1.0 - f) + end * f +
 				    4.0 * (apex - .5 * (ContactHeightMeters + end)) * f * (1.0 - f);
 			};
-			// Each fielder's earliest point on the flight where he is within reach of a
+			// Each fielder's earliest point on the flight within reach of a
 			// catchable ball. On its way out whoever gets there first takes it; coming down,
 			// the fielder with priority calls the others off, the one playing nearest to where
 			// it comes down among equals.
