@@ -1,8 +1,8 @@
 name: Build and test
 
 on:
+  # Every pushed branch gets a Windows/MSVC build, not only master.
   push:
-    branches: [master]
   pull_request:
   workflow_dispatch:
 
