@@ -154,7 +154,6 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClInclude Include="Physics\Vector3.hpp" />
     <ClInclude Include="Render\Dx12RenderBackend.hpp" />
     <ClInclude Include="Render\IRenderBackend.hpp" />
-    <ClInclude Include="Render\NullRenderBackend.hpp" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="Simulation\PitchSimulationService.hpp" />
     <ClInclude Include="Simulation\PitchFlightAnalysis.hpp" />
@@ -179,7 +178,6 @@ copy /Y "$(ProjectDir)..\external\sqlite\bin\x64\sqlite3.dll" "$(OutDir)sqlite3.
     <ClCompile Include="Physics\PitchPhysicsEngine.cpp" />
     <ClCompile Include="Physics\BatBallCollision.cpp" />
     <ClCompile Include="Render\Dx12RenderBackend.cpp" />
-    <ClCompile Include="Render\NullRenderBackend.cpp" />
     <ClCompile Include="Simulation\PitchSimulationService.cpp" />
     <ClCompile Include="Simulation\PitchFlightAnalysis.cpp" />
     <ClCompile Include="UI\DesktopHudViewModel.cpp" />
