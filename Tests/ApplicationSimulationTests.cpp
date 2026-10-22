@@ -7,6 +7,7 @@
 #include "../BaseballSimulatorVR/Common/BatPoseUtilities.hpp"
 #include "../BaseballSimulatorVR/Physics/BatGeometry.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <array>
 #include <limits>
@@ -2010,6 +2011,75 @@ namespace BaseballSimulatorVR::Core
 			    "Sub-step bat frames follow the rigid rotation instead of shortening along the chord");
 		}
 
+		static void TestBatContactHaptics()
+		{
+			const auto clean = Common::BatContactHapticEnvelope(true, 40.0, 0.0);
+			const auto jarring = Common::BatContactHapticEnvelope(true, 40.0, 1.0);
+			Tests::Check(clean.IsPlaying() && clean.AmplitudeAt(0.0) >= .8 && clean.lengthSeconds >= .07 &&
+			        clean.AmplitudeAt(.03) < clean.AmplitudeAt(0.0) && clean.AmplitudeAt(clean.lengthSeconds) == 0.0,
+			    "A hit is a firm jolt that dies away");
+			Tests::Check(jarring.AmplitudeAt(0.0) >= clean.AmplitudeAt(0.0) && jarring.lengthSeconds > 3.0 * clean.lengthSeconds &&
+			        jarring.AmplitudeAt(.1) > clean.AmplitudeAt(.05),
+			    "A miss-hit off the handle or the end jars harder and keeps buzzing");
+			Tests::Check(Common::BatContactHapticEnvelope(true, 12.0, 0.0).AmplitudeAt(0.0) < clean.AmplitudeAt(0.0) &&
+			        Common::BatContactHapticEnvelope(true, 12.0, 0.0).AmplitudeAt(0.0) >= .45 &&
+			        !Common::BatContactHapticEnvelope(true, 1.0, 0.0).IsPlaying(),
+			    "A softer hit is felt less, and a touch slower than a hit is not felt at all");
+
+			// A swing through the tee ball, then the frames after it.
+			const auto swing = [](const std::optional<Xr::HandPoseState>& otherHand)
+			{
+				TestXrSystem* xr = nullptr;
+				auto app = MakeApplication(&xr);
+				SetUpTee(*app);
+				if (otherHand) xr->leftHand = *otherHand;
+				MoveBat(*app, *xr, -0.2, 1.0);
+				(void)UpdateBall(*app);
+				MoveBat(*app, *xr, 0.2, 1.01);
+				(void)UpdateBall(*app);
+				Tests::Check(app->m_teeBattedMetrics.hasContact, "The swing hits the tee ball");
+				for (int frame = 0; frame < 45; ++frame) app->UpdateHaptics(1.0 / 90.0);
+				return xr->hapticPulses;
+			};
+			const auto pulses = swing(std::nullopt);
+			bool fading = !pulses.empty(), batHandOnly = true, longEnough = true;
+			for (std::size_t i = 0; i < pulses.size(); ++i)
+			{
+				batHandOnly = batHandOnly && pulses[i].rightHand;
+				longEnough = longEnough && pulses[i].durationSeconds >= Common::MinimumHapticPulseSeconds;
+				if (i > 0) fading = fading && pulses[i].amplitude <= pulses[i - 1].amplitude;
+			}
+			const double felt = pulses.empty() ? 0.0 : (pulses.size() - 1) / 90.0 + pulses.back().durationSeconds;
+			Tests::Check(!pulses.empty() && pulses.front().amplitude >= .8 && batHandOnly && fading && longEnough &&
+			        pulses.size() >= 4 && felt >= .07 && felt <= .35,
+			    "A hit plays a strong, fading vibration in the bat hand frame by frame for a tenth of a second or more");
+
+			const double length = 0.84;
+			const auto handle = [&](const Physics::Vector3& position)
+			{ return Xr::HandPoseState{true, 1.0, 1, position, {0.0, 0.0, 1.0}, {0.0, 1.0, 0.0}}; };
+			const auto twoHanded = swing(handle({0.2, 1.0, -2.1 + .08 * length}));
+			const auto offHand = swing(handle({0.9, 1.3, -0.6}));
+			const auto count = [](const std::vector<TestXrSystem::HapticPulse>& list, const bool right)
+			{ return std::count_if(list.begin(), list.end(), [&](const auto& pulse) { return pulse.rightHand == right; }); };
+			Tests::Check(count(twoHanded, false) > 0 && count(twoHanded, false) == count(twoHanded, true) &&
+			        count(offHand, false) == 0,
+			    "The other hand feels the hit too when it grips the handle, and not when it is elsewhere");
+
+			// Pushing the bat slowly against the ball on the tee is not a hit.
+			TestXrSystem* xr = nullptr;
+			auto app = MakeApplication(&xr);
+			SetUpTee(*app);
+			double time = 1.0;
+			for (double x = -0.15; x < 0.05 && !app->m_teeBattedMetrics.hasContact; x += .005, time += .01)
+			{
+				MoveBat(*app, *xr, x, time);
+				(void)UpdateBall(*app);
+				app->UpdateHaptics(.01);
+			}
+			Tests::Check(app->m_teeBattedMetrics.hasContact && xr->hapticPulses.empty(),
+			    "Pressing the bat gently against the ball on the tee does not buzz the controller");
+		}
+
 		static void TestPlannedDuelPitch()
 		{
 			// The plan type is private to Application.cpp; check its observable lifecycle.
@@ -2281,6 +2351,7 @@ namespace BaseballSimulatorVR::Core
 			const RuntimeSettingsGuard settingsGuard;
 			TestTeeCollisionAndPause();
 			TestBatVelocitySourcesAndHaptics();
+			TestBatContactHaptics();
 			TestPlannedDuelPitch();
 			TestBatGripAndFullLength();
 			TestBatTrackingDiscontinuities();

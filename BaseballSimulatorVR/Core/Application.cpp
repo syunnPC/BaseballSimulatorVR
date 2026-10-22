@@ -134,6 +134,10 @@ namespace BaseballSimulatorVR::Core
 		constexpr double BatAngleOffsetStepDegrees = 2.5;
 		constexpr double BatYawOffsetStepDegrees = 2.5;
 		constexpr double BatCollisionSuppressDurationSeconds = 0.04;
+		// The other controller counts as gripping the bat within this distance of its handle
+		// (the knob end's first 40% of the bat).
+		constexpr double BatHandleFraction = .40;
+		constexpr double TwoHandGripReachMeters = .15;
 		constexpr double GroundPlaneHeightMeters = 0.0;
 		// Below this landing speed the ball stops hopping and runs along the ground.
 		constexpr double GroundRollImpactSpeedMetersPerSecond = .6;
@@ -1542,6 +1546,8 @@ namespace BaseballSimulatorVR::Core
 
 			UpdateStrikeZoneCalibration();
 
+			// Play on vibrations started in earlier frames before this frame can start new ones.
+			UpdateHaptics(m_lastFrameDeltaSeconds);
 			RefreshBatPoseFromXrInput();
 			UpdateCatcherInput();
 
@@ -4571,14 +4577,13 @@ namespace BaseballSimulatorVR::Core
 			m_duelRound.hasPitchPassedZone = true;
 		}
 
-		// Contact feedback: a clean barrel hit is a short light tap, a miss-hit on
-		// the handle or end stings longer and harder; both scale with impact.
+		// Contact feedback: a clean barrel hit is a firm, brief jolt, a miss-hit on the handle
+		// or end jars harder and keeps buzzing; both grow with the impact.
 		const double contactQuality = Physics::BatContactRestitutionScale(m_batMaterial,
 		    activeMetrics.batContactFraction) / Physics::GetBatMaterialProfile(m_batMaterial).restitutionMultiplier;
 		const double sting = std::clamp((1.0 - contactQuality) / (1.0 - Physics::MinimumBatContactResponse), 0.0, 1.0);
-		const double impact = std::clamp(-Physics::Dot(input.ballVelocityWorld - input.batContactVelocityWorld,
-		    input.collisionNormal) / 40.0, 0.35, 1.0);
-		m_xrSystem->ApplyHapticPulse(m_batUseRightHand, (0.35 + 0.65 * sting) * impact, 0.015 + 0.06 * sting);
+		StartBatContactHaptics(-Physics::Dot(input.ballVelocityWorld - input.batContactVelocityWorld,
+		    input.collisionNormal), sting);
 
 		std::wostringstream collisionNote{};
 		collisionNote << std::fixed << std::setprecision(2);
@@ -5185,6 +5190,67 @@ namespace BaseballSimulatorVR::Core
 		}
 	}
 
+	void Application::StartHaptic(const Common::HapticEnvelope& envelope)
+	{
+		if (!envelope.IsPlaying())
+		{
+			return;
+		}
+		// A new vibration on a hand takes over from whatever that hand was still playing.
+		std::erase_if(m_hapticEnvelopes,
+		    [&](const Common::HapticEnvelope& playing) { return playing.rightHand == envelope.rightHand; });
+		m_hapticEnvelopes.push_back(envelope);
+		m_hapticEnvelopes.back().elapsedSeconds = 0.0;
+		m_xrSystem->ApplyHapticPulse(envelope.rightHand, envelope.AmplitudeAt(0.0),
+		    Common::HapticPulseSeconds(m_hapticEnvelopes.back(), m_lastFrameDeltaSeconds));
+	}
+
+	void Application::UpdateHaptics(const double frameSeconds)
+	{
+		if (!(frameSeconds > 0.0))
+		{
+			return;
+		}
+		for (auto& envelope : m_hapticEnvelopes)
+		{
+			envelope.elapsedSeconds += frameSeconds;
+			if (envelope.IsPlaying())
+			{
+				m_xrSystem->ApplyHapticPulse(envelope.rightHand, envelope.AmplitudeAt(envelope.elapsedSeconds),
+				    Common::HapticPulseSeconds(envelope, frameSeconds));
+			}
+		}
+		std::erase_if(m_hapticEnvelopes, [](const Common::HapticEnvelope& envelope) { return !envelope.IsPlaying(); });
+	}
+
+	void Application::StartBatContactHaptics(const double impactSpeed, const double sting)
+	{
+		const Common::HapticEnvelope bat = Common::BatContactHapticEnvelope(m_batUseRightHand, impactSpeed, sting);
+		StartHaptic(bat);
+		if (!bat.IsPlaying() || !m_batPoseState.isValid)
+		{
+			return;
+		}
+		// The other hand feels it too when it is holding the handle as well (a two-handed grip).
+		const Xr::HandPoseState other = m_batUseRightHand ? m_xrSystem->GetLeftHandPose() : m_xrSystem->GetRightHandPose();
+		if (!other.isValid)
+		{
+			return;
+		}
+		const double length = m_environmentSettings.batLengthMeters;
+		const auto endpoints = Physics::BatEndpointsFromGrip(m_batPoseState.originWorld, m_batPoseState.axisDirectionWorld, length);
+		const Physics::Vector3 handleEnd = endpoints.knob + m_batPoseState.axisDirectionWorld * (BatHandleFraction * length);
+		const Physics::Vector3 handle = handleEnd - endpoints.knob;
+		const double along = std::clamp(Physics::Dot(other.position - endpoints.knob, handle) /
+		    (std::max)(Physics::LengthSquared(handle), 1e-9), 0.0, 1.0);
+		if (Physics::Length(other.position - (endpoints.knob + handle * along)) <= TwoHandGripReachMeters)
+		{
+			Common::HapticEnvelope supporting = bat;
+			supporting.rightHand = !m_batUseRightHand;
+			StartHaptic(supporting);
+		}
+	}
+
 	void Application::FinishCatcherPitch(const std::wstring_view result, const bool caught)
 	{
 		m_catcherRound.result = std::wstring{ result };
@@ -5195,8 +5261,8 @@ namespace BaseballSimulatorVR::Core
 			m_catcherRound.phase = CatcherPhase::Caught;
 			++m_catcherRound.caught;
 			// A pop in the mitt hand, harder for a harder pitch.
-			const double speed = Physics::Length(m_activePitchParameters.initialVelocity);
-			m_xrSystem->ApplyHapticPulse(!m_batUseRightHand, std::clamp(speed / 45.0, .3, 1.0), .07);
+			StartHaptic(Common::MittCatchHapticEnvelope(!m_batUseRightHand,
+			    Physics::Length(m_activePitchParameters.initialVelocity)));
 		}
 		else
 		{

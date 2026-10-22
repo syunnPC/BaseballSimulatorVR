@@ -71,6 +71,9 @@
     <ClInclude Include="Common\HomePlateGeometry.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="Common\HapticEnvelope.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="Common\IndexedWorldMesh.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
