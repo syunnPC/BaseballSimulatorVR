@@ -92,6 +92,15 @@ void RunFieldStatisticsCompactTests()
     Tests::Check(BuildFieldPitchAnalysisLines(state)[1].find(L"横 +0.0 cm") != std::wstring::npos,
         "Rounded zero break never displays misleading negative zero");
 
+    // A pitch released 2 m up on the center line that tails right and sinks into the zone,
+    // traced on over the plate as the flight analysis records it.
+    state.plateFrontDepthMeters = 18.44;
+    state.pitchTrace.clear();
+    for (double depth = 0.0; depth < 18.44 + .47; depth += .3)
+    {
+        const double f = depth / 18.44;
+        state.pitchTrace.push_back({.25 * f * f, 2.0 - .4 * f - .7 * f * f, depth});
+    }
     const auto plot = BuildFieldPitchPlotLayout(state);
     const auto overhead = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Overhead);
     const double areaWidth = 11.8 * scale;
@@ -102,125 +111,107 @@ void RunFieldStatisticsCompactTests()
         overhead.bottom == plot.bottom && overhead.width == plot.width &&
         plot.left + plot.width < overhead.left,
         "The catcher and overhead views share the original scoreboard drawing area side by side");
-    const auto plateEnd = overhead.Project(state.pitchTrace.back());
-    const auto releaseEnd = overhead.Project(state.pitchTrace.front());
-    Tests::Check(plateEnd.y < releaseEnd.y && std::abs(plateEnd.y - overhead.bottom - .45 * scale) < 1e-10 &&
-        std::abs(releaseEnd.y - overhead.bottom - overhead.height + .45 * scale) < 1e-10 &&
-        overhead.centerXMeters == plot.centerXMeters &&
-        std::abs(overhead.unitsPerMeter * (.18 + .35) - (overhead.width - .9 * scale)) < 1e-10 &&
-        overhead.Project({.1, 1, -8}).x > overhead.Project({0, 1, -8}).x &&
-        overhead.Project({.1, 2, -8}).y == overhead.Project({.1, -3, -8}).y,
-        "From above, the flight runs from the pitcher at the top to the plate at the bottom with its sideways movement across the panel");
-    const auto center = plot.Project({0, 1, 0});
-    const auto pitchRight = plot.Project({.1, 1, -20});
-    const auto pitchUp = plot.Project({0, 1.1, 100});
-    Tests::Check(pitchRight.x > center.x && pitchUp.y > center.y &&
-        std::abs(pitchRight.x - center.x - (pitchUp.y - center.y)) < 1e-10,
-        "Catcher view maps positive simulation x right and uses one orthographic scale for both axes");
-    Tests::Check(std::abs(plot.Project({.1, 1, -20}).x - plot.Project({.1, 1, 20}).x) < 1e-10,
-        "Depth never changes the catcher-view movement coordinate");
-    for (const auto& [dx, dy] : std::array{
-        std::pair{.001, .0002}, std::pair{.0002, .001}, std::pair{.001, .001},
-        std::pair{.001, 0.0}, std::pair{0.0, .001}})
+
+    // From behind the plate: a pinhole view from about the umpire's eyes.
+    const double plateFront = state.plateFrontDepthMeters, eyeHeight = plot.eye.y;
+    const auto at = [&](const double x, const double y, const double depth) { return plot.Project({x, y, depth}); };
+    Tests::Check(std::abs(plot.eye.z - plateFront - FieldPitchViewEyeBehindPlateMeters) < 1e-12 &&
+        at(.1, 1, plateFront).x > at(0, 1, plateFront).x && at(0, 1.2, plateFront).y > at(0, 1, plateFront).y,
+        "The catcher's view looks toward the pitcher with x to the right and height up");
+    Tests::Check(std::abs((at(.2, eyeHeight, plateFront).x - at(0, eyeHeight, plateFront).x) -
+            2 * (at(.2, eyeHeight, plateFront - 2).x - at(0, eyeHeight, plateFront - 2).x)) < 1e-10 &&
+        std::abs((at(0, eyeHeight + .3, plateFront).y - at(0, eyeHeight, plateFront).y) -
+            2 * (at(0, eyeHeight + .3, plateFront - 2).y - at(0, eyeHeight, plateFront - 2).y)) < 1e-10,
+        "Twice as far from the eye looks half as big: the catcher's view is in perspective");
+    const auto zone = BuildFieldPitchPlotZone(state);
+    const auto zoneLow = plot.Project(zone[0]), zoneHigh = plot.Project(zone[2]);
+    const auto release = plot.Project(state.pitchTrace.front());
+    Tests::Check(release.x > zoneLow.x && release.x < zoneHigh.x && release.y > zoneLow.y && release.y < zoneHigh.y,
+        "From behind the plate the pitcher's release is seen through the strike zone");
+    const auto plate = BuildFieldPitchPlotPlate(plateFront);
+    bool plateBelowZone = true;
+    for (const auto& corner : plate) plateBelowZone = plateBelowZone && plot.Project(corner).y < zoneLow.y;
+    Tests::Check(plateBelowZone && plot.Project(plate[3]).y < plot.Project(plate[0]).y &&
+        plot.Project(plate[2]).x - plot.Project(plate[4]).x > plot.Project(plate[1]).x - plot.Project(plate[0]).x,
+        "Home plate lies below the zone, its point nearest the catcher drawn lowest and widest apart");
+
+    // From above: the pitcher at the top, home plate in its true shape at the bottom.
+    const auto top = overhead.ProjectPlateCorner(plate[0]), right = overhead.ProjectPlateCorner(plate[1]);
+    const auto apex = overhead.ProjectPlateCorner(plate[3]);
+    Tests::Check(std::abs((right.x - top.x) - (top.y - apex.y)) < 1e-10 && right.y == top.y &&
+        std::abs(overhead.ProjectPlateCorner(plate[2]).y - (top.y + apex.y) * .5) < 1e-10 &&
+        std::abs(right.x - top.x - HomePlateWidthMeters * overhead.unitsPerMeter) < 1e-10,
+        "Seen from above, home plate keeps its true pentagon shape at the path's sideways scale, point toward the catcher");
+    Tests::Check(std::abs(top.y - overhead.Project({0, 1, plateFront}).y) < 1e-10 &&
+        std::abs(top.x - overhead.Project({-HomePlateWidthMeters * .5, 1, plateFront}).x) < 1e-10,
+        "The plate's front edge lies where the path reaches the plate front, so the crossing reads against the plate");
+    Tests::Check(std::abs(overhead.Project(state.pitchTrace.front()).y - (overhead.bottom + overhead.height - .45 * scale)) < 1e-10 &&
+        std::abs(apex.y - (overhead.bottom + .45 * scale)) < 1e-10 &&
+        overhead.Project({.1, 1, 9}).x > overhead.Project({0, 1, 9}).x &&
+        overhead.Project({.1, 2, 9}).y == overhead.Project({.1, -3, 9}).y,
+        "The overhead view runs from the release at the top to the plate at the bottom, x to the right");
+    const auto drop = [&](const double from, const double to)
+    { return overhead.Project({0, 1, from}).y - overhead.Project({0, 1, to}).y; };
+    Tests::Check(drop(0, 1) > 0 && std::abs(drop(0, 1) - drop(plateFront - 1, plateFront)) < 1e-10 &&
+        std::abs(drop(0, 1) - drop(plateFront, plateFront + 1)) < 1e-10 &&
+        overhead.depthUnitsPerMeter < overhead.unitsPerMeter,
+        "The flight's depth is squeezed evenly all the way over the plate, so the path bends only where the ball did");
+    // Everything each view draws stays in its own panel, and the path thickens as it nears the catcher.
+    const auto checkPanels = [&](const FieldStatisticsState& input, const char* context)
     {
-        auto tiny = state;
-        tiny.pitchTrace = {{7, -4, -18}, {7 + .4 * dx, -4 + .4 * dy, -9}, {7 + dx, -4 + dy, 0}};
-        const auto fitted = BuildFieldPitchPlotLayout(tiny);
-        const auto first = fitted.Project(tiny.pitchTrace.front());
-        const auto last = fitted.Project(tiny.pitchTrace.back());
-        // The trace fills the panel inside its fixed margin along its limiting dimension.
-        const double fractionX = std::abs(last.x - first.x) / (fitted.width - .9 * scale);
-        const double fractionY = std::abs(last.y - first.y) / (fitted.height - .9 * scale);
-        Tests::Check(fitted.hasVisibleMovement && (std::max)(fractionX, fractionY) > .999 &&
-            std::abs(last.x - first.x - dx * fitted.unitsPerMeter) < 1e-10 &&
-            std::abs(last.y - first.y - dy * fitted.unitsPerMeter) < 1e-10 &&
-            std::abs((first.x + last.x) * .5 - fitted.left - fitted.width * .5) < 1e-10 &&
-            std::abs((first.y + last.y) * .5 - fitted.bottom - fitted.height * .5) < 1e-10,
-            "Even millimeter movement fills the limiting plot dimension while preserving XY aspect and centering the trace");
-        const auto fittedOverhead = BuildFieldPitchPlotLayout(tiny, FieldPitchPlotView::Overhead);
-        std::size_t movementTriangles = 0, markerTriangles = 0;
-        EmitFieldScoreboardGeometry(tiny,
+        const auto catcherView = BuildFieldPitchPlotLayout(input);
+        const auto overheadView = BuildFieldPitchPlotLayout(input, FieldPitchPlotView::Overhead);
+        std::size_t plateTriangles = 0, zoneTriangles = 0, pathTriangles = 0, endpointTriangles = 0;
+        std::vector<double> catcherWidths;
+        EmitFieldScoreboardGeometry(input,
             [&](const auto& a, const auto& b, const auto& c, const float*)
             {
-                const bool movement = std::abs(a.z - fitted.z) < 1e-8;
-                const bool marker = std::abs(a.z - fitted.z - .02) < 1e-8;
-                if (!movement && !marker) return;
-                if (movement) ++movementTriangles;
-                if (marker) ++markerTriangles;
-                const auto& panel = a.x < fittedOverhead.left ? fitted : fittedOverhead;
+                const double depth = a.z - board.centerZ;
+                const bool plateLayer = std::abs(depth - .04) < 1e-8, zoneLayer = std::abs(depth - .05) < 1e-8;
+                const bool pathLayer = std::abs(depth - .08) < 1e-8, endpointLayer = std::abs(depth - .10) < 1e-8;
+                if (!plateLayer && !zoneLayer && !pathLayer && !endpointLayer) return;
+                plateTriangles += plateLayer;
+                zoneTriangles += zoneLayer;
+                pathTriangles += pathLayer;
+                endpointTriangles += endpointLayer;
+                const auto& panel = a.x < overheadView.left ? catcherView : overheadView;
+                if (pathLayer && &panel == &catcherView) catcherWidths.push_back(std::hypot(a.x - b.x, a.y - b.y));
                 for (const auto& p : {a, b, c})
                     Tests::Check(p.x > panel.left && p.x < panel.left + panel.width &&
                         p.y > panel.bottom && p.y < panel.bottom + panel.height,
-                        "Magnified trace strokes and the round endpoint stay strictly inside their own panel");
+                        std::string("Home plate, the zone, the path and its end stay inside their own panel: ") + context);
             }, [](auto&&...) {});
-        Tests::Check(movementTriangles == 8 && markerTriangles == 64,
-            "Both views draw their trace and endpoint without a scale-limiting zone outline");
-        tiny.zoneWidthMeters = 100;
-        tiny.zoneBottomMeters = -100;
-        tiny.zoneTopMeters = 100;
-        const auto unrelatedZone = BuildFieldPitchPlotLayout(tiny);
-        Tests::Check(fitted.unitsPerMeter == unrelatedZone.unitsPerMeter &&
-            fitted.centerXMeters == unrelatedZone.centerXMeters && fitted.centerYMeters == unrelatedZone.centerYMeters,
-            "Physical strike-zone bounds cannot reduce movement-chart magnification");
-    }
-    auto straight = state;
-    straight.pitchTrace = {{.08, .9, -18}, {.08, .9, -9}, {.08, .9, 0}};
-    const auto straightPlot = BuildFieldPitchPlotLayout(straight);
-    Tests::Check(!straightPlot.hasVisibleMovement && std::isfinite(straightPlot.unitsPerMeter) &&
-        std::abs(straightPlot.Project(straight.pitchTrace.front()).x -
-            straightPlot.Project(straight.pitchTrace.back()).x) < 1e-10 &&
-        std::abs(straightPlot.Project(straight.pitchTrace.front()).y -
-            straightPlot.Project(straight.pitchTrace.back()).y) < 1e-10,
-        "A zero-change trajectory remains one point with a finite physical-ball-diameter reference scale");
-    auto roundoff = straight;
-    roundoff.pitchTrace[1].x += 1e-12;
-    roundoff.pitchTrace[1].y -= 1e-12;
-    const auto roundoffPlot = BuildFieldPitchPlotLayout(roundoff);
-    Tests::Check(!roundoffPlot.hasVisibleMovement &&
-        roundoffPlot.unitsPerMeter == straightPlot.unitsPerMeter,
-        "Floating-point residuals cannot magnify an otherwise straight trajectory into false movement");
-    const auto straightOverhead = BuildFieldPitchPlotLayout(straight, FieldPitchPlotView::Overhead);
-    std::size_t straightSegments = 0, straightEndpoint = 0, overheadSegments = 0;
-    EmitFieldScoreboardGeometry(straight,
-        [&](const auto& a, const auto& b, const auto& c, const float* color)
+        const std::size_t segments = input.pitchTrace.size() - 1;
+        Tests::Check(plateTriangles == 6 && zoneTriangles == 8 && pathTriangles == 4 * segments &&
+            endpointTriangles == 64,
+            std::string("Each view draws home plate, the catcher's view the zone outline, both the path and its end: ") + context);
+        // Each segment is two triangles; the first one's leading edge spans the stroke's width.
+        Tests::Check(catcherWidths.size() >= 4 && catcherWidths[catcherWidths.size() - 2] > 2 * catcherWidths.front(),
+            std::string("From behind the plate the ball's path thickens as it comes closer: ") + context);
+    };
+    checkPanels(state, "curving pitch");
+    auto wild = state;
+    for (auto& point : wild.pitchTrace) point.x -= 1.6 * point.z / 18.44;
+    checkPanels(wild, "wild pitch");
+    const auto wildOverhead = BuildFieldPitchPlotLayout(wild, FieldPitchPlotView::Overhead);
+    Tests::Check(wildOverhead.unitsPerMeter < overhead.unitsPerMeter &&
+        std::abs(wildOverhead.ProjectPlateCorner(plate[1]).x - wildOverhead.ProjectPlateCorner(plate[0]).x -
+            (wildOverhead.ProjectPlateCorner(plate[0]).y - wildOverhead.ProjectPlateCorner(plate[3]).y)) < 1e-10,
+        "A pitch far off the plate widens the overhead view so it stays in sight");
+    auto hidden = state;
+    hidden.pitchMetricsVisible = false;
+    std::size_t hiddenPath = 0, hiddenReference = 0;
+    EmitFieldScoreboardGeometry(hidden,
+        [&](const auto& a, const auto&, const auto&, const float*)
         {
-            if (a.x >= straightOverhead.left)
-            {
-                // From above the same pitch is a straight run down the middle to the plate.
-                if (std::abs(a.z - straightPlot.z) < 1e-8 && color[0] == .24F && color[1] == .91F)
-                {
-                    ++overheadSegments;
-                    for (const auto& p : {a, b, c})
-                        Tests::Check(std::abs(p.x - straightOverhead.left - straightOverhead.width * .5) <
-                            .07 * scale + 1e-10, "A pitch with no sideways movement runs straight down the overhead view");
-                }
-                return;
-            }
-            if (std::abs(a.z - straightPlot.z) < 1e-8 && color[0] == .24F && color[1] == .91F)
-                ++straightSegments;
-            if (std::abs(a.z - straightPlot.z - .02) > 1e-8) return;
-            ++straightEndpoint;
-            const auto expected = straightPlot.Project(straight.pitchTrace.back());
-            const double radius = straightPlot.endpointRadius;
-            Tests::Check(std::hypot(a.x - expected.x, a.y - expected.y) < 1e-10 &&
-                std::abs(std::hypot(b.x - a.x, b.y - a.y) - radius) < 1e-10 &&
-                std::abs(std::hypot(c.x - a.x, c.y - a.y) - radius) < 1e-10,
-                "A collapsed trajectory renders a small circular endpoint marker at its actual endpoint");
+            const double depth = a.z - board.centerZ;
+            if (std::abs(depth - .08) < 1e-8 || std::abs(depth - .10) < 1e-8) ++hiddenPath;
+            if (std::abs(depth - .04) < 1e-8 || std::abs(depth - .05) < 1e-8) ++hiddenReference;
         }, [](auto&&...) {});
-    Tests::Check(straightSegments == 0 && straightEndpoint == 32 && overheadSegments == 4,
-        "A straight ray emits a single endpoint disc without a false diagonal segment in the catcher view");
-    state.pitchTrace.push_back({-2.4, 3.1, 0});
-    const auto largePlot = BuildFieldPitchPlotLayout(state);
-    const auto largeOverhead = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Overhead);
-    for (const auto* panel : {&largePlot, &largeOverhead})
-        for (const auto& point : state.pitchTrace)
-        {
-            const auto p = panel->Project(point);
-            const double radius = panel->endpointRadius;
-            Tests::Check(p.x - radius > panel->left && p.x + radius < panel->left + panel->width &&
-                p.y - radius > panel->bottom && p.y + radius < panel->bottom + panel->height,
-                "The complete endpoint marker and extreme movement coordinates fit within each view");
-        }
+    Tests::Check(hiddenPath == 0 && hiddenReference == 14,
+        "A concealed pitch leaves home plate and the zone with no path drawn");
+    const auto largePlot = plot;
+    const auto largeOverhead = overhead;
     std::vector<std::wstring> labels;
     struct TextBounds { double left, top, width, height; };
     std::vector<TextBounds> bounds;

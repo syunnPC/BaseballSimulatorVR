@@ -4258,7 +4258,7 @@ namespace BaseballSimulatorVR::Core
 		const auto& plotZone = tee ? m_strikeZoneSettings : m_pitchFlightAnalysis.Zone();
 		statistics.zoneBottomMeters = plotZone.bottomMeters;
 		statistics.zoneTopMeters = plotZone.bottomMeters + plotZone.heightMeters;
-		statistics.pitchBallRadiusMeters = deliveredPitch.ballProperties.radiusMeters;
+		statistics.plateFrontDepthMeters = m_environmentSettings.pitchDistanceMeters;
 		if (statistics.pitchMetricsVisible)
 		{
 			statistics.pitchName = tee ? L"Tee"
@@ -4271,7 +4271,7 @@ namespace BaseballSimulatorVR::Core
 				const auto& report = duel && m_duelPitchPreviewEnabled && !m_pitchFlightAnalysis.IsResolved()
 				    ? m_pitchFlightAnalysis.Preview() : m_pitchFlightAnalysis.Actual();
 				statistics.zoneCall = m_pitchFlightAnalysis.Actual().call;
-				statistics.pitchTrace = m_pitchFlightAnalysis.BuildMovementTrace(report);
+				statistics.pitchTrace = report.trace;
 				statistics.hasPitchBreak = report.breakMeters.has_value();
 				if (report.breakMeters)
 				{
