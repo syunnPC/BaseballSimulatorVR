@@ -2015,16 +2015,17 @@ namespace BaseballSimulatorVR::Core
 		{
 			const auto clean = Common::BatContactHapticEnvelope(true, 40.0, 0.0);
 			const auto jarring = Common::BatContactHapticEnvelope(true, 40.0, 1.0);
-			Tests::Check(clean.IsPlaying() && clean.AmplitudeAt(0.0) >= .8 && clean.lengthSeconds >= .07 &&
-			        clean.AmplitudeAt(.03) < clean.AmplitudeAt(0.0) && clean.AmplitudeAt(clean.lengthSeconds) == 0.0,
-			    "A hit is a firm jolt that dies away");
-			Tests::Check(jarring.AmplitudeAt(0.0) >= clean.AmplitudeAt(0.0) && jarring.lengthSeconds > 3.0 * clean.lengthSeconds &&
-			        jarring.AmplitudeAt(.1) > clean.AmplitudeAt(.05),
+			Tests::Check(clean.IsPlaying() && clean.AmplitudeAt(0.0) >= .95 && clean.AmplitudeAt(.045) == clean.AmplitudeAt(0.0) &&
+			        clean.AmplitudeAt(.1) < clean.AmplitudeAt(.05) && clean.AmplitudeAt(.1) >= .3 &&
+			        clean.AmplitudeAt(clean.lengthSeconds) == 0.0,
+			    "A sweet-spot hit holds a strong knock long enough to feel, then dies away");
+			Tests::Check(jarring.AmplitudeAt(0.0) >= clean.AmplitudeAt(0.0) && jarring.lengthSeconds > 2.0 * clean.lengthSeconds &&
+			        jarring.AmplitudeAt(.2) > clean.AmplitudeAt(.12),
 			    "A miss-hit off the handle or the end jars harder and keeps buzzing");
-			Tests::Check(Common::BatContactHapticEnvelope(true, 12.0, 0.0).AmplitudeAt(0.0) < clean.AmplitudeAt(0.0) &&
-			        Common::BatContactHapticEnvelope(true, 12.0, 0.0).AmplitudeAt(0.0) >= .45 &&
+			const auto soft = Common::BatContactHapticEnvelope(true, 12.0, 0.0);
+			Tests::Check(soft.AmplitudeAt(0.0) < clean.AmplitudeAt(0.0) && soft.AmplitudeAt(0.0) >= .8 &&
 			        !Common::BatContactHapticEnvelope(true, 1.0, 0.0).IsPlaying(),
-			    "A softer hit is felt less, and a touch slower than a hit is not felt at all");
+			    "A softer hit is felt a little less, and a touch slower than a hit is not felt at all");
 
 			// A swing through the tee ball, then the frames after it.
 			const auto swing = [](const std::optional<Xr::HandPoseState>& otherHand)
@@ -2050,9 +2051,9 @@ namespace BaseballSimulatorVR::Core
 				if (i > 0) fading = fading && pulses[i].amplitude <= pulses[i - 1].amplitude;
 			}
 			const double felt = pulses.empty() ? 0.0 : (pulses.size() - 1) / 90.0 + pulses.back().durationSeconds;
-			Tests::Check(!pulses.empty() && pulses.front().amplitude >= .8 && batHandOnly && fading && longEnough &&
-			        pulses.size() >= 4 && felt >= .07 && felt <= .35,
-			    "A hit plays a strong, fading vibration in the bat hand frame by frame for a tenth of a second or more");
+			Tests::Check(!pulses.empty() && pulses.front().amplitude >= .95 && batHandOnly && fading && longEnough &&
+			        pulses.size() >= 5 && pulses[4].amplitude == pulses.front().amplitude && felt >= .15 && felt <= .4,
+			    "A hit plays a strong vibration in the bat hand that holds, then fades, for a sixth of a second or more");
 
 			const double length = 0.84;
 			const auto handle = [&](const Physics::Vector3& position)
