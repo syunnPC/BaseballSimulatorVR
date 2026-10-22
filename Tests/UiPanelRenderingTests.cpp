@@ -39,7 +39,7 @@ namespace
     void SavePreview(const std::vector<Tests::GpuTestContext::Pixel>& pixels, UINT width, UINT height,
                      const wchar_t* filename=L"UiPanelRegression.bmp")
     {
-        // An ignored GPU readback, useful for reviewing the real production shader output.
+        // GPU readback saved for looking at the production shader output; no check reads it.
         const std::filesystem::path folder = std::filesystem::current_path()/"x64";
         std::filesystem::create_directories(folder);
         std::ofstream output(folder/filename, std::ios::binary);
@@ -61,7 +61,7 @@ namespace
             const std::array<std::uint8_t,4> bgra{pixel[2],pixel[1],pixel[0],255};
             output.write(reinterpret_cast<const char*>(bgra.data()), bgra.size());
         }
-        Check(output.good(), "Write GPU panel regression preview");
+        Check(output.good(), "Write GPU panel preview bitmap");
     }
 }
 
@@ -247,8 +247,8 @@ void RunUiPanelRenderingTests()
         }
     Check(boardInk>20, "Production field board displays Japanese and numeric text through the GPU atlas");
 
-    // Framed as before the ballpark moved the board out past the center-field seats:
-    // level with its middle, 41 board units in front of it.
+    // A close, straight-on view level with the board's middle, 41 board units in front of it,
+    // so the small diagram markers cover enough pixels to count.
     const auto boardLayout=Common::BuildFieldScoreboardLayout();
     view.position={0,boardLayout.bottom+8*boardLayout.unitsPerLayoutUnit,
         boardLayout.centerZ+41*boardLayout.unitsPerLayoutUnit};

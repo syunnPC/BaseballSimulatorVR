@@ -91,7 +91,7 @@ namespace
 		Tests::Check(!broken.IsValid() && broken.Error().line == 3U && broken.Error().column == 14U &&
 		    broken.Error().path == "b", "Syntax errors report the exact line, column and member path");
 		Tests::Check(ReadIntResult("{\n\"a\": 1,\n\"b\": tru }", "a").diagnostic.line == 3U,
-		    "Legacy single-key reads surface the document syntax error position");
+		    "Single-key reads from raw text surface the document syntax error position");
 		const auto duplicate = JsonDocument::Parse("{\"k\": 1,\n \"k\": 2}");
 		Tests::Check(!duplicate.IsValid() && duplicate.Error().line == 2U && duplicate.Error().path == "k" &&
 		    duplicate.Error().message.find("duplicate") != std::string::npos, "Duplicate keys report their position");
@@ -468,7 +468,7 @@ void RunJsonParserTests()
 	    "Ball restitution survives an environment JSON round trip");
 	const auto validEnvironment = Tests::ReadFile(environmentPath);
 	Tests::Check(validEnvironment.find("\"batBallRestitution\"") == std::string::npos,
-	    "Environment output contains no obsolete bat restitution setting");
+	    "Environment output has no separate bat restitution setting; restitution is a ball property");
 	Tests::Check(validEnvironment.find("\"strikeZoneBottomMeters\"") == std::string::npos &&
 	    validEnvironment.find("\"strikeZoneHeightMeters\"") == std::string::npos &&
 	    validEnvironment.find("\"strikeZoneWidthMeters\"") == std::string::npos,
@@ -531,8 +531,7 @@ void RunJsonParserTests()
 	       "\"environmentSettingsFile\": false,", "\"pitcherThrowsLeftHanded\": \"true\",",
 	       "\"pitcherThrowsLeftHanded\": 1,", "\"pitcherThrowsLeftHanded\": null," })
 	{
-		// Remove the existing property to avoid testing duplicate-key rejection instead of its
-		// type.
+		// Replace the existing property so the check exercises its type, not duplicate-key rejection.
 		std::string modified = preset;
 		const std::string field(invalidField);
 		const auto keyEnd = field.find(':');
@@ -581,13 +580,13 @@ void RunJsonParserTests()
 	Tests::Check(std::filesystem::exists(Common::BuildBackupFilePath(environmentPath)),
 	    "Replacing a valid environment file keeps a .bak copy");
 
-	// New optional environment fields: defaults when absent, persisted, validated.
+	// Optional atmosphere and bat-mass environment fields: defaults when absent, persisted, validated.
 	WriteFile(environmentPath,
 	    R"({"pitchDistanceMeters":18.44,"enableMoundHeightOffset":false,"moundHeightOffsetMeters":0.18,"ballRestitutionAtReferenceSpeed":0.45})");
 	const auto legacyEnvironment = runtime.LoadEnvironment(environmentPath.wstring(), error);
 	Tests::Check(legacyEnvironment && legacyEnvironment->altitudeMeters == 0.0 &&
 	    legacyEnvironment->temperatureCelsius == 15.0 && legacyEnvironment->relativeHumidityPercent == 0.0 &&
-	    legacyEnvironment->batMassKilograms == 0.885, "Old environment files load with the new field defaults");
+	    legacyEnvironment->batMassKilograms == 0.885, "Environment files without the optional fields load with their defaults");
 	EnvironmentRuntimeSettings atmosphere{};
 	atmosphere.altitudeMeters = 1609.3;
 	atmosphere.temperatureCelsius = 31.5;

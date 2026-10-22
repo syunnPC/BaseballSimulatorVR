@@ -40,13 +40,15 @@ namespace BaseballSimulatorVR::Common
 	namespace FieldMarkingStyle
 	{
 		inline constexpr std::array<float, 4> DirtColor{.36F, .22F, .13F, 1.0F};
-		// The two floor tile greens, mowed in diagonal stripes across the infield.
+		// Two grass greens close to the floor tiles' shades, alternated in the infield's mowing
+		// stripes and the outfield checkerboard.
 		inline constexpr std::array<float, 4> InfieldGrassColorA{.042F, .084F, .060F, 1.0F};
 		inline constexpr std::array<float, 4> InfieldGrassColorB{.050F, .102F, .070F, 1.0F};
 		inline constexpr std::array<float, 4> ChalkColor{.88F, .88F, .84F, 1.0F};
 		inline constexpr std::array<float, 4> BaseColor{.95F, .95F, .93F, 1.0F};
 		inline constexpr std::array<float, 4> BaseSideColor{.74F, .74F, .72F, 1.0F};
-		// Foul lines extend this far past the foul poles' angle, so the floor covers them.
+		// The floor and infield skin reach this far past the 45-degree foul lines, so the full
+		// width of each chalk line lies on them.
 		inline constexpr double FoulTerritoryMarginDegrees = 1.5;
 	}
 
@@ -96,7 +98,7 @@ namespace BaseballSimulatorVR::Common
 		using Physics::Vector3;
 		IndexedWorldMesh mesh;
 		const double apexZ = plateFrontDepth + HomePlateDepthMeters;
-		// The skin reaches the far side of the grass arc, so the field is never smaller.
+		// Shading darkens with distance relative to this radius, at least the far side of the grass arc.
 		const double radius = (std::max)(fieldRadiusMeters, D::PitchersPlateDistanceMeters + D::InfieldArcRadiusMeters);
 		enum Layer { Dirt = 2, Grass = 3, Cutout = 4, Chalk = 5 };
 		const auto world = [&](const double u, const double v, const Layer layer)

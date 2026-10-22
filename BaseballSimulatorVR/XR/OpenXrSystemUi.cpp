@@ -643,9 +643,9 @@ namespace BaseballSimulatorVR::Xr
 				return false;
 			}
 
-			// Inferred (VALID but not TRACKED) poses are kept: fast swings briefly
-			// leave inside-out camera coverage, and dropping them removed the bat
-			// and broke the sweep exactly at the contact point.
+			// Inferred (VALID but not TRACKED) poses are accepted: fast swings briefly
+			// leave inside-out camera coverage, and dropping those samples would remove
+			// the bat and break the sweep at the contact point.
 			const XrSpaceLocationFlags requiredFlags =
 			    XR_SPACE_LOCATION_POSITION_VALID_BIT |
 			    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
@@ -848,8 +848,9 @@ namespace BaseballSimulatorVR::Xr
 			    toHeadDirection);
 			return (facing >= 0.82);
 		};
-		// In the batting modes and behind the plate the bat or mitt hand holds the laser and
-		// the other hand calls up the panel.
+		// In the batting modes and behind the plate the hand batUseRightHand selects (the
+		// bat hand, or the catcher's throwing hand) holds the laser and the other hand
+		// calls up the panel.
 		const bool isBatMode =
 		    (m_uiTelemetry.operationMode == UiOperationMode::BattingDuel) ||
 		    (m_uiTelemetry.operationMode == UiOperationMode::TeeBatting) ||

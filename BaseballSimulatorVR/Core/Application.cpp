@@ -1796,8 +1796,8 @@ namespace BaseballSimulatorVR::Core
 			Data::PitchProfileEntry& activePitchProfile =
 			    m_pitchProfiles[static_cast<std::size_t>(m_activePitchProfileIndex)];
 			activePitchProfile.pitchParameters = m_activePitchParameters;
-			// Stored profiles keep the single-speed format; zone-solve velocity biases
-			// are only applied to the currently simulated pitch.
+			// Stored profiles hold only the speed and launch elevation; zone-solve velocity
+			// biases apply only to the pitch being simulated.
 			activePitchProfile.pitchParameters.initialVelocity = Physics::Vector3{
 				0.0,
 				initialSpeed * std::tan(m_activePitchParameters.launchElevationDegrees * std::numbers::pi / 180.0),
@@ -3018,7 +3018,7 @@ namespace BaseballSimulatorVR::Core
 			}
 		}
 
-		// 2. User pitch settings files that no longer load are renamed and restored.
+		// 2. User pitch settings files that fail to load are renamed and restored.
 		const auto isLoadablePitch = [this](const std::filesystem::path& path)
 		{
 			std::wstring ignored{};
@@ -3190,8 +3190,9 @@ namespace BaseballSimulatorVR::Core
 			return false;
 		}
 
-		// One-time migration to the read-only Presets layout. Earlier versions copied every bundled
-		// preset into the user directory, where the copies hid all later preset updates.
+		// A user directory whose play settings record a layout version below
+		// CurrentSettingsLayoutVersion can hold copies of bundled presets that would shadow the
+		// read-only bundled files; they are moved to a backup folder once and the version recorded.
 		const std::filesystem::path playPath = catalog.GetUserPlaySettingsPath();
 		std::wstring playError{};
 		std::optional<Data::PlayRuntimeSettings> play =
@@ -4919,7 +4920,7 @@ namespace BaseballSimulatorVR::Core
 		{
 			return std::nullopt;
 		}
-		// The mitt goes on the hand that does not throw.
+		// The mitt goes on the hand that does not throw, opposite the bat-hand setting.
 		const bool mittOnRightHand = !m_batUseRightHand;
 		const Xr::HandPoseState hand = mittOnRightHand ? m_xrSystem->GetRightHandPose() : m_xrSystem->GetLeftHandPose();
 		if (!hand.isValid || !std::isfinite(hand.position.x) || !std::isfinite(hand.position.y) ||

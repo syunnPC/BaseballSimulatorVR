@@ -58,7 +58,7 @@ namespace
 		Tests::Check(!touches({HalfWidth * .5 + diagonal + Gap, Mid, Front + Depth * .75 + diagonal + Gap}),
 		    "A gap from the diagonal side stays a ball");
 		Tests::Check(!touches({.2, Mid, Front + Depth * .9}),
-		    "Removed rear square corners are outside the physical strike zone");
+		    "The square corners cut off by the rear diagonals are outside the physical strike zone");
 		Tests::Check(touches({Radius * .6, Mid, Front + Depth + Radius * .8}),
 		    "Rear vertex contact uses radial distance rather than a depth-only test");
 		Tests::Check(!touches({Radius * .8, Mid, Front + Depth + Radius * .8}),

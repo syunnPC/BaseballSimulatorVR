@@ -15,8 +15,6 @@
 
 namespace Tests
 {
-	// A deterministic offscreen WARP target exercises the production shaders
-	// without an OpenXR session or a visible desktop window.
 	[[nodiscard]] inline bool AllowsNonWarpAdapter()
 	{
 		char value[8]{};
@@ -24,6 +22,8 @@ namespace Tests
 		return getenv_s(&length, value, "BASEBALLSIM_TEST_ALLOW_NON_WARP") == 0 && length > 1 && value[0] == '1';
 	}
 
+	// A deterministic offscreen WARP target exercises the production shaders
+	// without an OpenXR session or a visible desktop window.
 	class GpuTestContext final
 	{
 	  public:

@@ -36,7 +36,7 @@ namespace
 		parameters.liftCoefficient = .15;
 		const auto fullSpin = InitialAcceleration(ball, parameters);
 		Tests::Check(Near(fullSpin, {0, 4.8, -12.8}),
-		    "Fully transverse profile spin retains its configured lift and quadratic drag");
+		    "Fully transverse profile spin gets its full configured lift and quadratic drag");
 
 		for (const bool useTable : {false, true})
 		{
@@ -85,8 +85,8 @@ namespace
 
 	void CheckSeamHeuristicContinuity()
 	{
-		// The existing seam waveform is a heuristic, not a measured seam-force model.
-		// Check its continuity without changing its amplitude for fully transverse spin.
+		// The seam waveform is a heuristic, not a measured seam-force model. Check its
+		// continuity through gyro alignment and its amplitude at fully transverse spin.
 		Physics::BallState ball;
 		ball.velocity = {0, 0, 40};
 		ball.spinAxis = {-1, 0, 0};
@@ -103,10 +103,10 @@ namespace
 			parameters.useCoefficientTable = useTable;
 			const auto reference = InitialAcceleration(ball, parameters);
 			Tests::Check(reference.x < 0,
-			    "The configured seam waveform still produces a side perturbation at full transverse spin");
+			    "The configured seam waveform produces a side perturbation at full transverse spin");
 			if (!useTable)
 				Tests::Check(std::abs(reference.x + .15 * 1.04 * 40. * .28 * .1) < 1e-11,
-				    "Fully transverse seam perturbation retains its existing configured amplitude");
+				    "Fully transverse seam perturbation has its full configured amplitude");
 			for (const double fraction : {.1, .001, 1e-8, 0., -1e-8, -.001, -.1})
 			{
 				auto tilted = ball;
@@ -116,7 +116,7 @@ namespace
 				    std::abs(acceleration.y - reference.y * fraction) < 1e-11,
 				    "The heuristic seam side force and Magnus force pass continuously through gyro alignment");
 				Tests::Check(std::abs(acceleration.z - reference.z) < 1e-10,
-				    "Removing the transverse projection singularity leaves seam drag modulation unchanged");
+				    "Seam drag modulation is the same at every spin-axis tilt, including exact gyro alignment");
 			}
 		}
 	}

@@ -53,7 +53,7 @@ namespace BaseballSimulatorVR::Common
 	}
 
 	// The application publishes the finished label (above) in UiTelemetry::pitchSettingsFileName, so
-	// the XR panel shows it unchanged. Display names live in the preset JSON files, not in code.
+	// the XR panel shows it unchanged. Display names come from the preset JSON files.
 	[[nodiscard]] inline std::wstring BuildPitchPresetLabel(const std::wstring_view label)
 	{
 		return std::wstring{ label };

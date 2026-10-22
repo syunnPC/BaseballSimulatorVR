@@ -1250,7 +1250,7 @@ namespace BaseballSimulatorVR::Core
 			std::size_t userFiles = 0;
 			for (const auto& entry : std::filesystem::directory_iterator(user))
 				userFiles += entry.is_regular_file() && entry.path().extension() == L".json" ? 1U : 0U;
-			Tests::Check(userFiles == 3U, "Bundled presets are no longer copied into the user directory");
+			Tests::Check(userFiles == 3U, "Bundled presets are not copied into the user directory");
 			Tests::Check(app->m_settingsLayoutVersion == Data::CurrentSettingsLayoutVersion,
 			    "The settings layout version is recorded");
 
@@ -1262,7 +1262,8 @@ namespace BaseballSimulatorVR::Core
 			    Tests::ReadFile(user / "PitchSettings.user.json") == "user modified",
 			    "Provisioning never overwrites an existing user settings file");
 
-			// Upgrade from the old layout: every bundled preset had been copied (and rewritten) here.
+			// A settings folder from an earlier release holds rewritten copies of bundled presets
+			// beside the user's own files.
 			Tests::TempDirectory legacy;
 			for (const auto name : {L"PitchSettings.Difficulty.Easy.RHP.json", L"PitchSettings.Difficulty.Easy.LHP.json",
 			         L"PitchSettings.Yamamoto.json", L"EnvironmentSettings.Toss.Baseball.json"})
@@ -1278,7 +1279,7 @@ namespace BaseballSimulatorVR::Core
 			upgraded->m_bundledContentDirectoryPath = bundled.wstring();
 			upgraded->m_userDataDirectoryPath = legacy.path.wstring();
 			Tests::Check(upgraded->EnsureRequiredUserSettingsFiles(error) && upgraded->m_startupNotices.size() == 1U,
-			    "The first start after the upgrade explains the preset migration once");
+			    "The first start on an earlier release's settings folder explains the preset migration once");
 			Tests::Check(!std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.RHP.json") &&
 			    !std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.LHP.json") &&
 			    !std::filesystem::exists(legacy.path / "PitchSettings.Yamamoto.json") &&
@@ -2015,16 +2016,17 @@ namespace BaseballSimulatorVR::Core
 		{
 			const auto clean = Common::BatContactHapticEnvelope(true, 40.0, 0.0);
 			const auto jarring = Common::BatContactHapticEnvelope(true, 40.0, 1.0);
-			Tests::Check(clean.IsPlaying() && clean.AmplitudeAt(0.0) >= .8 && clean.lengthSeconds >= .07 &&
-			        clean.AmplitudeAt(.03) < clean.AmplitudeAt(0.0) && clean.AmplitudeAt(clean.lengthSeconds) == 0.0,
-			    "A hit is a firm jolt that dies away");
-			Tests::Check(jarring.AmplitudeAt(0.0) >= clean.AmplitudeAt(0.0) && jarring.lengthSeconds > 3.0 * clean.lengthSeconds &&
-			        jarring.AmplitudeAt(.1) > clean.AmplitudeAt(.05),
+			Tests::Check(clean.IsPlaying() && clean.AmplitudeAt(0.0) >= .95 && clean.AmplitudeAt(.045) == clean.AmplitudeAt(0.0) &&
+			        clean.AmplitudeAt(.1) < clean.AmplitudeAt(.05) && clean.AmplitudeAt(.1) >= .3 &&
+			        clean.AmplitudeAt(clean.lengthSeconds) == 0.0,
+			    "A sweet-spot hit holds a strong knock long enough to feel, then dies away");
+			Tests::Check(jarring.AmplitudeAt(0.0) >= clean.AmplitudeAt(0.0) && jarring.lengthSeconds > 2.0 * clean.lengthSeconds &&
+			        jarring.AmplitudeAt(.2) > clean.AmplitudeAt(.12),
 			    "A miss-hit off the handle or the end jars harder and keeps buzzing");
-			Tests::Check(Common::BatContactHapticEnvelope(true, 12.0, 0.0).AmplitudeAt(0.0) < clean.AmplitudeAt(0.0) &&
-			        Common::BatContactHapticEnvelope(true, 12.0, 0.0).AmplitudeAt(0.0) >= .45 &&
+			const auto soft = Common::BatContactHapticEnvelope(true, 12.0, 0.0);
+			Tests::Check(soft.AmplitudeAt(0.0) < clean.AmplitudeAt(0.0) && soft.AmplitudeAt(0.0) >= .8 &&
 			        !Common::BatContactHapticEnvelope(true, 1.0, 0.0).IsPlaying(),
-			    "A softer hit is felt less, and a touch slower than a hit is not felt at all");
+			    "A softer hit is felt a little less, and a touch slower than a hit is not felt at all");
 
 			// A swing through the tee ball, then the frames after it.
 			const auto swing = [](const std::optional<Xr::HandPoseState>& otherHand)
@@ -2050,9 +2052,9 @@ namespace BaseballSimulatorVR::Core
 				if (i > 0) fading = fading && pulses[i].amplitude <= pulses[i - 1].amplitude;
 			}
 			const double felt = pulses.empty() ? 0.0 : (pulses.size() - 1) / 90.0 + pulses.back().durationSeconds;
-			Tests::Check(!pulses.empty() && pulses.front().amplitude >= .8 && batHandOnly && fading && longEnough &&
-			        pulses.size() >= 4 && felt >= .07 && felt <= .35,
-			    "A hit plays a strong, fading vibration in the bat hand frame by frame for a tenth of a second or more");
+			Tests::Check(!pulses.empty() && pulses.front().amplitude >= .95 && batHandOnly && fading && longEnough &&
+			        pulses.size() >= 5 && pulses[4].amplitude == pulses.front().amplitude && felt >= .15 && felt <= .4,
+			    "A hit plays a strong vibration in the bat hand that holds, then fades, for a sixth of a second or more");
 
 			const double length = 0.84;
 			const auto handle = [&](const Physics::Vector3& position)
@@ -2182,11 +2184,11 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::Pitching &&
 			        app->m_catcherRound.pitches == 1 && SamePosition(app->m_catcherRound.targetWorld, setup) &&
 			        !app->IsWaitingForNextDuelPitch(),
-			    "The trigger gives the sign and the pitcher starts his delivery toward the mitt");
+			    "The trigger gives the sign and the pitcher starts the delivery toward the mitt");
 			// The catcher shifts the mitt to where the pitch is coming and squeezes as it arrives.
 			const Physics::Vector3 aim = app->m_catcherRound.aimWorld;
 			Tests::Check(std::hypot(aim.x - setup.x, aim.y - setup.y) < 1.0 && Near(aim.z, setup.z),
-			    "The pitcher's aim lands near the target he was given");
+			    "The pitcher's aim lands near the target the catcher gave");
 			SetMitt(*xr, aim);
 			const auto toWorld = [&](const Physics::Vector3& position)
 			{

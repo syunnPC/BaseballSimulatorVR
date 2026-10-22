@@ -514,8 +514,8 @@ namespace BaseballSimulatorVR::Xr
 #if defined(_WIN64)
 		if (m_isSessionRunning && (m_sessionHandle != XR_NULL_HANDLE) && !m_exitRequested)
 		{
-			// Ask the runtime to stop the session and keep the frame loop alive
-			// until it reports STOPPING, instead of ending a running session.
+			// xrEndSession is valid only once the runtime reports STOPPING, so
+			// request an exit and keep the frame loop alive until it does.
 			if (m_isFrameBegun)
 			{
 				EndFrame(false);
@@ -1287,8 +1287,9 @@ namespace BaseballSimulatorVR::Xr
 		EndFrame(hasProjectionLayer);
 		if (m_projectionRenderingFailed)
 		{
-			// Keep presenting empty frames meanwhile; a failed device queue or
-			// fence otherwise left the session without xrWaitFrame calls forever.
+			// The per-view command resources or the queue are unusable after a
+			// rendering failure. The frame has already ended without a layer;
+			// recreate the session to rebuild them.
 			ScheduleRecovery(L"projection rendering failed");
 		}
 #endif

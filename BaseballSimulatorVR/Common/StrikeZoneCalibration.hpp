@@ -126,8 +126,8 @@ namespace BaseballSimulatorVR::Common
 			return { m_status, (std::min)(duration, RequiredStableDurationSeconds), fraction };
 		}
 
-		// Returns a result once per Reset(). A new calibration leaves applying the
-		// previous zone to the caller until a complete valid replacement exists.
+		// Returns a result at most once per Reset(). Until then the caller keeps
+		// applying its current zone; only a complete, valid result replaces it.
 		[[nodiscard]] std::optional<StrikeZoneHeightCalibration> AddSample(
 		    const FloorEyeHeightSample& sample) noexcept
 		{

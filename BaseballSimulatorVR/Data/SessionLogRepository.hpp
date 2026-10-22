@@ -42,8 +42,9 @@ namespace BaseballSimulatorVR::Data
 	};
 
 	[[nodiscard]] std::wstring_view GetSessionEventCategoryToken(SessionEventCategory category) noexcept;
-	// Category of events logged through the generic LogPitchEvent overloads (and of rows written
-	// before event_category existed): pitch deliveries, bat contacts, everything else is Config.
+	// Category of events logged through the generic LogPitchEvent overloads: Pitch for pitch
+	// deliveries, BattedBall for bat contacts, Config for everything else. The schema version 2
+	// migration backfills event_category with the same rules.
 	[[nodiscard]] SessionEventCategory ClassifySessionEventType(std::wstring_view eventType, std::wstring_view note) noexcept;
 
 	// Normalized row of the pitches table, written together with a Pitch event.

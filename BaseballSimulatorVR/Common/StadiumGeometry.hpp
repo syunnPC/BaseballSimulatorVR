@@ -10,7 +10,7 @@
 namespace BaseballSimulatorVR::Common::Stadium
 {
 	// A classic symmetric major-league park: 330 ft down the lines, about 380 ft in the
-	// gaps and 400 ft to center (above the Official Baseball Rules 2.01 minimums of 325 ft
+	// gaps and 400 ft to center (meeting the Official Baseball Rules 2.01 minimums of 325 ft
 	// and 400 ft) behind an 8 ft wall with a 15 ft warning track. Foul territory is 60 ft
 	// deep behind home plate (rule 2.01's recommended backstop distance) and stays that wide
 	// as far as the bases before closing in to meet the wall at the foul poles. Seats rise

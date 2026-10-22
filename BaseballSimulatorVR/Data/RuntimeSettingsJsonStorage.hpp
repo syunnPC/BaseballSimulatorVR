@@ -45,15 +45,15 @@ namespace BaseballSimulatorVR::Data
 		Physics::PitchIntegratorType integratorType{
 			Physics::PitchIntegratorType::Rk4
 		};
-		// Optional fields (absent in older files): site altitude above sea level, air temperature,
-		// relative humidity and bat mass. Stored and validated here; physics consumes them later.
+		// Optional fields (these defaults apply when absent): site altitude above sea level, air
+		// temperature and relative humidity, which set the air density, and the whole-bat mass.
 		double altitudeMeters{ 0.0 };
 		double temperatureCelsius{ 15.0 };
 		double relativeHumidityPercent{ 0.0 };
 		double batMassKilograms{ 0.885 };
 	};
 
-	// Currently written layout of the user's settings directory (see PresetCatalog).
+	// Layout version of the user's settings directory that this build writes (see PresetCatalog).
 	inline constexpr int CurrentSettingsLayoutVersion = 2;
 
 	struct PlayRuntimeSettings final
@@ -77,7 +77,9 @@ namespace BaseballSimulatorVR::Data
 		std::wstring selectedPitchSettingsFile{};
 		std::optional<int> activePitchProfileIndex{};
 		std::optional<bool> randomPitchProfileEnabled{};
-		// 0 for files written before the Presets/ layout; see PresetCatalog::MigrateLegacyUserCopies.
+		// 0 when absent. While it is below CurrentSettingsLayoutVersion, startup moves user copies of
+		// bundled presets aside (PresetCatalog::FindLegacyProvisionedCopies) and then records the
+		// current version.
 		int settingsLayoutVersion{ 0 };
 	};
 

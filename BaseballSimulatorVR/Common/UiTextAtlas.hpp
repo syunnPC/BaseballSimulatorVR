@@ -411,7 +411,7 @@ namespace BaseballSimulatorVR::Common::UiText
 		else
 		{
 			// Clip in world space before projecting. Interpolate UVs on exactly
-			// the same edge parameter, preserving the original glyph image.
+			// the same edge parameter so the clipped quad shows the glyph undistorted.
 			for (std::size_t current = 0; current < quad.size(); ++current)
 			{
 				const std::size_t previous = (current + 3) % 4;

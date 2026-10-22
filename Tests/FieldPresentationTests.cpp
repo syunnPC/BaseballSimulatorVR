@@ -160,7 +160,7 @@ void RunFieldPresentationTests()
     Tests::Check(release.leftFoot.y > pitcher.moundHeightMeters && release.rightFoot.y > pitcher.moundHeightMeters,
         "Pitcher feet stand on the mound rather than at world zero");
     Tests::Check(Physics::Length(release.rightHand - pitcher.releasePositionWorld) < 1e-10,
-        "Default right-handed throwing hand retains its existing release position");
+        "At release the default right throwing hand is exactly at the release position");
     for (const double scale : {.5, 1.0, 1.5}) {
         for (const double referenceTime : {-1.2, -.06, 0.0, .2, .6}) {
             auto right = pitcher;
@@ -258,7 +258,7 @@ void RunFieldPresentationTests()
     Tests::Check(std::abs(board.unitsPerLayoutUnit - 1.45) < 1e-10 &&
         std::abs(board.width - 44 * board.unitsPerLayoutUnit) < 1e-10 &&
         std::abs(board.height - 17 * board.unitsPerLayoutUnit) < 1e-10,
-        "The original board dimensions and typography scale with center-field distance");
+        "The 44 by 17 unit board and its typography scale with center-field distance");
     Common::FieldStatisticsState diagramState{};
     const auto distantPlot = Common::BuildFieldPitchPlotLayout(diagramState);
     const auto distantOverhead =
@@ -266,7 +266,7 @@ void RunFieldPresentationTests()
     Tests::Check(std::abs((distantOverhead.left + distantOverhead.width - distantPlot.left) /
             board.unitsPerLayoutUnit - 11.8) < 1e-10 &&
         std::abs(distantPlot.height / board.unitsPerLayoutUnit - 9.6) < 1e-10,
-        "The two pitch diagrams retain their original angular drawing-area dimensions on a distant field");
+        "The two pitch diagrams span 11.8 by 9.6 board units, keeping their angular size on a distant field");
     Common::SetGroundRuntimeSettings({10});
     Common::SetPitchDistanceMeters(30);
     Tests::Check(Common::BuildFieldScoreboardLayout().centerZ < -40,

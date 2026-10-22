@@ -19,7 +19,7 @@ void RunMetricsPanelControlsTests()
 	Common::UiText::PanelLocalRect body;
 	std::array<Common::UiText::PanelLocalRect,Common::MetricsControlButtonCount> buttons;
 	Tests::Check(Common::BuildMetricsPanelControlLayout(panel,body,buttons) && buttons.size() == 17,
-	    "Metrics panel lays out all existing controls and four independent strike-zone buttons");
+	    "Metrics panel lays out all 17 controls, including four independent strike-zone buttons");
 	const auto world = [&](double x, double y)
 	{ return panel.center + panel.rightAxis * x + panel.upAxis * y; };
 	for (std::size_t i = 0; i < buttons.size(); ++i)
@@ -28,7 +28,7 @@ void RunMetricsPanelControlsTests()
 		const double x = (button.left + button.right) * .5;
 		const double y = (button.top + button.bottom) * .5;
 		Tests::Check(button.right - button.left >= .06 && button.top - button.bottom >= .02,
-		    "Metrics buttons retain readable label width and usable laser target height");
+		    "Metrics buttons have readable label width and usable laser target height");
 		Tests::Check(Common::FindMetricsPanelControl(panel,world(x,y),buttons) == static_cast<int>(i),
 		    "Every rendered metrics button resolves to the identical laser control index");
 		Tests::Check(button.top < body.bottom && button.bottom >= -panel.heightMeters * .5 + panel.paddingMeters - 1e-12,
@@ -58,7 +58,7 @@ void RunMetricsPanelControlsTests()
 	    "Reading displayed zone bounds cannot trigger a manual adjustment");
 	const double rowGap = std::clamp(panel.cellGapMeters * .75,.0015,.0065);
 	Tests::Check((body.top - body.bottom - rowGap * 5.) / 6. >= .023,
-	    "Six metrics rows retain readable height after adding zone bottom, top and total height");
+	    "Six metrics rows, including zone bottom, top and total height, keep a readable height");
 	panel.rows = 1;
 	Tests::Check(!Common::BuildMetricsPanelControlLayout(panel,body,buttons),
 	    "A minimized title-only panel exposes no invisible manual control targets");

@@ -75,7 +75,7 @@ namespace
 		Tests::Check(Near(acceleration, {0, scale * coefficients.lift * 2500, scale * .370 * 2500}),
 		    "Drag and Magnus acceleration include air density, area, and ball mass");
 		Tests::Check(acceleration.z > 16 && acceleration.z < 17,
-		    "A 50m/s batted ball has physical drag rather than the old roughly 1m/s2 profile drag");
+		    "A 50m/s batted ball has a physical drag deceleration of 16-17 m/s2");
 		const auto noSpin =
 		    Physics::ComputeBattedBallAerodynamicAcceleration(velocity, {1, 0, 0}, 0);
 		Tests::Check(
@@ -243,7 +243,7 @@ namespace
 		const double lift = .15 * 40. * (2200. / 3000.);
 		Tests::Check(std::abs((pitchedResult.velocity.y - pitched.velocity.y) / shortStep.count() -
 		                      (-9.80665 + lift)) < 1e-6,
-		    "Pitch-profile formula is unchanged but reads the current ball spin");
+		    "The pitch-profile lift formula reads the current ball spin, not the profile's");
 		pitched.spinRpm = 0;
 		const auto noSpin = engine.Step(pitched, parameters, shortStep);
 		Tests::Check(std::abs(noSpin.velocity.y / shortStep.count() + 9.80665) < 1e-6,
@@ -284,7 +284,7 @@ namespace
 		                     Physics::BallAerodynamicsModel::PitchProfile &&
 		                 Near(simulation.GetBallState().velocity, delivered.initialVelocity) &&
 		                 simulation.GetBallState().spinRpm == delivered.spinRpm,
-		    "The next delivery restores pitch-profile aerodynamics and the original pitch spin");
+		    "The next delivery restores pitch-profile aerodynamics and the delivered pitch's spin");
 	}
 
 	struct PlateCrossing
@@ -366,7 +366,8 @@ namespace
 		auto pureSide = fixed;
 		pureSide.spinAxis = {0, 1, 0};
 		const double sideBreak = FlyPitch(pureSide, .12).state.position.x - spinless.state.position.x;
-		// Only the transverse component that appears as gravity bends the path acts.
+		// Only the spin component transverse to the velocity acts; a little of it appears as
+		// gravity bends the path away from the gyro axis.
 		Tests::Check(std::abs(gyroFlight.state.position.x - spinless.state.position.x) < .1 * sideBreak &&
 		    std::abs(gyroFlight.state.position.y - spinless.state.position.y) < .01 * sideBreak,
 		    "Gyro spin along the release direction produces almost no profile Magnus force");

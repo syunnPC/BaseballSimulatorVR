@@ -177,8 +177,9 @@ namespace BaseballSimulatorVR::Core
 		[[nodiscard]] bool IsWaitingForNextDuelPitch() const noexcept;
 		// The pitcher works from the mound: batting against the pitcher or catching.
 		[[nodiscard]] bool UsesPitcher() const noexcept;
-		// Catcher mode: give the sign with the face buttons, set the target with the mitt and
-		// squeeze the mitt hand's trigger to catch; letting go calls for the next pitch.
+		// Catcher mode: pick the sign with the face buttons and confirm it with a trigger, set the
+		// target with the mitt and squeeze the mitt hand's trigger to catch; letting go returns
+		// to the sign for the next pitch.
 		void EnterCatcherMode();
 		void UpdateCatcherInput();
 		void StartCatcherPitch();
@@ -257,7 +258,8 @@ namespace BaseballSimulatorVR::Core
 			double contactFlightTimeSeconds{};
 			double firstGroundDistanceMeters{ 0.0 };
 			double maxHeightMeters{ 0.0 };
-			// Scorer's call (out, hit and where) made when the ball first comes down.
+			// Scorer's call (out, hit and where) made when the ball first comes down or reaches
+			// the wall or seats.
 			std::wstring resultLabel{};
 		};
 

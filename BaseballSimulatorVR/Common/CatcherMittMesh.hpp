@@ -39,7 +39,7 @@ namespace BaseballSimulatorVR::Common
 		const auto outline = [&](const int segment, const double scale, double& x, double& y)
 		{
 			const double angle = 2.0 * std::numbers::pi * segment / Segments;
-			// A rounded-square oval, fuller at the top like a catcher's mitt.
+			// A rounded-square oval (superellipse), slightly taller than it is wide.
 			const double c = std::cos(angle), s = std::sin(angle);
 			x = HalfWidth * scale * std::copysign(std::pow(std::abs(c), .8), c);
 			y = HalfHeight * scale * std::copysign(std::pow(std::abs(s), .8), s);
