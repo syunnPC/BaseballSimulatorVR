@@ -12,7 +12,7 @@
   "duelPitchPreviewEnabled": true,
   "_comment_batUseRightHand": "Use right hand for bat control (false = left hand)",
   "batUseRightHand": true,
-  "_comment_batMaterial": "Bat material: Wood, Metal or Urethane.",
+  "_comment_batMaterial": "Bat material: Wood, Metal, Urethane or Beginner.",
   "batMaterial": "Wood",
   "_comment_pitchTrajectoryDisplayMode": "Pitch trail: None, Full or ZoneOnly (inside strike-zone volume).",
   "pitchTrajectoryDisplayMode": "Full",
