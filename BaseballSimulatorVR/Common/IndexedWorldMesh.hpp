@@ -25,8 +25,8 @@ namespace BaseballSimulatorVR::Common
 		    TTriangle&& triangle)
 		{
 			// Reuse storage each frame and project each shared world vertex once.
-			// Faces crossing the near plane are clipped rather than dropped, which
-			// otherwise cut holes into the floor right around the player.
+			// Faces crossing the near plane are clipped, not dropped; dropping them
+			// would cut holes into the floor right around the player.
 			m_projected.resize(mesh.vertices.size());
 			m_valid.resize(mesh.vertices.size());
 			for (std::size_t i = 0; i < mesh.vertices.size(); ++i)

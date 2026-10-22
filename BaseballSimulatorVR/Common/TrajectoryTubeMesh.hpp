@@ -110,7 +110,7 @@ namespace BaseballSimulatorVR::Common
 					triangle(m_projected[i0], m_projected[i1], m_projected[i2], color);
 					return;
 				}
-				// Clip crossing faces instead of removing their visible portions.
+				// Clip faces that cross the near plane so their visible part is still drawn.
 				const std::array<Physics::Vector3,3> input{a,b,c};
 				std::array<Physics::Vector3,4> clipped;
 				std::size_t count = 0;

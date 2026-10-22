@@ -105,8 +105,8 @@ namespace BaseballSimulatorVR::Common
 		{
 			std::wostringstream stream;
 			// Round before formatting and print the sign explicitly so a tiny
-			// negative displacement reads +0.0; a `cm == 0 ? 0.0 : cm` select can
-			// be folded back to the negative zero by the MSVC optimizer.
+			// negative displacement reads +0.0, never -0.0. A select that maps -0.0
+			// to 0.0 is not enough: the MSVC optimizer can fold it away.
 			const double cm = std::round(meters * 1000.0) / 10.0;
 			stream << (cm < 0.0 ? L'-' : L'+') << std::fixed << std::setprecision(1) << std::abs(cm);
 			return stream.str();
@@ -127,7 +127,7 @@ namespace BaseballSimulatorVR::Common
 		Overhead
 	};
 
-	// The drawing area keeps its original 11.8-unit width, split into two panels.
+	// The drawing area is 11.8 layout units wide, split into two panels with a gap between.
 	inline constexpr double FieldPitchPlotPanelGap = .3;
 	inline constexpr double FieldPitchPlotPanelWidth = (11.8 - FieldPitchPlotPanelGap) * .5;
 	// The catcher's view is taken from about the umpire's eyes, just behind the catcher: far

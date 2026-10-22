@@ -1144,7 +1144,7 @@ namespace BaseballSimulatorVR::Common
 			};
 			if (!m_valid || !same(state, m_state))
 			{
-				// Mark the cache invalid until mesh construction succeeds.
+				// The cache stays invalid if mesh construction throws.
 				m_valid = false;
 				BuildPitcherWorldMesh(state, m_mesh);
 				m_state = state;
