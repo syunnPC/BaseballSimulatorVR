@@ -2,12 +2,14 @@
 
 #include "CatcherMittMesh.hpp"
 #include "DebugWorldProjection.hpp"
+#include "HomePlateGeometry.hpp"
 #include "PitcherPresentation.hpp"
 #include "ProjectedSceneMeshes.hpp"
 #include "UiTextRasterization.hpp"
 #include "../Physics/BatMaterial.hpp"
 #include "../Physics/BatGeometry.hpp"
 
+#include <array>
 #include <cmath>
 #include <iomanip>
 #include <map>
@@ -116,8 +118,9 @@ namespace BaseballSimulatorVR::Common
 		    L" cm    縦 " + (reveal ? signedCentimeters(state.pitchVerticalBreakMeters) : L"--") + L" cm"};
 	}
 
-	// The pitch's flight drawn two ways side by side: as the catcher sees it (left) and from
-	// straight above with the pitcher at the top and the plate at the bottom (right).
+	// The pitch's flight drawn two ways side by side: as the catcher sees it from behind the
+	// plate (left) and from straight above with the pitcher at the top and the plate at the
+	// bottom (right). Both show home plate, so where the ball crossed it is plain.
 	enum class FieldPitchPlotView
 	{
 		Catcher,
@@ -127,92 +130,152 @@ namespace BaseballSimulatorVR::Common
 	// The drawing area keeps its original 11.8-unit width, split into two panels.
 	inline constexpr double FieldPitchPlotPanelGap = .3;
 	inline constexpr double FieldPitchPlotPanelWidth = (11.8 - FieldPitchPlotPanelGap) * .5;
+	// The catcher's view is taken from about the umpire's eyes, just behind the catcher: far
+	// enough back to take in the whole zone and the plate.
+	inline constexpr double FieldPitchViewEyeBehindPlateMeters = 2.0;
+	inline constexpr double FieldPitchViewEyeHeightMeters = 1.1;
+	// From above, the flight's depth is squeezed evenly into the panel, so the path bends only
+	// where the ball did. Home plate is drawn in its true shape at the sideways scale (at most
+	// 5 units per meter), its front edge at the plate front, so it reads at a glance where the
+	// ball crossed it.
+	inline constexpr double FieldPitchOverheadPlateUnitsPerMeter = 5.0;
+
+	// Home plate on the ground (y = 0) at the given plate-front depth, front edge first.
+	[[nodiscard]] inline std::array<Physics::Vector3, 5> BuildFieldPitchPlotPlate(const double plateFrontDepth)
+	{
+		constexpr double Half = HomePlateWidthMeters * .5;
+		return {{{-Half, 0.0, plateFrontDepth}, {Half, 0.0, plateFrontDepth},
+		    {Half, 0.0, plateFrontDepth + HomePlateDepthMeters * .5},
+		    {0.0, 0.0, plateFrontDepth + HomePlateDepthMeters},
+		    {-Half, 0.0, plateFrontDepth + HomePlateDepthMeters * .5}}};
+	}
+
+	// The strike zone's outline at the plate front: bottom left, bottom right, top right, top left.
+	[[nodiscard]] inline std::array<Physics::Vector3, 4> BuildFieldPitchPlotZone(const FieldStatisticsState& state)
+	{
+		const double half = state.zoneWidthMeters * .5, depth = state.plateFrontDepthMeters;
+		return {{{-half, state.zoneBottomMeters, depth}, {half, state.zoneBottomMeters, depth},
+		    {half, state.zoneTopMeters, depth}, {-half, state.zoneTopMeters, depth}}};
+	}
 
 	struct FieldPitchPlotLayout final
 	{
 		double left{}, bottom{}, width{}, height{};
-		double centerXMeters{}, centerYMeters{}, unitsPerMeter{};
 		double z{};
 		double endpointRadius{};
-		bool hasVisibleMovement{};
 		FieldPitchPlotView view{FieldPitchPlotView::Catcher};
-		// Overhead only: the depth of the flight fitted to the panel's height, signed so the
-		// end of the flight is at the bottom.
-		double centerDepthMeters{}, depthUnitsPerMeter{};
+		double plateFrontDepthMeters{};
+		// Catcher: the eye and a pinhole projection, framed on the panel.
+		Physics::Vector3 eye{};
+		double focalUnits{}, centerU{}, centerV{};
+		// Overhead: the sideways scale (also the plate's) and the even depth scale.
+		double centerXMeters{}, unitsPerMeter{};
+		double topDepthMeters{}, depthUnitsPerMeter{}, contentTop{};
+
+		[[nodiscard]] double DistanceFromEye(const Physics::Vector3& point) const
+		{
+			return (std::max)(eye.z - point.z, .05);
+		}
 
 		[[nodiscard]] Physics::Vector3 Project(const Physics::Vector3& point) const
 		{
-			// Catcher faces -z, so simulation x points right in both views.
-			const double x = left + width * .5 + (point.x - centerXMeters) * unitsPerMeter;
 			if (view == FieldPitchPlotView::Overhead)
 			{
-				return {x, bottom + height * .5 - (point.z - centerDepthMeters) * depthUnitsPerMeter, z};
+				// Catcher faces -z, so simulation x points right in both views.
+				return {left + width * .5 + (point.x - centerXMeters) * unitsPerMeter,
+				    contentTop - (point.z - topDepthMeters) * depthUnitsPerMeter, z};
 			}
-			// Depth stays orthographic.
-			return {x, bottom + height * .5 + (point.y - centerYMeters) * unitsPerMeter, z};
+			const double distance = DistanceFromEye(point);
+			return {left + width * .5 + focalUnits * ((point.x - eye.x) / distance - centerU),
+			    bottom + height * .5 + focalUnits * ((point.y - eye.y) / distance - centerV), z};
+		}
+
+		// A corner of home plate: in perspective from behind, true to shape from above.
+		[[nodiscard]] Physics::Vector3 ProjectPlateCorner(const Physics::Vector3& corner) const
+		{
+			auto projected = Project(corner);
+			if (view == FieldPitchPlotView::Overhead)
+			{
+				projected.y = contentTop - (plateFrontDepthMeters - topDepthMeters) * depthUnitsPerMeter -
+				    (corner.z - plateFrontDepthMeters) * unitsPerMeter;
+			}
+			return projected;
 		}
 	};
 
-	// Each view fits its own panel. The overhead view stretches the sideways movement across
-	// its width and squeezes the flight's depth down its height, so it shows how far and
-	// where along the way the pitch moved sideways; the catcher view keeps one scale for
-	// both of its axes.
+	// Each view frames home plate, the zone (from behind) and the whole flight in its panel.
 	[[nodiscard]] inline FieldPitchPlotLayout BuildFieldPitchPlotLayout(
 	    const FieldStatisticsState& state, const FieldPitchPlotView view = FieldPitchPlotView::Catcher)
 	{
 		const auto board = BuildFieldScoreboardLayout();
 		const double s = board.unitsPerLayoutUnit;
-		double minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
-		const bool hasTrace = state.pitchMetricsVisible && !state.pitchTrace.empty();
-		if (hasTrace)
-		{
-			minX = maxX = state.pitchTrace.front().x;
-			minY = maxY = state.pitchTrace.front().y;
-			minZ = maxZ = state.pitchTrace.front().z;
-			for (const auto& point : state.pitchTrace)
-			{
-				minX = (std::min)(minX, point.x);
-				maxX = (std::max)(maxX, point.x);
-				minY = (std::min)(minY, point.y);
-				maxY = (std::max)(maxY, point.y);
-				minZ = (std::min)(minZ, point.z);
-				maxZ = (std::max)(maxZ, point.z);
-			}
-		}
-		const double width = FieldPitchPlotPanelWidth * s, height = 9.6 * s;
-		const double availableWidth = width - .9 * s, availableHeight = height - .9 * s;
-		const double extentX = maxX - minX, extentY = maxY - minY, extentZ = maxZ - minZ;
-		// Sub-micrometer residuals are numerical noise, not a movement to magnify.
-		const bool hasMovement = (std::max)(extentX, extentY) > 1e-7;
-		double unitsPerMeter = (std::min)(availableWidth, availableHeight) /
-		    (2 * state.pitchBallRadiusMeters);
-		if (hasMovement)
-		{
-			unitsPerMeter = extentX * availableHeight > extentY * availableWidth
-			    ? availableWidth / extentX : availableHeight / extentY;
-		}
 		const double areaLeft = -board.width * .5 + 30.6 * s;
-		FieldPitchPlotLayout layout{areaLeft, board.bottom + 4.8 * s, width, height,
-		    .5 * (minX + maxX), .5 * (minY + maxY),
-		    unitsPerMeter, board.centerZ + .08, .18 * s, hasMovement, FieldPitchPlotView::Catcher, 0.0, 0.0};
-		if (view == FieldPitchPlotView::Overhead)
+		FieldPitchPlotLayout layout;
+		layout.view = view;
+		layout.left = view == FieldPitchPlotView::Catcher
+		    ? areaLeft : areaLeft + (FieldPitchPlotPanelWidth + FieldPitchPlotPanelGap) * s;
+		layout.bottom = board.bottom + 4.8 * s;
+		layout.width = FieldPitchPlotPanelWidth * s;
+		layout.height = 9.6 * s;
+		layout.z = board.centerZ + .08;
+		layout.endpointRadius = .18 * s;
+		layout.plateFrontDepthMeters = state.plateFrontDepthMeters;
+		const double availableWidth = layout.width - .9 * s, availableHeight = layout.height - .9 * s;
+
+		std::vector<Physics::Vector3> content;
+		const auto plate = BuildFieldPitchPlotPlate(state.plateFrontDepthMeters);
+		content.assign(plate.begin(), plate.end());
+		if (state.pitchMetricsVisible)
 		{
-			layout.view = view;
-			layout.left = areaLeft + (FieldPitchPlotPanelWidth + FieldPitchPlotPanelGap) * s;
-			layout.centerDepthMeters = .5 * (minZ + maxZ);
-			const bool hasDepth = extentZ > 1e-7;
-			const bool hasSideways = extentX > 1e-7;
-			layout.hasVisibleMovement = hasDepth || hasSideways;
-			if (hasSideways)
-			{
-				layout.unitsPerMeter = availableWidth / extentX;
-			}
-			if (hasDepth)
-			{
-				const bool towardPlusZ = state.pitchTrace.back().z >= state.pitchTrace.front().z;
-				layout.depthUnitsPerMeter = (towardPlusZ ? 1.0 : -1.0) * availableHeight / extentZ;
-			}
+			content.insert(content.end(), state.pitchTrace.begin(), state.pitchTrace.end());
 		}
+		if (view == FieldPitchPlotView::Catcher)
+		{
+			const auto zone = BuildFieldPitchPlotZone(state);
+			content.insert(content.end(), zone.begin(), zone.end());
+			layout.eye = {0.0, FieldPitchViewEyeHeightMeters,
+			    state.plateFrontDepthMeters + FieldPitchViewEyeBehindPlateMeters};
+			double minU = 1e300, maxU = -1e300, minV = 1e300, maxV = -1e300;
+			for (const auto& point : content)
+			{
+				const double distance = layout.DistanceFromEye(point);
+				const double u = (point.x - layout.eye.x) / distance, v = (point.y - layout.eye.y) / distance;
+				minU = (std::min)(minU, u);
+				maxU = (std::max)(maxU, u);
+				minV = (std::min)(minV, v);
+				maxV = (std::max)(maxV, v);
+			}
+			layout.centerU = .5 * (minU + maxU);
+			layout.centerV = .5 * (minV + maxV);
+			layout.focalUnits = (std::min)(availableWidth / (std::max)(maxU - minU, 1e-9),
+			    availableHeight / (std::max)(maxV - minV, 1e-9));
+			return layout;
+		}
+
+		double minX = 1e300, maxX = -1e300, minZ = 0.0, maxZ = state.plateFrontDepthMeters;
+		for (const auto& point : content)
+		{
+			minX = (std::min)(minX, point.x);
+			maxX = (std::max)(maxX, point.x);
+			minZ = (std::min)(minZ, point.z);
+			maxZ = (std::max)(maxZ, point.z);
+		}
+		layout.centerXMeters = .5 * (minX + maxX);
+		layout.unitsPerMeter = (std::min)({availableWidth / (std::max)(maxX - minX, 1e-9),
+		    FieldPitchOverheadPlateUnitsPerMeter * s, .5 * availableHeight / HomePlateDepthMeters});
+		layout.topDepthMeters = minZ;
+		// The flight down to the plate front fills the height left above the plate's point; a
+		// flight carried on past the plate's point fills it all.
+		const double toPlate = state.plateFrontDepthMeters - minZ;
+		const double plateUnits = HomePlateDepthMeters * layout.unitsPerMeter;
+		layout.depthUnitsPerMeter = toPlate > 1e-9 ? (availableHeight - plateUnits) / toPlate : layout.unitsPerMeter;
+		if ((maxZ - state.plateFrontDepthMeters) * layout.depthUnitsPerMeter > plateUnits)
+		{
+			layout.depthUnitsPerMeter = availableHeight / (maxZ - minZ);
+		}
+		layout.depthUnitsPerMeter = (std::min)(layout.depthUnitsPerMeter, layout.unitsPerMeter);
+		const double below = (std::max)(plateUnits, (maxZ - state.plateFrontDepthMeters) * layout.depthUnitsPerMeter);
+		layout.contentTop = layout.bottom + layout.height * .5 + (toPlate * layout.depthUnitsPerMeter + below) * .5;
 		return layout;
 	}
 
@@ -298,17 +361,46 @@ namespace BaseballSimulatorVR::Common
 
 		const auto catcherPlot = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Catcher);
 		const auto overheadPlot = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Overhead);
+		constexpr Color plateColor{.80F, .82F, .84F, 1}, zoneColor{.62F, .78F, .86F, 1};
 		for (const auto* plot : {&catcherPlot, &overheadPlot})
 		{
-			text(plot->view == FieldPitchPlotView::Catcher ? L"捕手目線" : L"真上から", plot->left,
+			const bool catcher = plot->view == FieldPitchPlotView::Catcher;
+			text(catcher ? L"捕手目線" : L"真上から", plot->left,
 			    top - .65 * sizeScale, plot->width, 1.05 * sizeScale, white, z + .05);
 			rect(plot->left, plot->bottom, plot->left + plot->width, plot->bottom + plot->height, z + .03, header);
+			const auto onPanel = [&](const Vector3& point, const double depth)
+			{
+				auto projected = plot->Project(point);
+				projected.z = depth;
+				return projected;
+			};
+			const auto plate = BuildFieldPitchPlotPlate(state.plateFrontDepthMeters);
+			std::array<Vector3, 5> corners{};
+			for (std::size_t i = 0; i < plate.size(); ++i)
+			{
+				corners[i] = plot->ProjectPlateCorner(plate[i]);
+				corners[i].z = z + .04;
+			}
+			for (std::size_t i = 2; i < corners.size(); ++i)
+				triangle(corners[0], corners[i - 1], corners[i], plateColor.data());
+			if (catcher)
+			{
+				const auto zone = BuildFieldPitchPlotZone(state);
+				for (std::size_t i = 0; i < zone.size(); ++i)
+					segment(onPanel(zone[i], z + .05), onPanel(zone[(i + 1) % zone.size()], z + .05),
+					    .05 * sizeScale, zoneColor);
+			}
 			if (state.pitchMetricsVisible && !state.pitchTrace.empty())
 			{
-				if (plot->hasVisibleMovement)
-					for (std::size_t i = 1; i < state.pitchTrace.size(); ++i)
-						segment(plot->Project(state.pitchTrace[i - 1]), plot->Project(state.pitchTrace[i]),
-						    .14 * sizeScale, accent);
+				for (std::size_t i = 1; i < state.pitchTrace.size(); ++i)
+				{
+					// From behind the plate the ball's path thickens as it comes closer.
+					const double thickness = catcher
+					    ? std::clamp(.30 / plot->DistanceFromEye((state.pitchTrace[i - 1] + state.pitchTrace[i]) * .5),
+					          .05, .16) * sizeScale
+					    : .12 * sizeScale;
+					segment(plot->Project(state.pitchTrace[i - 1]), plot->Project(state.pitchTrace[i]), thickness, accent);
+				}
 				auto endpoint = plot->Project(state.pitchTrace.back());
 				endpoint.z += .02;
 				disc(endpoint, plot->endpointRadius, amber);

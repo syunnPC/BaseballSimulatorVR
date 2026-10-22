@@ -52,8 +52,10 @@ namespace BaseballSimulatorVR::Common
         double zoneBottomMeters{ .55 };
         double zoneTopMeters{ 1.55 };
         double zoneWidthMeters{ .4318 };
-        double pitchBallRadiusMeters{ .037 };
-        // Straight-launch residuals at equal depth, anchored at the final actual x/y. Catcher's x is right.
+        // Simulation depth of the plate front, where the zone stands.
+        double plateFrontDepthMeters{ 18.44 };
+        // The pitch's actual flight: x toward the catcher's right, y height above the field,
+        // z the simulation depth from the release.
         std::vector<Physics::Vector3> pitchTrace{};
         bool hasBattedMetrics{ false };
         bool battedMetricsLive{ false };
