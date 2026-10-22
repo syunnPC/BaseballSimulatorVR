@@ -261,9 +261,12 @@ void RunFieldPresentationTests()
         "The original board dimensions and typography scale with center-field distance");
     Common::FieldStatisticsState diagramState{};
     const auto distantPlot = Common::BuildFieldPitchPlotLayout(diagramState);
-    Tests::Check(std::abs(distantPlot.width / board.unitsPerLayoutUnit - 11.8) < 1e-10 &&
+    const auto distantOverhead =
+        Common::BuildFieldPitchPlotLayout(diagramState, Common::FieldPitchPlotView::Overhead);
+    Tests::Check(std::abs((distantOverhead.left + distantOverhead.width - distantPlot.left) /
+            board.unitsPerLayoutUnit - 11.8) < 1e-10 &&
         std::abs(distantPlot.height / board.unitsPerLayoutUnit - 9.6) < 1e-10,
-        "The catcher diagram retains its original angular drawing-area dimensions on a distant field");
+        "The two pitch diagrams retain their original angular drawing-area dimensions on a distant field");
     Common::SetGroundRuntimeSettings({10});
     Common::SetPitchDistanceMeters(30);
     Tests::Check(Common::BuildFieldScoreboardLayout().centerZ < -40,

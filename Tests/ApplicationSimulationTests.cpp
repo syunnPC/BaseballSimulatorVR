@@ -12,7 +12,9 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <numeric>
 #include <optional>
+#include <random>
 #include <vector>
 
 namespace
@@ -2232,6 +2234,48 @@ namespace BaseballSimulatorVR::Core
 			    "Varying the throws leaves the stored repertoire untouched");
 		}
 
+		static void TestBallZoneOdds()
+		{
+			std::mt19937 random(2024);
+			std::vector<int> all(25);
+			std::iota(all.begin(), all.end(), 0);
+			std::array<int, 25> picks{};
+			constexpr int Draws = 40000;
+			for (int draw = 0; draw < Draws; ++draw) ++picks[static_cast<std::size_t>(Common::PickZoneCell(all, 5, 5, random))];
+			int strikes = 0;
+			for (int zone = 0; zone < 25; ++zone)
+				if (!Common::IsBallZoneCell(zone, 5, 5)) strikes += picks[static_cast<std::size_t>(zone)];
+			const double strikeShare = static_cast<double>(strikes) / Draws;
+			Tests::Check(std::abs(strikeShare - 9.0 / 13.8) < .015,
+			    "With every cell in play about two pitches in three go to the strike zone");
+			Tests::Check(picks[0] < picks[1] && picks[1] < picks[12] && picks[24] < picks[23] && picks[23] < picks[18],
+			    "A ball cell beside the zone comes up less often than a strike cell, a far corner less still");
+			std::array<int, 2> ballOnly{};
+			for (int draw = 0; draw < 4000; ++draw)
+				++ballOnly[Common::PickZoneCell({0, 1}, 5, 5, random) == 0 ? 0 : 1];
+			Tests::Check(std::abs(ballOnly[0] / 4000.0 - .5) < .04,
+			    "Ball cells chosen on their own are picked evenly");
+			Tests::Check(Common::PickZoneCell({7}, 5, 5, random) == 7 && Common::PickZoneCell({}, 5, 5, random) == -1,
+			    "A single selected cell is always used");
+
+			auto app = MakeApplication();
+			app->SetOperationMode(Application::OperationMode::BattingDuel, L"test_ball_zone_odds");
+			app->m_duelTargetZoneMask = 0;
+			int inZone = 0, planned = 0;
+			for (int pitch = 0; pitch < 60; ++pitch)
+			{
+				app->StartRandomBattingDuelPitch(L"test_ball_zone_odds");
+				if (!app->m_duelPitchPredictedZonePassPoint) continue;
+				++planned;
+				const auto& point = *app->m_duelPitchPredictedZonePassPoint;
+				if (std::abs(point.x) <= Common::GetStrikeZoneHalfWidthMeters() &&
+				    point.y >= Common::GetStrikeZoneBottomMeters() && point.y <= Common::GetStrikeZoneTopMeters())
+					++inZone;
+			}
+			Tests::Check(planned == 60 && inZone * 2 > planned,
+			    "Random duel pitches with no zone selected go to the strike zone more often than not");
+		}
+
 		static void Run(const std::filesystem::path& sourceRoot)
 		{
 			const RuntimeSettingsGuard settingsGuard;
@@ -2248,6 +2292,7 @@ namespace BaseballSimulatorVR::Core
 			TestStadiumWallAndHomeRun();
 			TestCatcherMode();
 			TestKnuckleballDelivery();
+			TestBallZoneOdds();
 			TestDuelBoardLifecycle();
 			TestFixedPitchVisibilityAndTrajectoryBoundary();
 			TestActualDuelPlateDecisionAndResultRetention();

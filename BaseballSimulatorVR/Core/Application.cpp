@@ -4648,11 +4648,8 @@ namespace BaseballSimulatorVR::Core
 			if (!selectedZoneIndices.empty())
 			{
 				std::mt19937& randomEngine = GetThreadLocalRandomEngine();
-				std::uniform_int_distribution<std::size_t> selectedZoneDistribution(
-				    0U,
-				    selectedZoneIndices.size() - 1U);
-				const int selectedZone = selectedZoneIndices[selectedZoneDistribution(
-				    randomEngine)];
+				const int selectedZone = Common::PickZoneCell(
+				    selectedZoneIndices, DuelZoneColumns, DuelZoneRows, randomEngine);
 				const std::optional<DuelZoneCellBounds> targetZoneCellBounds =
 				    ResolveDuelZoneCellBounds(selectedZone);
 				const std::optional<Physics::Vector3> targetZoneWorldPosition =
@@ -4733,11 +4730,8 @@ namespace BaseballSimulatorVR::Core
 			}
 		}
 
-		std::uniform_int_distribution<std::size_t> zoneDistribution(
-		    0U,
-		    candidateZoneIndices.size() - 1U);
-		const int selectedZoneIndex =
-		    candidateZoneIndices[zoneDistribution(randomEngine)];
+		const int selectedZoneIndex = Common::PickZoneCell(
+		    candidateZoneIndices, DuelZoneColumns, DuelZoneRows, randomEngine);
 		const std::optional<Physics::Vector3> zoneCenterPosition =
 		    ResolveDuelZoneCellCenterPosition(
 		        selectedZoneIndex,
@@ -5316,10 +5310,7 @@ namespace BaseballSimulatorVR::Core
 				candidateZoneIndices.push_back(zoneIndex);
 			}
 		}
-		std::uniform_int_distribution<std::size_t> selectedZoneDistribution(
-		    0U,
-		    candidateZoneIndices.size() - 1U);
-		plan->zoneIndex = candidateZoneIndices[selectedZoneDistribution(randomEngine)];
+		plan->zoneIndex = Common::PickZoneCell(candidateZoneIndices, DuelZoneColumns, DuelZoneRows, randomEngine);
 		plan->zoneBounds = ResolveDuelZoneCellBounds(plan->zoneIndex);
 		plan->zoneTarget = ResolveRandomDuelZoneCellPosition(
 		    plan->zoneIndex,

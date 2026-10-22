@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -130,5 +131,45 @@ namespace BaseballSimulatorVR::Common
 		}
 
 		return label;
+	}
+	// The zone grid's outer ring lies outside the strike zone. Where a pitch is picked from
+	// strike and ball cells together, a ball cell beside the zone comes up about a third as
+	// often as a strike cell and a far corner about a seventh as often, so about two pitches
+	// in three go to the zone with every cell in play. Ball cells picked on their own are
+	// equally likely.
+	inline constexpr double BallZoneEdgeCellWeight = .35;
+	inline constexpr double BallZoneCornerCellWeight = .15;
+
+	[[nodiscard]] constexpr bool IsBallZoneCell(const int zoneIndex, const int columns, const int rows) noexcept
+	{
+		const int row = zoneIndex / columns, column = zoneIndex % columns;
+		return row == 0 || column == 0 || row == rows - 1 || column == columns - 1;
+	}
+
+	[[nodiscard]] inline double ZoneCellPickWeight(
+	    const int zoneIndex, const int columns, const int rows, const bool strikeCellsInPlay) noexcept
+	{
+		if (!strikeCellsInPlay || !IsBallZoneCell(zoneIndex, columns, rows)) return 1.0;
+		const int row = zoneIndex / columns, column = zoneIndex % columns;
+		const bool corner = (row == 0 || row == rows - 1) && (column == 0 || column == columns - 1);
+		return corner ? BallZoneCornerCellWeight : BallZoneEdgeCellWeight;
+	}
+
+	template <typename TRandomEngine>
+	[[nodiscard]] int PickZoneCell(
+	    const std::vector<int>& candidates, const int columns, const int rows, TRandomEngine& random)
+	{
+		if (candidates.empty()) return -1;
+		const bool strikeCellsInPlay = std::any_of(candidates.begin(), candidates.end(),
+		    [&](const int zoneIndex) { return !IsBallZoneCell(zoneIndex, columns, rows); });
+		double total = 0.0;
+		for (const int zoneIndex : candidates) total += ZoneCellPickWeight(zoneIndex, columns, rows, strikeCellsInPlay);
+		double remaining = std::uniform_real_distribution<double>(0.0, total)(random);
+		for (const int zoneIndex : candidates)
+		{
+			remaining -= ZoneCellPickWeight(zoneIndex, columns, rows, strikeCellsInPlay);
+			if (remaining < 0.0) return zoneIndex;
+		}
+		return candidates.back();
 	}
 } // namespace BaseballSimulatorVR::Common
