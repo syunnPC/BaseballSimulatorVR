@@ -305,8 +305,9 @@ namespace BaseballSimulatorVR::Physics
 		Vector3 seamSideAcceleration{};
 		if (pitchParameters.enableSeamPerturbation && hasMeaningfulSpin)
 		{
-			// This remains a heuristic seam perturbation. Keep its projection magnitude
-			// to avoid a discontinuous side force when the spin approaches the air direction.
+			// Heuristic seam perturbation. The side direction is the unnormalized projection of
+			// the spin axis across the airflow, so the force fades continuously as the spin axis
+			// approaches the air direction.
 			const Vector3 seamSideDirection = normalizedSpinAxis -
 			    (velocityDirection * Dot(normalizedSpinAxis, velocityDirection));
 			seamSideAcceleration = seamSideDirection * (liftCoefficient * speed * SeamSideForceScale * seamAmplitude * seamWave);

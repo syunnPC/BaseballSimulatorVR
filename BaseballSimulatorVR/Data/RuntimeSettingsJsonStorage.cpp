@@ -314,7 +314,7 @@ namespace BaseballSimulatorVR::Data
 		json.AddBool("duelPitchPreviewEnabled", settings.duelPitchPreviewEnabled);
 		json.AddComment("batUseRightHand", "Use right hand for bat control (false = left hand)");
 		json.AddBool("batUseRightHand", settings.batUseRightHand);
-		json.AddComment("batMaterial", "Bat material: Wood, Metal or Urethane.");
+		json.AddComment("batMaterial", "Bat material: Wood, Metal, Urethane or Beginner.");
 		json.AddString("batMaterial", Physics::BatMaterialName(settings.batMaterial));
 		json.AddComment("pitchTrajectoryDisplayMode", "Pitch trail: None, Full or ZoneOnly (inside strike-zone volume).");
 		json.AddString("pitchTrajectoryDisplayMode",
@@ -401,7 +401,7 @@ namespace BaseballSimulatorVR::Data
 		const auto material = Physics::ParseBatMaterial(materialToken);
 		if (!material)
 		{
-			(void)reader.Fail("batMaterial", "expected \"Wood\", \"Metal\" or \"Urethane\"");
+			(void)reader.Fail("batMaterial", "expected \"Wood\", \"Metal\", \"Urethane\" or \"Beginner\"");
 			return std::nullopt;
 		}
 		settings.batMaterial = *material;

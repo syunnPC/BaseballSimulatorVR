@@ -184,7 +184,8 @@ public:
   [[nodiscard]] virtual FrameTiming GetFrameTiming() const noexcept = 0;
   // False while the runtime shows its own UI over the running app.
   [[nodiscard]] virtual bool IsInputFocused() const noexcept = 0;
-  // The runtime asked the app to exit, or the XR instance cannot be recovered.
+  // The user or runtime ended the XR experience; the app should exit rather
+  // than restart it.
   [[nodiscard]] virtual bool IsExitRequested() const noexcept = 0;
   virtual void ApplyHapticPulse(bool rightHand, double amplitude,
                                 double durationSeconds) = 0;

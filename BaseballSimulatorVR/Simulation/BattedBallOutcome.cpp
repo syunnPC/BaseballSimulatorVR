@@ -301,7 +301,7 @@ namespace BaseballSimulatorVR::Simulation
 		}
 
 		// An infielder who gloves the ball throws to first base (a first baseman near the bag
-		// takes it himself).
+		// carries it there unassisted).
 		[[nodiscard]] BattedBallOutcome PlayAtFirst(const BattedBallFlight& flight, const Retrieval& play,
 		    BattedBallOutcome outcome)
 		{
@@ -393,10 +393,10 @@ namespace BaseballSimulatorVR::Simulation
 				return ContactHeightMeters * (1.0 - f) + end * f +
 				    4.0 * (apex - .5 * (ContactHeightMeters + end)) * f * (1.0 - f);
 			};
-			// Each fielder's earliest point on the flight within reach of a
-			// catchable ball. On its way out whoever gets there first takes it; coming down,
-			// the fielder with priority calls the others off, the one playing nearest to where
-			// it comes down among equals.
+			// Each fielder's earliest point on the flight within reach of a catchable ball. On
+			// its way out whoever gets there first takes it; coming down, the fielder with
+			// priority calls the others off, the one playing nearest to where it comes down
+			// among equals.
 			struct Catch final
 			{
 				Fielder fielder{ Fielder::None };

@@ -853,8 +853,8 @@ namespace BaseballSimulatorVR::Render
 				return;
 			}
 		}
-		// Keep desktop VSync and all rendering quality settings. Only start a
-		// mirror draw when DXGI has room for it; XR supplies the main frame pace.
+		// Desktop VSync and quality settings are never lowered. While mirroring the
+		// headset, a frame is drawn only when DXGI has room for it; XR sets the pace.
 		const DWORD ready = WaitForSingleObject(m_frameLatencyEvent, nonBlockingMirror ? 0 : INFINITE);
 		if (ready == WAIT_TIMEOUT) { skipMirror(); return; }
 		if (ready != WAIT_OBJECT_0)

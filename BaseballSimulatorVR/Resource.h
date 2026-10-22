@@ -1,6 +1,6 @@
 //{{NO_DEPENDENCIES}}
-// Microsoft Visual C++ で生成されたインクルード ファイルです。
-// 次で使用: BaseballSimulatorVR.rc
+// Microsoft Visual C++ generated include file.
+// Used by BaseballSimulatorVR.rc
 
 #define IDS_APP_TITLE 103
 
@@ -16,7 +16,7 @@
 #ifndef IDC_STATIC
 #define IDC_STATIC -1
 #endif
-// 新しいオブジェクトの次の既定値
+// Next default values for new objects
 //
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS

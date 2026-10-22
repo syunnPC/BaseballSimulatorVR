@@ -214,8 +214,9 @@ namespace BaseballSimulatorVR::Xr
 				    (std::min)(m_projectionSampleCount, recommendedSampleCount);
 			}
 		}
-		// Runtimes almost always recommend single-sample swapchains, which left
-		// only FXAA. Render 4x MSAA into app-owned targets and resolve instead.
+		// Runtimes almost always recommend single-sample swapchains. In that case
+		// render 4x MSAA into app-owned targets and resolve them, if the device
+		// supports 4x for both the color and the depth format.
 		m_renderSampleCount = m_projectionSampleCount;
 		if (m_projectionSampleCount == 1U)
 		{
