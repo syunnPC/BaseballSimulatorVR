@@ -116,6 +116,18 @@ namespace BaseballSimulatorVR::Common
 		    L" cm    縦 " + (reveal ? signedCentimeters(state.pitchVerticalBreakMeters) : L"--") + L" cm"};
 	}
 
+	// The pitch's flight drawn two ways side by side: as the catcher sees it (left) and from
+	// straight above with the pitcher at the top and the plate at the bottom (right).
+	enum class FieldPitchPlotView
+	{
+		Catcher,
+		Overhead
+	};
+
+	// The drawing area keeps its original 11.8-unit width, split into two panels.
+	inline constexpr double FieldPitchPlotPanelGap = .3;
+	inline constexpr double FieldPitchPlotPanelWidth = (11.8 - FieldPitchPlotPanelGap) * .5;
+
 	struct FieldPitchPlotLayout final
 	{
 		double left{}, bottom{}, width{}, height{};
@@ -123,36 +135,53 @@ namespace BaseballSimulatorVR::Common
 		double z{};
 		double endpointRadius{};
 		bool hasVisibleMovement{};
+		FieldPitchPlotView view{FieldPitchPlotView::Catcher};
+		// Overhead only: the depth of the flight fitted to the panel's height, signed so the
+		// end of the flight is at the bottom.
+		double centerDepthMeters{}, depthUnitsPerMeter{};
 
 		[[nodiscard]] Physics::Vector3 Project(const Physics::Vector3& point) const
 		{
-			// Catcher faces -z, so simulation x points right. Depth stays orthographic.
-			return {left + width * .5 + (point.x - centerXMeters) * unitsPerMeter,
-			    bottom + height * .5 + (point.y - centerYMeters) * unitsPerMeter, z};
+			// Catcher faces -z, so simulation x points right in both views.
+			const double x = left + width * .5 + (point.x - centerXMeters) * unitsPerMeter;
+			if (view == FieldPitchPlotView::Overhead)
+			{
+				return {x, bottom + height * .5 - (point.z - centerDepthMeters) * depthUnitsPerMeter, z};
+			}
+			// Depth stays orthographic.
+			return {x, bottom + height * .5 + (point.y - centerYMeters) * unitsPerMeter, z};
 		}
 	};
 
+	// Each view fits its own panel. The overhead view stretches the sideways movement across
+	// its width and squeezes the flight's depth down its height, so it shows how far and
+	// where along the way the pitch moved sideways; the catcher view keeps one scale for
+	// both of its axes.
 	[[nodiscard]] inline FieldPitchPlotLayout BuildFieldPitchPlotLayout(
-	    const FieldStatisticsState& state)
+	    const FieldStatisticsState& state, const FieldPitchPlotView view = FieldPitchPlotView::Catcher)
 	{
 		const auto board = BuildFieldScoreboardLayout();
 		const double s = board.unitsPerLayoutUnit;
-		double minX = 0, maxX = 0, minY = 0, maxY = 0;
-		if (state.pitchMetricsVisible && !state.pitchTrace.empty())
+		double minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
+		const bool hasTrace = state.pitchMetricsVisible && !state.pitchTrace.empty();
+		if (hasTrace)
 		{
 			minX = maxX = state.pitchTrace.front().x;
 			minY = maxY = state.pitchTrace.front().y;
+			minZ = maxZ = state.pitchTrace.front().z;
 			for (const auto& point : state.pitchTrace)
 			{
 				minX = (std::min)(minX, point.x);
 				maxX = (std::max)(maxX, point.x);
 				minY = (std::min)(minY, point.y);
 				maxY = (std::max)(maxY, point.y);
+				minZ = (std::min)(minZ, point.z);
+				maxZ = (std::max)(maxZ, point.z);
 			}
 		}
-		const double width = 11.8 * s, height = 9.6 * s;
+		const double width = FieldPitchPlotPanelWidth * s, height = 9.6 * s;
 		const double availableWidth = width - .9 * s, availableHeight = height - .9 * s;
-		const double extentX = maxX - minX, extentY = maxY - minY;
+		const double extentX = maxX - minX, extentY = maxY - minY, extentZ = maxZ - minZ;
 		// Sub-micrometer residuals are numerical noise, not a movement to magnify.
 		const bool hasMovement = (std::max)(extentX, extentY) > 1e-7;
 		double unitsPerMeter = (std::min)(availableWidth, availableHeight) /
@@ -162,9 +191,29 @@ namespace BaseballSimulatorVR::Common
 			unitsPerMeter = extentX * availableHeight > extentY * availableWidth
 			    ? availableWidth / extentX : availableHeight / extentY;
 		}
-		return {-board.width * .5 + 30.6 * s, board.bottom + 4.8 * s, width, height,
+		const double areaLeft = -board.width * .5 + 30.6 * s;
+		FieldPitchPlotLayout layout{areaLeft, board.bottom + 4.8 * s, width, height,
 		    .5 * (minX + maxX), .5 * (minY + maxY),
-		    unitsPerMeter, board.centerZ + .08, .18 * s, hasMovement};
+		    unitsPerMeter, board.centerZ + .08, .18 * s, hasMovement, FieldPitchPlotView::Catcher, 0.0, 0.0};
+		if (view == FieldPitchPlotView::Overhead)
+		{
+			layout.view = view;
+			layout.left = areaLeft + (FieldPitchPlotPanelWidth + FieldPitchPlotPanelGap) * s;
+			layout.centerDepthMeters = .5 * (minZ + maxZ);
+			const bool hasDepth = extentZ > 1e-7;
+			const bool hasSideways = extentX > 1e-7;
+			layout.hasVisibleMovement = hasDepth || hasSideways;
+			if (hasSideways)
+			{
+				layout.unitsPerMeter = availableWidth / extentX;
+			}
+			if (hasDepth)
+			{
+				const bool towardPlusZ = state.pitchTrace.back().z >= state.pitchTrace.front().z;
+				layout.depthUnitsPerMeter = (towardPlusZ ? 1.0 : -1.0) * availableHeight / extentZ;
+			}
+		}
+		return layout;
 	}
 
 	template <typename TTriangle, typename TText>
@@ -221,7 +270,7 @@ namespace BaseballSimulatorVR::Common
 		for (std::size_t row = 0; row < analysis.size(); ++row)
 			text(analysis[row], left + sizeScale, top - (11.1 + row * 2.5) * sizeScale,
 			    27.2 * sizeScale, 1.55 * sizeScale, row == 0 ? accent : white, z + .05);
-		text(L"横＋：右 / 縦＋：上", left + sizeScale,
+		text(L"横＋：右 / 縦＋：上 / 真上から：上が投手側", left + sizeScale,
 		    bottom + 1.15 * sizeScale, 27.2 * sizeScale, .65 * sizeScale, white, z + .05);
 
 		const auto segment = [&](Vector3 a, Vector3 b, double thickness, const Color& color)
@@ -247,23 +296,30 @@ namespace BaseballSimulatorVR::Common
 			}
 		};
 
-		const auto plot = BuildFieldPitchPlotLayout(state);
-		text(L"軌道（捕手目線）", plot.left, top - .65 * sizeScale,
-		    plot.width, 1.05 * sizeScale, white, z + .05);
-		rect(plot.left, plot.bottom, plot.left + plot.width, plot.bottom + plot.height, z + .03, header);
-		if (state.pitchMetricsVisible && !state.pitchTrace.empty())
+		const auto catcherPlot = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Catcher);
+		const auto overheadPlot = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Overhead);
+		for (const auto* plot : {&catcherPlot, &overheadPlot})
 		{
-			if (plot.hasVisibleMovement)
-				for (std::size_t i = 1; i < state.pitchTrace.size(); ++i)
-					segment(plot.Project(state.pitchTrace[i - 1]), plot.Project(state.pitchTrace[i]),
-					    .14 * sizeScale, accent);
-			auto endpoint = plot.Project(state.pitchTrace.back());
-			endpoint.z += .02;
-			disc(endpoint, plot.endpointRadius, amber);
+			text(plot->view == FieldPitchPlotView::Catcher ? L"捕手目線" : L"真上から", plot->left,
+			    top - .65 * sizeScale, plot->width, 1.05 * sizeScale, white, z + .05);
+			rect(plot->left, plot->bottom, plot->left + plot->width, plot->bottom + plot->height, z + .03, header);
+			if (state.pitchMetricsVisible && !state.pitchTrace.empty())
+			{
+				if (plot->hasVisibleMovement)
+					for (std::size_t i = 1; i < state.pitchTrace.size(); ++i)
+						segment(plot->Project(state.pitchTrace[i - 1]), plot->Project(state.pitchTrace[i]),
+						    .14 * sizeScale, accent);
+				auto endpoint = plot->Project(state.pitchTrace.back());
+				endpoint.z += .02;
+				disc(endpoint, plot->endpointRadius, amber);
+			}
 		}
 
-		const double batLeft = plot.left + .4 * sizeScale;
-		const double batWidth = plot.width - .8 * sizeScale;
+		// The bat diagram spans both panels.
+		const double areaLeft = catcherPlot.left;
+		const double areaWidth = overheadPlot.left + overheadPlot.width - catcherPlot.left;
+		const double batLeft = areaLeft + .4 * sizeScale;
+		const double batWidth = areaWidth - .8 * sizeScale;
 		const double batY = bottom + 2.0 * sizeScale;
 		const auto batX = [&](double fraction) { return batLeft + batWidth * fraction; };
 		const auto& sweet = Physics::GetBatMaterialProfile(
@@ -276,7 +332,7 @@ namespace BaseballSimulatorVR::Common
 			      << state.batContactFraction * state.contactBatLengthMeters * 100 << L" cm   緑＝芯";
 			contactLabel = label.str();
 		}
-		text(contactLabel, plot.left, bottom + 4.0 * sizeScale, plot.width,
+		text(contactLabel, areaLeft, bottom + 4.0 * sizeScale, areaWidth,
 		    1.0 * sizeScale, white, z + .05);
 		for (std::size_t i = 1; i < Physics::BatBodyProfile.size(); ++i)
 		{

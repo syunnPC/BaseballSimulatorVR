@@ -93,11 +93,24 @@ void RunFieldStatisticsCompactTests()
         "Rounded zero break never displays misleading negative zero");
 
     const auto plot = BuildFieldPitchPlotLayout(state);
+    const auto overhead = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Overhead);
+    const double areaWidth = 11.8 * scale;
     Tests::Check(std::abs(board.width - 44 * scale) < 1e-10 &&
         std::abs(board.height - 17 * scale) < 1e-10 &&
-        std::abs(plot.width - 11.8 * scale) < 1e-10 &&
-        std::abs(plot.height - 9.6 * scale) < 1e-10,
-        "Trajectory auto-fit preserves the original scoreboard and drawing-area dimensions");
+        std::abs(overhead.left + overhead.width - plot.left - areaWidth) < 1e-10 &&
+        std::abs(plot.height - 9.6 * scale) < 1e-10 && overhead.height == plot.height &&
+        overhead.bottom == plot.bottom && overhead.width == plot.width &&
+        plot.left + plot.width < overhead.left,
+        "The catcher and overhead views share the original scoreboard drawing area side by side");
+    const auto plateEnd = overhead.Project(state.pitchTrace.back());
+    const auto releaseEnd = overhead.Project(state.pitchTrace.front());
+    Tests::Check(plateEnd.y < releaseEnd.y && std::abs(plateEnd.y - overhead.bottom - .45 * scale) < 1e-10 &&
+        std::abs(releaseEnd.y - overhead.bottom - overhead.height + .45 * scale) < 1e-10 &&
+        overhead.centerXMeters == plot.centerXMeters &&
+        std::abs(overhead.unitsPerMeter * (.18 + .35) - (overhead.width - .9 * scale)) < 1e-10 &&
+        overhead.Project({.1, 1, -8}).x > overhead.Project({0, 1, -8}).x &&
+        overhead.Project({.1, 2, -8}).y == overhead.Project({.1, -3, -8}).y,
+        "From above, the flight runs from the pitcher at the top to the plate at the bottom with its sideways movement across the panel");
     const auto center = plot.Project({0, 1, 0});
     const auto pitchRight = plot.Project({.1, 1, -20});
     const auto pitchUp = plot.Project({0, 1.1, 100});
@@ -115,14 +128,16 @@ void RunFieldStatisticsCompactTests()
         const auto fitted = BuildFieldPitchPlotLayout(tiny);
         const auto first = fitted.Project(tiny.pitchTrace.front());
         const auto last = fitted.Project(tiny.pitchTrace.back());
-        const double fractionX = std::abs(last.x - first.x) / fitted.width;
-        const double fractionY = std::abs(last.y - first.y) / fitted.height;
-        Tests::Check(fitted.hasVisibleMovement && (std::max)(fractionX, fractionY) > .9 &&
+        // The trace fills the panel inside its fixed margin along its limiting dimension.
+        const double fractionX = std::abs(last.x - first.x) / (fitted.width - .9 * scale);
+        const double fractionY = std::abs(last.y - first.y) / (fitted.height - .9 * scale);
+        Tests::Check(fitted.hasVisibleMovement && (std::max)(fractionX, fractionY) > .999 &&
             std::abs(last.x - first.x - dx * fitted.unitsPerMeter) < 1e-10 &&
             std::abs(last.y - first.y - dy * fitted.unitsPerMeter) < 1e-10 &&
             std::abs((first.x + last.x) * .5 - fitted.left - fitted.width * .5) < 1e-10 &&
             std::abs((first.y + last.y) * .5 - fitted.bottom - fitted.height * .5) < 1e-10,
             "Even millimeter movement fills the limiting plot dimension while preserving XY aspect and centering the trace");
+        const auto fittedOverhead = BuildFieldPitchPlotLayout(tiny, FieldPitchPlotView::Overhead);
         std::size_t movementTriangles = 0, markerTriangles = 0;
         EmitFieldScoreboardGeometry(tiny,
             [&](const auto& a, const auto& b, const auto& c, const float*)
@@ -132,13 +147,14 @@ void RunFieldStatisticsCompactTests()
                 if (!movement && !marker) return;
                 if (movement) ++movementTriangles;
                 if (marker) ++markerTriangles;
+                const auto& panel = a.x < fittedOverhead.left ? fitted : fittedOverhead;
                 for (const auto& p : {a, b, c})
-                    Tests::Check(p.x > fitted.left && p.x < fitted.left + fitted.width &&
-                        p.y > fitted.bottom && p.y < fitted.bottom + fitted.height,
-                        "Magnified trace strokes and the round endpoint stay strictly inside their original drawing area");
+                    Tests::Check(p.x > panel.left && p.x < panel.left + panel.width &&
+                        p.y > panel.bottom && p.y < panel.bottom + panel.height,
+                        "Magnified trace strokes and the round endpoint stay strictly inside their own panel");
             }, [](auto&&...) {});
-        Tests::Check(movementTriangles == 4 && markerTriangles == 32,
-            "Movement-chart geometry contains its trace and endpoint without a scale-limiting zone outline");
+        Tests::Check(movementTriangles == 8 && markerTriangles == 64,
+            "Both views draw their trace and endpoint without a scale-limiting zone outline");
         tiny.zoneWidthMeters = 100;
         tiny.zoneBottomMeters = -100;
         tiny.zoneTopMeters = 100;
@@ -163,10 +179,23 @@ void RunFieldStatisticsCompactTests()
     Tests::Check(!roundoffPlot.hasVisibleMovement &&
         roundoffPlot.unitsPerMeter == straightPlot.unitsPerMeter,
         "Floating-point residuals cannot magnify an otherwise straight trajectory into false movement");
-    std::size_t straightSegments = 0, straightEndpoint = 0;
+    const auto straightOverhead = BuildFieldPitchPlotLayout(straight, FieldPitchPlotView::Overhead);
+    std::size_t straightSegments = 0, straightEndpoint = 0, overheadSegments = 0;
     EmitFieldScoreboardGeometry(straight,
         [&](const auto& a, const auto& b, const auto& c, const float* color)
         {
+            if (a.x >= straightOverhead.left)
+            {
+                // From above the same pitch is a straight run down the middle to the plate.
+                if (std::abs(a.z - straightPlot.z) < 1e-8 && color[0] == .24F && color[1] == .91F)
+                {
+                    ++overheadSegments;
+                    for (const auto& p : {a, b, c})
+                        Tests::Check(std::abs(p.x - straightOverhead.left - straightOverhead.width * .5) <
+                            .07 * scale + 1e-10, "A pitch with no sideways movement runs straight down the overhead view");
+                }
+                return;
+            }
             if (std::abs(a.z - straightPlot.z) < 1e-8 && color[0] == .24F && color[1] == .91F)
                 ++straightSegments;
             if (std::abs(a.z - straightPlot.z - .02) > 1e-8) return;
@@ -178,18 +207,20 @@ void RunFieldStatisticsCompactTests()
                 std::abs(std::hypot(c.x - a.x, c.y - a.y) - radius) < 1e-10,
                 "A collapsed trajectory renders a small circular endpoint marker at its actual endpoint");
         }, [](auto&&...) {});
-    Tests::Check(straightSegments == 0 && straightEndpoint == 32,
-        "A straight ray emits a single endpoint disc without a false diagonal segment");
+    Tests::Check(straightSegments == 0 && straightEndpoint == 32 && overheadSegments == 4,
+        "A straight ray emits a single endpoint disc without a false diagonal segment in the catcher view");
     state.pitchTrace.push_back({-2.4, 3.1, 0});
     const auto largePlot = BuildFieldPitchPlotLayout(state);
-    for (const auto& point : state.pitchTrace)
-    {
-        const auto p = largePlot.Project(point);
-        const double radius = largePlot.endpointRadius;
-        Tests::Check(p.x - radius > largePlot.left && p.x + radius < largePlot.left + largePlot.width &&
-            p.y - radius > largePlot.bottom && p.y + radius < largePlot.bottom + largePlot.height,
-            "The complete endpoint marker and extreme movement coordinates fit within the plot");
-    }
+    const auto largeOverhead = BuildFieldPitchPlotLayout(state, FieldPitchPlotView::Overhead);
+    for (const auto* panel : {&largePlot, &largeOverhead})
+        for (const auto& point : state.pitchTrace)
+        {
+            const auto p = panel->Project(point);
+            const double radius = panel->endpointRadius;
+            Tests::Check(p.x - radius > panel->left && p.x + radius < panel->left + panel->width &&
+                p.y - radius > panel->bottom && p.y + radius < panel->bottom + panel->height,
+                "The complete endpoint marker and extreme movement coordinates fit within each view");
+        }
     std::vector<std::wstring> labels;
     struct TextBounds { double left, top, width, height; };
     std::vector<TextBounds> bounds;
@@ -223,8 +254,9 @@ void RunFieldStatisticsCompactTests()
         });
     Tests::Check(labels.size() >= 8 && std::equal(newBall.begin(), newBall.end(), labels.begin()) && triangles > 0,
         "The production board retains four core metrics and emits analysis and diagram labels");
-    Tests::Check(std::find(labels.begin(), labels.end(), L"軌道（捕手目線）") != labels.end(),
-        "The movement diagram identifies the catcher perspective in a concise title");
+    Tests::Check(std::find(labels.begin(), labels.end(), L"捕手目線") != labels.end() &&
+        std::find(labels.begin(), labels.end(), L"真上から") != labels.end(),
+        "The two movement diagrams name the catcher's and the overhead perspective in concise titles");
 
     std::size_t ballTriangles = 0;
     EmitFieldScoreboardGeometry(state,
@@ -232,15 +264,17 @@ void RunFieldStatisticsCompactTests()
         {
             if (std::abs(a.z - board.centerZ - .10) > 1e-8) return;
             ++ballTriangles;
-            const auto expected = largePlot.Project(state.pitchTrace.back());
-            const double radius = largePlot.endpointRadius;
+            const auto& panel = a.x < largeOverhead.left ? largePlot : largeOverhead;
+            const auto expected = panel.Project(state.pitchTrace.back());
+            const double radius = panel.endpointRadius;
             Tests::Check(std::abs(a.x - expected.x) < 1e-10 && std::abs(a.y - expected.y) < 1e-10 &&
                 std::abs(std::hypot(b.x - a.x, b.y - a.y) - radius) < 1e-10 &&
                 std::abs(std::hypot(c.x - a.x, c.y - a.y) - radius) < 1e-10,
                 "Endpoint disc is centered on the actual trace end with a fixed display radius");
         }, [](auto&&...) {});
-    Tests::Check(ballTriangles == 32 && std::abs(largePlot.endpointRadius - .18 * scale) < 1e-10,
-        "A visible pitch trace emits one small round marker independent of auto-fit magnification");
+    Tests::Check(ballTriangles == 64 && std::abs(largePlot.endpointRadius - .18 * scale) < 1e-10 &&
+        largeOverhead.endpointRadius == largePlot.endpointRadius,
+        "A visible pitch trace emits one small round marker per view independent of auto-fit magnification");
 
     // Concealment must remove all stale pitch-dependent geometry, including auto-fit changes.
     const auto capture = [&](const FieldStatisticsState& input)
@@ -283,7 +317,7 @@ void RunFieldStatisticsCompactTests()
                     const bool coreHit = fraction >= sweet.sweetSpotStartRatio && fraction <= sweet.sweetSpotEndRatio;
                     Tests::Check(coreHit ? color[1] > color[0] : color[0] > color[1],
                         "Contact marker is green inside the shared sweet spot and amber at either edge");
-                    const double expectedX = plot.left + .4 * scale + (plot.width - .8 * scale) * fraction;
+                    const double expectedX = plot.left + .4 * scale + (areaWidth - .8 * scale) * fraction;
                     if (markerTriangles > 2)
                         Tests::Check(std::abs(a.x - expectedX) < 1e-10,
                             "Bat contact marker uses the full handle-to-tip normalized coordinate");
@@ -294,9 +328,9 @@ void RunFieldStatisticsCompactTests()
                     ++coreTriangles;
                     for (const auto& p : {a, b, c})
                         Tests::Check(p.x >= plot.left + .4 * scale +
-                            (plot.width - .8 * scale) * sweet.sweetSpotStartRatio - 1e-10 &&
+                            (areaWidth - .8 * scale) * sweet.sweetSpotStartRatio - 1e-10 &&
                             p.x <= plot.left + .4 * scale +
-                            (plot.width - .8 * scale) * sweet.sweetSpotEndRatio + 1e-10,
+                            (areaWidth - .8 * scale) * sweet.sweetSpotEndRatio + 1e-10,
                             "Green core follows the physical bat material's normalized sweet zone");
                 }
             }, [](auto&&...) {});
