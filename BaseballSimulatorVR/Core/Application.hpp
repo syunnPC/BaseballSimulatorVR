@@ -7,6 +7,7 @@
 #include "../Data/SessionLogRepository.hpp"
 #include "../Framework.hpp"
 #include "../Common/BatOverlayState.hpp"
+#include "../Common/HapticEnvelope.hpp"
 #include "../Common/OverlayVisibilitySettings.hpp"
 #include "../Common/RenderQualitySettings.hpp"
 #include "../Render/IRenderBackend.hpp"
@@ -186,6 +187,11 @@ namespace BaseballSimulatorVR::Core
 		void ReturnToCatcherSign();
 		[[nodiscard]] std::optional<Common::CatcherMittState> BuildCatcherMittState() const;
 		[[nodiscard]] std::wstring CatcherSignName() const;
+		// Controller vibration: an envelope starts with its first pulse and is played out one
+		// pulse per frame, each replacing the last.
+		void StartHaptic(const Common::HapticEnvelope& envelope);
+		void UpdateHaptics(double frameSeconds);
+		void StartBatContactHaptics(double impactSpeed, double sting);
 		// Moist-air density from the environment's altitude, temperature and humidity.
 		[[nodiscard]] double EnvironmentAirDensity() const noexcept;
 		[[nodiscard]] Xr::UiTelemetry BuildXrUiTelemetry() const;
@@ -369,6 +375,7 @@ namespace BaseballSimulatorVR::Core
 		};
 		CatcherRoundState m_catcherRound{};
 		Xr::ControllerInputState m_previousControllerInput{};
+		std::vector<Common::HapticEnvelope> m_hapticEnvelopes{};
 		struct DuelPitchPlan;
 		std::shared_ptr<DuelPitchPlan> m_nextDuelPitchPlan{};
 		BatPoseState m_batPoseState{};
