@@ -46,7 +46,7 @@ namespace
 	{
 		const auto path = directory / L"legacy.sqlite3";
 		{
-			// Schema and rows exactly as written by the previous application version.
+			// A session database in an earlier release's schema, with rows as that release wrote them.
 			RawDatabase legacy(path);
 			legacy.Execute(
 			    "CREATE TABLE pitch_events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -68,7 +68,7 @@ namespace
 		}
 		{
 			Data::SessionLogRepository repository;
-			Tests::Check(repository.Initialize(path.wstring()).succeeded, "A database of the previous version migrates");
+			Tests::Check(repository.Initialize(path.wstring()).succeeded, "A database from an earlier release is migrated");
 			Tests::Check(repository.UpsertPitchEventResult(1, L"strike", 1.0, L"after upgrade").succeeded,
 			    "Results can still be attached to events of earlier sessions");
 			Tests::Check(!repository.UpsertPitchEventResult(99, L"strike", 1.0, L"").succeeded,

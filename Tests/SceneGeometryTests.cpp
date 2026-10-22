@@ -64,7 +64,7 @@ namespace
 				state.releasePositionWorld.y = state.moundHeightMeters + releaseHeight;
 				Common::BuildPitcherWorldMesh(state, mesh);
 				Tests::Check(mesh.triangles.size() == (time < 0 ? 8482 : 8290),
-				    "Every delivery style retains the complete pitcher, mound and held ball tessellation");
+				    "Every delivery style emits the complete pitcher, mound and held ball tessellation");
 				Tests::Check(Fingerprint(cache.Get(state)) == Fingerprint(mesh),
 				    "Cached geometry matches the direct mesh across every style and animation key");
 				Tests::Check(mesh.vertices.size() < mesh.triangles.size(),
@@ -91,7 +91,7 @@ namespace
 		const int columns =
 		    std::clamp(static_cast<int>(std::ceil(halfAngle * 2. * outer / step)), 16, 180);
 		Tests::Check(mesh.triangles.size() == static_cast<std::size_t>(rows) * columns * 2,
-		    "Floor retains its original tessellation at all configured sizes");
+		    "The floor fan has the expected rows and columns at all configured sizes");
 		Tests::Check(mesh.vertices.size() == static_cast<std::size_t>(rows + 1) * (columns + 1),
 		    "Floor grid shares vertices without removing any cells");
 		const auto point = [&](int row, int column)
@@ -126,12 +126,12 @@ namespace
 						const auto actual = mesh.vertices[triangle.indices[corner]];
 						Tests::Check(BaseballSimulatorVR::Physics::Length(
 						                 actual - expected[face * 3 + corner]) == 0.,
-						    "Indexed floor preserves every original triangle corner exactly");
+						    "Indexed floor places every triangle corner exactly on the fan grid");
 					}
 					Tests::Check(
 					    triangle.color == std::array{color[0] * brightness, color[1] * brightness,
 					                          color[2] * brightness, color[3]},
-					    "Indexed floor retains exact tile shading");
+					    "Indexed floor has the exact tile shading");
 				}
 			}
 		}

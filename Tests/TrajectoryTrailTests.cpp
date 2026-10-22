@@ -61,7 +61,7 @@ void CheckStrikeZoneClippingAndRetention() {
                  "Both cut rear corners clip against the pentagonal plate prism");
     Tests::Check(!ClipSegmentToStrikeZone({side * .18, 1, zone.frontDepth + .4},
                                          {side * .19, 1, zone.frontDepth + .4}, zone),
-                 "A segment in a removed rear corner never appears as an inside trajectory");
+                 "A segment in a cut-off rear corner never appears as an inside trajectory");
   }
   Tests::Check(!ClipSegmentToStrikeZone({0, 2, zone.frontDepth - 1},
                                        {0, 2, zone.frontDepth + 1}, zone),
@@ -277,7 +277,7 @@ void RunTrajectoryTrailTests() {
       view, 1280, 720, {}, Ball(0.2, 18.3, 0.3),
       [&](const ScreenPoint &, const ScreenPoint &, const ScreenPoint &,
           const float *) { ++ballTriangles; });
-  Tests::Check(ballTriangles > 800, "The unchanged ball renderer retains its "
+  Tests::Check(ballTriangles > 800, "The ball renderer draws a "
                                     "full-density visible hemisphere");
   Tests::Check(
       countTriangles(false, false) == ballTriangles,
@@ -343,7 +343,7 @@ void RunTrajectoryTrailTests() {
                  "Retained batted ribbons keep identical colors after the ball is hidden");
     const auto pitched = colors(pitchedTrail, false, 1.0F);
     Tests::Check(pitched.size() == 18 && pitched.front()[3] < pitched.back()[3],
-                 "Pitched ribbons preserve their existing tail opacity gradient");
+                 "Pitched ribbons grow more transparent toward their oldest samples");
   }
 
   trails.Update(Ball(0.5, 18.4, 0.4), Phase::Batted, true, contact, {}, Time(0.75));
@@ -361,7 +361,7 @@ void RunTrajectoryTrailTests() {
                   {}, {}, Time(0.01 * sample));
   Tests::Check(
       trails.Pitch().Points().size() == 96 && trails.Batted().Points().empty(),
-      "The pitched trail preserves the existing 96-point density limit");
+      "The pitched trail keeps at most 96 points");
   const auto recentPitch = trails.Pitch().Points().back();
   for (int sample = 0; sample < 200; ++sample)
     trails.Update(Ball(0.05 * sample, 10.0, 2.0 + 0.01 * sample), Phase::Batted,
@@ -480,18 +480,18 @@ void RunTrajectoryTrailTests() {
   trails.Update(Ball(0.0, 1.0, 0.1), Phase::Pitch, true, {}, {}, Time(0.0));
   trails.Update(Ball(0.0, 1.03, 0.2), Phase::Pitch, true, {}, {}, Time(0.01));
   Tests::Check(trails.Pitch().Points().size() == 1,
-               "Sub-four-centimeter movement preserves the established "
-               "sampling threshold");
+               "Movement under the four-centimeter sampling threshold "
+               "adds no sample");
   trails.Update(Ball(0.0, 1.05, 0.3), Phase::Pitch, true, {}, {}, Time(0.02));
   Tests::Check(trails.Pitch().Points().size() == 2,
                "Movement accumulates relative to the last retained sample");
   trails.Update(Ball(0.0, 1.05, 0.3), Phase::Pitch, true, {}, {}, Time(0.22));
   Tests::Check(trails.Pitch().FadeScale() == 1.0F,
-               "A paused trail retains its original fade delay");
+               "A paused trail stays fully opaque during its fade delay");
   trails.Update(Ball(0.0, 1.05, 0.3), Phase::Pitch, true, {}, {}, Time(0.77));
   Tests::Check(
       std::abs(trails.Pitch().FadeScale() - 0.5F) < 1e-5F,
-      "A paused trail preserves the original 1.1-second fade duration");
+      "A paused trail is half faded midway through its 1.1-second fade");
   trails.Update(Ball(0.0, 1.05, 0.3), Phase::Pitch, true, {}, {}, Time(1.33));
   Tests::Check(trails.Pitch().Points().empty(),
                "A fully faded paused trail releases its segments");

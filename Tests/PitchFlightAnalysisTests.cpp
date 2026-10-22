@@ -128,7 +128,7 @@ void RunPitchFlightAnalysisTests()
 	parameters.initialVelocity = {1.5, 2., 40.};
 	analysis.Reset(parameters, 18.44, .18, zone);
 	Tests::Check(analysis.BuildMovementTrace(analysis.Preview()).size() > 2,
-	    "An angled release still displays gravity and wind bending instead of removing their trajectory");
+	    "An angled release shows its gravity and wind bending as a movement line");
 	for (const double rpm : {0., 900., 3500.})
 	{
 		parameters.spinRpm = rpm;

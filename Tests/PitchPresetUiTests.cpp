@@ -25,7 +25,7 @@ void RunPitchPresetUiTests()
 	Tests::Check(name.right - name.left > .32 && name.top - name.bottom > .09,
 	    "Preset names receive full panel width and two readable rows");
 	Tests::Check(name.top < previous.bottom && name.top < next.bottom && cellHeight > .044,
-	    "The dedicated label clears existing selector laser targets and preserves control height");
+	    "The dedicated label clears the selector laser targets and keeps controls at a usable height");
 	panel.rows = 1;
 	Tests::Check(!Common::BuildPitchPresetNameRect(panel,name),
 	    "A minimized panel exposes no preset name outside its title bar");

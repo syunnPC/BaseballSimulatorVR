@@ -1250,7 +1250,7 @@ namespace BaseballSimulatorVR::Core
 			std::size_t userFiles = 0;
 			for (const auto& entry : std::filesystem::directory_iterator(user))
 				userFiles += entry.is_regular_file() && entry.path().extension() == L".json" ? 1U : 0U;
-			Tests::Check(userFiles == 3U, "Bundled presets are no longer copied into the user directory");
+			Tests::Check(userFiles == 3U, "Bundled presets are not copied into the user directory");
 			Tests::Check(app->m_settingsLayoutVersion == Data::CurrentSettingsLayoutVersion,
 			    "The settings layout version is recorded");
 
@@ -1262,7 +1262,8 @@ namespace BaseballSimulatorVR::Core
 			    Tests::ReadFile(user / "PitchSettings.user.json") == "user modified",
 			    "Provisioning never overwrites an existing user settings file");
 
-			// Upgrade from the old layout: every bundled preset had been copied (and rewritten) here.
+			// A settings folder from an earlier release holds rewritten copies of bundled presets
+			// beside the user's own files.
 			Tests::TempDirectory legacy;
 			for (const auto name : {L"PitchSettings.Difficulty.Easy.RHP.json", L"PitchSettings.Difficulty.Easy.LHP.json",
 			         L"PitchSettings.Yamamoto.json", L"EnvironmentSettings.Toss.Baseball.json"})
@@ -1278,7 +1279,7 @@ namespace BaseballSimulatorVR::Core
 			upgraded->m_bundledContentDirectoryPath = bundled.wstring();
 			upgraded->m_userDataDirectoryPath = legacy.path.wstring();
 			Tests::Check(upgraded->EnsureRequiredUserSettingsFiles(error) && upgraded->m_startupNotices.size() == 1U,
-			    "The first start after the upgrade explains the preset migration once");
+			    "The first start on an earlier release's settings folder explains the preset migration once");
 			Tests::Check(!std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.RHP.json") &&
 			    !std::filesystem::exists(legacy.path / "PitchSettings.Difficulty.Easy.LHP.json") &&
 			    !std::filesystem::exists(legacy.path / "PitchSettings.Yamamoto.json") &&
@@ -2183,11 +2184,11 @@ namespace BaseballSimulatorVR::Core
 			Tests::Check(app->m_catcherRound.phase == Application::CatcherPhase::Pitching &&
 			        app->m_catcherRound.pitches == 1 && SamePosition(app->m_catcherRound.targetWorld, setup) &&
 			        !app->IsWaitingForNextDuelPitch(),
-			    "The trigger gives the sign and the pitcher starts his delivery toward the mitt");
+			    "The trigger gives the sign and the pitcher starts the delivery toward the mitt");
 			// The catcher shifts the mitt to where the pitch is coming and squeezes as it arrives.
 			const Physics::Vector3 aim = app->m_catcherRound.aimWorld;
 			Tests::Check(std::hypot(aim.x - setup.x, aim.y - setup.y) < 1.0 && Near(aim.z, setup.z),
-			    "The pitcher's aim lands near the target he was given");
+			    "The pitcher's aim lands near the target the catcher gave");
 			SetMitt(*xr, aim);
 			const auto toWorld = [&](const Physics::Vector3& position)
 			{

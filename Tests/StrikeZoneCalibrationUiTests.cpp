@@ -18,7 +18,7 @@ void RunStrikeZoneCalibrationUiTests()
 		Tests::Check(progress.status == status && ui.statusLine.find(text) != std::wstring::npos,
 		    "Calibration UI describes the actual acquisition state");
 		Tests::Check(!ui.buttonLabel.empty() && !ui.instructionLine.empty(),
-		    "Every calibration state retains a dedicated action and a useful instruction");
+		    "Every calibration state has a dedicated action and a useful instruction");
 	};
 	expect(Status::WaitingForFloor, L"床基準なし");
 	FloorEyeHeightSample sample{ 1.674, 0.0, 1, true, false };
@@ -69,7 +69,7 @@ void RunStrikeZoneCalibrationUiTests()
 	    "Completed calibration exposes full progress and a clearly named restart button");
 	calibrator.Reset();
 	Tests::Check(calibrator.GetProgress().fraction == 0.0 && !calibrator.IsComplete(),
-	    "The independent calibration action restarts progress without needing a playback-speed change");
+	    "The dedicated calibration action restarts progress on its own");
 	for (int frame = 0; frame <= 30; ++frame)
 	{
 		sample.sampleTimeSeconds = frame * .1;

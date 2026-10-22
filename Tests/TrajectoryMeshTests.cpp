@@ -148,7 +148,7 @@ namespace
 		Common::EmitProjectedBallAndTrajectoryMeshOverlay(view,1024,1024,visible,ball,
 		    [&](const auto&,const auto&,const auto&,const float*) { ++fadedPitch; },
 		    1.F, 1.F, false, Common::TrajectoryColorMode::Fading);
-		Tests::Check(fadedPitch == 0, "Pitch ribbon fading remains unchanged by the batted world mesh");
+		Tests::Check(fadedPitch == 0, "A fully faded pitch ribbon draws nothing, unlike the batted world mesh");
 	}
 }
 

@@ -31,7 +31,7 @@ void RunFieldStatisticsCompactTests()
         L"飛距離  115.7 m    最高点  31.2 m"
     };
     const auto landed = BuildFieldStatisticsLines(state);
-    Tests::Check(landed == expected, "Four concise scoreboard rows retain all seven core metrics and their units");
+    Tests::Check(landed == expected, "Four concise scoreboard rows show all seven core metrics with their units");
     for (const auto& row : landed)
     {
         for (std::wstring_view removed : std::array<std::wstring_view, 10>{
@@ -110,7 +110,7 @@ void RunFieldStatisticsCompactTests()
         std::abs(plot.height - 9.6 * scale) < 1e-10 && overhead.height == plot.height &&
         overhead.bottom == plot.bottom && overhead.width == plot.width &&
         plot.left + plot.width < overhead.left,
-        "The catcher and overhead views share the original scoreboard drawing area side by side");
+        "The catcher and overhead views sit side by side in the board's 11.8 by 9.6 unit drawing area");
 
     // From behind the plate: a pinhole view from about the umpire's eyes.
     const double plateFront = state.plateFrontDepthMeters, eyeHeight = plot.eye.y;
@@ -233,7 +233,7 @@ void RunFieldStatisticsCompactTests()
             labels.emplace_back(label);
             if (labels.size() <= 4)
                 Tests::Check(std::abs(height - 1.65 * scale) < 1e-10 && width >= 27 * scale,
-                    "The four core rows retain readable glyph heights and ample text width");
+                    "The four core rows use readable glyph heights and ample text width");
             Tests::Check(top <= board.bottom + board.height && top - height >= board.bottom &&
                 left >= -board.width * 0.5 && left + width <= board.width * 0.5 && z > board.centerZ,
                 "Every label fits within the board face");
@@ -244,7 +244,7 @@ void RunFieldStatisticsCompactTests()
             bounds.push_back({left, top, width, height});
         });
     Tests::Check(labels.size() >= 8 && std::equal(newBall.begin(), newBall.end(), labels.begin()) && triangles > 0,
-        "The production board retains four core metrics and emits analysis and diagram labels");
+        "The production board emits the four core metric rows first, then analysis and diagram labels");
     Tests::Check(std::find(labels.begin(), labels.end(), L"捕手目線") != labels.end() &&
         std::find(labels.begin(), labels.end(), L"真上から") != labels.end(),
         "The two movement diagrams name the catcher's and the overhead perspective in concise titles");
